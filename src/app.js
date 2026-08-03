@@ -3,7 +3,7 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 import express from 'express';
 
-import { ingestionQueue } from './queue.js';
+import { ingestionQueue } from './worker.js';
 
 class App {
     constructor() {
