@@ -1,6 +1,6 @@
 // NPM Modules
 import knex from 'knex';
-import knexConfigs from '../../configs/knex.config.js';
+import knexConfigs from '../../src/configs/knex.config.js';
 
 function up(pg) {
   return pg.schema
@@ -70,6 +70,9 @@ function up(pg) {
       table.string('storage_key').notNullable();
       table.string('hash').notNullable();
       table.timestamp('fetched_at').notNullable();
+      table.unique(['source', 'ref', 'hash'], {
+        indexName: 'source_payloads_source_ref_hash_uq',
+      });
     })
 
     // Users, organizations, roles, and memberships

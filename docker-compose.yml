@@ -1,0 +1,95 @@
+# Local development infrastructure for TenderIQ.
+#
+# The app itself runs on the host (npm run dev / worker / scheduler); this file
+# only provides the backing services it talks to. Compose reads the root .env
+# automatically, so the credentials below stay in sync with what the app loads
+# through src/configs/variables.config.js.
+#
+#   docker compose up -d              # redis + minio (+ bucket bootstrap)
+#   docker compose --profile local-db up -d   # ...plus a local Postgres
+#
+# Postgres is behind a profile because .env currently points PSQL_HOST at Neon.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: tenderiq-redis
+    restart: unless-stopped
+    # BullMQ requires noeviction: evicting a job hash mid-flight loses the job
+    # silently. appendonly keeps queued jobs across a container restart.
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory-policy noeviction
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: tenderiq-minio
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    ports:
+      - '9000:9000' # S3 API — matches S3_ENDPOINT
+      - '9001:9001' # web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: creates the bucket the storage adapter expects and keeps it
+  # private. Exits 0 once done; `docker compose ps` will show it as exited.
+  minio-init:
+    image: minio/mc:latest
+    container_name: tenderiq-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-tenderiq}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$S3_ACCESS_KEY $$S3_SECRET_KEY &&
+      mc mb --ignore-existing local/$$S3_BUCKET &&
+      mc anonymous set none local/$$S3_BUCKET &&
+      echo 'bucket ready: '$$S3_BUCKET
+      "
+
+  postgres:
+    profiles: ['local-db']
+    image: postgres:16-alpine
+    container_name: tenderiq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PSQL_USER:-postgres}
+      POSTGRES_PASSWORD: ${PSQL_PASSWORD:-postgres}
+      POSTGRES_DB: ${PSQL_DATABASE:-tenderiq}
+    ports:
+      - '${PSQL_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis-data:
+  minio-data:
+  postgres-data:

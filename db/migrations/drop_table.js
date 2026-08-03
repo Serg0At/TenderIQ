@@ -1,6 +1,6 @@
 // NPM Modules
 import knex from 'knex';
-import knexConfigs from '../../configs/knex.config.js';
+import knexConfigs from '../../src/configs/knex.config.js';
 
 async function down(pg) {
   // Drop dependents before the tables they reference.
