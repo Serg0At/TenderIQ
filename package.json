@@ -1,26 +1,45 @@
 {
   "name": "tenderiq",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "dev": "nodemon ",
-    "migrate:up": "node src/db/migrations/create_table.js",
-    "migrate:down": "node src/db/migrations/drop_table.js"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "module",
-  "devDependencies": {
-    "nodemon": "^3.1.14"
+  "description": "A private SaaS tool used only by suppliers — the companies that bid on public tenders — to discover the right tenders, see what competitors won at, prepare compliant bids, and never miss a deadline. ",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "worker": "node src/workers/index.js",
+    "worker:dev": "nodemon src/workers/index.js",
+    "scheduler": "node src/queues/scheduler.js",
+    "migrate:up": "node db/migrations/create_table.js",
+    "migrate:down": "node db/migrations/drop_table.js"
   },
+  "author": "At",
+  "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.716.0",
+    "@aws-sdk/s3-request-presigner": "^3.716.0",
+    "@paralleldrive/cuid2": "^2.2.2",
+    "axios": "^1.7.9",
+    "bcryptjs": "^3.0.3",
+    "body-parser": "^2.3.0",
+    "bullmq": "^6.0.5",
+    "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "helmet": "^8.3.0",
+    "iconv-lite": "^0.6.3",
+    "ioredis": "^6.0.0",
     "joi": "^18.2.3",
     "knex": "^3.3.0",
-    "pg": "^8.22.0"
+    "pdf-parse": "^1.1.1",
+    "pg": "^8.22.0",
+    "robots-parser": "^3.0.1",
+    "winston": "^3.19.0"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.49.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }
