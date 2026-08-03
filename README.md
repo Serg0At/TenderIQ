@@ -71,32 +71,6 @@ deliberate — the reasoning is recorded in [docs/ARCHITECTURE.md](docs/ARCHITEC
 
 ---
 
-## Running locally
-
-Requires Node.js 20+, Docker with Compose, and access to a PostgreSQL instance.
-
-```bash
-npm install
-docker compose up -d      # Redis + MinIO
-npm run migrate:up
-```
-
-Configuration lives in a `.env` at the repo root — ask the maintainer for it. The app validates
-its configuration at boot and refuses to start on a missing key, so a wrong `.env` fails loudly
-at startup rather than three layers deep.
-
-Then, in three terminals:
-
-```bash
-npm run dev
-npm run worker:dev
-npm run scheduler
-```
-
-Once the scheduler has run, the ARMEPS sweep fires on its configured cadence. A routine sweep
-touches 1–2 pages and writes 0 rows if nothing is new — that is the idempotency working, not a
-broken scraper.
-
 ### Scripts
 
 | Script | Does |
