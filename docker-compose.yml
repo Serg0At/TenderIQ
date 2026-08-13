@@ -6,9 +6,6 @@
 # through src/configs/variables.config.js.
 #
 #   docker compose up -d              # redis + minio (+ bucket bootstrap)
-#   docker compose --profile local-db up -d   # ...plus a local Postgres
-#
-# Postgres is behind a profile because .env currently points PSQL_HOST at Neon.
 
 services:
   redis:

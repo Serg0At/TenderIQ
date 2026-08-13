@@ -1,7 +1,3 @@
----
-description: Code review — find bugs, security issues, and improvements
----
-
 Review the given code or `git diff`. Categorise every finding:
 
 - `[CRITICAL]` — bug, security hole, data loss risk. Must fix before merge.

@@ -19,11 +19,6 @@ import * as cheerio from 'cheerio';
  *   </div>
  */
 
-/**
- * Armenia is UTC+4 all year — no daylight saving. Without an explicit offset,
- * `new Date('2026-07-31 16:08:00')` is interpreted in the *server's* timezone,
- * silently shifting every published/deadline time on any host not set to Yerevan.
- */
 const AM_UTC_OFFSET = '+04:00';
 
 const toDate = (value) => {
@@ -31,12 +26,6 @@ const toDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-/**
- * Both timestamps are pulled positionally rather than by matching the Armenian
- * wording around them ("Հրապարակված է ... մինչեւ ..."), so the site rephrasing
- * its sentence does not break date extraction. First = published, second =
- * deadline.
- */
 const TIMESTAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/g;
 
 const parseWindow = (text) => {

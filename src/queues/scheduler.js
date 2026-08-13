@@ -16,12 +16,6 @@ const register = async () => {
   for (const source of listEnabledSources()) {
     const { listingCron, displayName } = getSourceConfig(source);
 
-    // Only armeps has a listing scraper so far; ppcm is a CSV importer (v2).
-    if (source !== 'armeps') {
-      logger.info(`[scheduler] skipping "${source}" — no listing scraper yet`);
-      continue;
-    }
-
     await ingestFetchQueue.upsertJobScheduler(
       `sweep-${source}`,
       { pattern: listingCron },

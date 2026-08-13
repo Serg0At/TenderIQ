@@ -3,7 +3,8 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 import express from 'express';
 
-import { ingestionQueue } from './worker.js';
+import { ingestionQueue } from './queues/worker.js';
+import Api from './features/index.js';
 
 class App {
     constructor() {
@@ -15,7 +16,7 @@ class App {
     async init(server) {
         this._setCors();
         this._setRequestParser();
-        // this._initializeApi();
+        this._initializeApi();
     }
 
     _setCors() {
@@ -38,9 +39,9 @@ class App {
         this.app.use(express.json());
     }
 
-    // _initializeApi() {
-    //     this.app.use("/api/v1", Api);
-    // }
+    _initializeApi() {
+        this.app.use("/api/v1", Api);
+    }
   
 }
 

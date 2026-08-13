@@ -87,11 +87,14 @@ priority so a multi-year backfill never starves live notices.
 
 Before any outbound request the scraper checks, in order:
 
-1. **robots.txt** — fetched once per host, cached in Redis (24 h TTL), evaluated with
-   `robots-parser` against `SCRAPER.USER_AGENT`. Skipped only if `SCRAPER.RESPECT_ROBOTS=false`.
-2. **Rate limit** — a Redis token bucket keyed `ratelimit:{source}`, sized from the source's
+1. **Rate limit** — a Redis token bucket keyed `ratelimit:{source}`, sized from the source's
    `rateLimit: { requests, perMs }`. Exhausted bucket → the job is delayed, not failed.
-3. **Concurrency** — the BullMQ worker for a source runs with `concurrency` from its config.
+2. **Concurrency** — the BullMQ worker for a source runs with `concurrency` from its config.
+
+There is no robots.txt check: none of the crawled hosts serves one, and each returns its 404 as an
+HTML page rather than a 404 status. Politeness rests entirely on the rate limit plus the honest bot
+identity in `SCRAPER.USER_AGENT`. A future source that does publish crawl rules needs this decision
+revisited.
 
 Identity is always the declared bot UA (`TenderIQBot/1.0 (+https://tenderiq.am/bot; …)`). The
 scraper does not rotate user agents, spoof browsers, or bypass access controls — it reads
@@ -215,14 +218,14 @@ flowchart LR
     BACK -->|yes| DELAY[backoff: BASE * 2^n, capped at MAX] --> JOB
     BACK -->|no| DLQ[(dead-letter)]
     RUN -->|permanent: 404, schema invalid| DLQ
-    RUN -->|429 / robots deny| PAUSE[delay source, no attempt burned]
+    RUN -->|429| PAUSE[delay source, no attempt burned]
     DLQ --> OPS[Ops alert + parser fix]
 ```
 
 - Attempts and backoff come from `SCRAPER.MAX_ATTEMPTS` (5), `SCRAPER.BACKOFF_BASE_MS` (2 s),
   `SCRAPER.BACKOFF_MAX_MS` (120 s).
-- `429` and robots denials **delay** the source rather than consuming an attempt — being
-  rate-limited is not a job failure.
+- `429` **delays** the source rather than consuming an attempt — being rate-limited is not a job
+  failure.
 - Schema-invalid records go straight to DLQ with their raw storage key, so the fix is: patch the
   parser, replay from storage.
 - DLQ depth is a monitored metric; growth means a source changed shape.
@@ -257,7 +260,6 @@ why zero-row sweeps alert rather than log.
 | Setting | Where | Default | Controls |
 |---|---|---|---|
 | `SCRAPER_USER_AGENT` | env | `TenderIQBot/1.0 …` | bot identity sent on every request |
-| `SCRAPER_RESPECT_ROBOTS` | env | `true` | robots.txt enforcement |
 | `SCRAPER_HTTP_TIMEOUT_MS` | env | `30000` | axios timeout |
 | `SCRAPER_BROWSER_TIMEOUT_MS` | env | `60000` | Playwright fallback timeout |
 | `SCRAPER_MAX_ATTEMPTS` | env | `5` | retries before DLQ |
@@ -300,7 +302,7 @@ downstream consumer stay as they are.
 | `sources.config.js`, `variables.config.js` (SCRAPER/STORAGE) | done |
 | Storage port + S3/local drivers, deterministic key helpers | done |
 | Schema + composite unique `(source, ref, hash)` on `source_payloads` | done |
-| `utils/{logger,hash,http,robots,rateLimiter}.js` | done, verified live |
+| `utils/{logger,hash,http,rateLimiter}.js` | done, verified live |
 | ARMEPS adapter: `listing.parser.js` + `client.js` | done, verified live |
 | `repositories/sourcePayload.repository.js` | done |
 | `queues/{names,index,scheduler}.js` | done |

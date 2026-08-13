@@ -82,7 +82,6 @@ const config = {
     CALLBACK_URL: optional('CALLBACK_URL', undefined),
   },
 
-  /** S3-compatible object storage (docs/technical/File Storage.md). */
   STORAGE: {
     DRIVER: optional('STORAGE_DRIVER', 's3'), // s3 | local
     ENDPOINT: optional('S3_ENDPOINT', undefined),
@@ -96,13 +95,11 @@ const config = {
     LOCAL_ROOT: optional('STORAGE_LOCAL_ROOT', './.storage'),
   },
 
-  /** Cross-source scraping defaults. Per-source overrides live in sources.config.js. */
   SCRAPER: {
     USER_AGENT: optional(
       'SCRAPER_USER_AGENT',
       'TenderIQBot/1.0 (+https://tenderiq.am/bot; contact@tenderiq.am)'
     ),
-    RESPECT_ROBOTS: bool('SCRAPER_RESPECT_ROBOTS', true),
     /**
      * PEMs here are added to the TLS trust store alongside the system roots.
      * gnumner.minfin.am omits its intermediate certificate, so without this Node
@@ -117,7 +114,6 @@ const config = {
     MAX_LISTING_PAGES: int('SCRAPER_MAX_LISTING_PAGES', 200),
     MAX_DOCUMENT_BYTES: int('SCRAPER_MAX_DOCUMENT_BYTES', 60 * 1024 * 1024),
     FRESHNESS_SLA_MINUTES: int('SCRAPER_FRESHNESS_SLA_MINUTES', 15),
-    EXTRA_CA_DIR: optional('SCRAPER_EXTRA_CA_DIR', './certs'),
   },
 };
 

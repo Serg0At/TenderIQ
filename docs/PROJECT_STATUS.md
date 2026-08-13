@@ -60,8 +60,8 @@ promise.
 |---|---|
 | OCDS-aligned schema (`tenders`, `parties`, `awards`, `contracts`, `tender_documents`, `source_payloads`) | done |
 | Composite unique `(source, ref, hash)` on `source_payloads` | done |
-| `utils/{logger,hash,http,robots,rateLimiter}.js` | done, verified live |
-| ARMEPS listing scraper: politeness gate, TLS chain fix, charset decode, chained pagination, lookback-bounded early stop | done, verified live |
+| `utils/{logger,hash,http,rateLimiter}.js` | done, verified live |
+| ARMEPS listing scraper: rate-limit gate, TLS chain fix, charset decode, chained pagination, lookback-bounded early stop | done, verified live |
 | Raw payload retention in object storage (MinIO), deterministic content-hash keys | done |
 | Retry / backoff / DLQ policy | done — observed recovering from Neon connection timeouts |
 | **Idempotency** | **proven**: cold start ingested 116 notices over 14 pages; a repeat sweep fetched 1 page, wrote 0 rows, enqueued 0 jobs |

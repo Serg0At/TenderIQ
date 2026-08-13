@@ -20,7 +20,7 @@ through the layers, and where every kind of code belongs on disk.
 | Database | PostgreSQL via **Knex** (query builder + hand-written migrations) |
 | Queue / cache | Redis + BullMQ (`ioredis`) |
 | Object storage | S3-compatible (MinIO in dev, S3/R2 in prod) via an in-house storage port |
-| Scraping | `axios` + `cheerio` + `iconv-lite`, `robots-parser`, Playwright as an optional fallback |
+| Scraping | `axios` + `cheerio` + `iconv-lite`, Playwright as an optional fallback |
 | Documents | `pdf-parse` |
 | Validation | `joi` |
 | Auth | JWT access/refresh, `bcryptjs` |

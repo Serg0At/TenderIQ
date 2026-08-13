@@ -8,6 +8,7 @@
     "dev": "nodemon src/server.js",
     "worker": "node src/workers/index.js",
     "worker:dev": "nodemon src/workers/index.js",
+    "normalize:replay": "node src/scripts/replayNormalizer.js",
     "scheduler": "node src/queues/scheduler.js",
     "migrate:up": "node db/migrations/create_table.js",
     "migrate:down": "node db/migrations/drop_table.js"
@@ -33,7 +34,6 @@
     "knex": "^3.3.0",
     "pdf-parse": "^1.1.1",
     "pg": "^8.22.0",
-    "robots-parser": "^3.0.1",
     "winston": "^3.19.0"
   },
   "optionalDependencies": {

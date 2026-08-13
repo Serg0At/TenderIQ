@@ -49,9 +49,11 @@ step 3 — and **not** with `rejectUnauthorized: false`.
 
 **3. `robots.txt` does not exist, and the 404 page is HTML.**
 `https://gnumner.minfin.am/robots.txt` returns an HTML "404 - Page Not Found"
-document rather than a 404 status. If you hand that body to `robots-parser` you
-are parsing an HTML template as crawl rules. Guard on `Content-Type:
-text/plain`; treat anything else as "no robots.txt" (= allowed).
+document rather than a 404 status; `armeps.am` and `eauction.armeps.am` do the
+same. There is therefore no robots check in the pipeline. If you add a source
+that *does* publish crawl rules, reinstate one — and guard on `Content-Type:
+text/plain`, because handing an HTML error page to a robots parser means parsing
+a page template as crawl rules.
 
 ### Listing row markup (exact, from the live page)
 
@@ -212,7 +214,7 @@ that returns true only for 5xx, 429, and `ECONNRESET`/`ETIMEDOUT`/`EAI_AGAIN`
 > cheap. It is not, for this source: gnumner returns **no `ETag`, no `Last-Modified`, no
 > `Cache-Control`**, so 304 never arrives and every visited page is re-downloaded. Keep the
 > code (it costs nothing, and PPCM may honour it), but sweep economy comes entirely from the
-> early-stop rule in step 11. Also worth knowing: the host is slow — ~3.5s typical, and one
+> early-stop rule in step 10. Also worth knowing: the host is slow — ~3.5s typical, and one
 > request exceeded the 30s timeout during testing, so retries matter more than usual.
 
 Signatures:
@@ -223,22 +225,7 @@ fetchPage(url, { etag, lastModified })
 isRetryable(error) -> boolean
 ```
 
-### Step 4 — `src/libs/robots.js`
-
-Responsibility: is this URL crawlable, and what Crawl-delay applies.
-
-Cache the body in Redis for 24 h keyed by origin — a 5-minute cron would
-otherwise request `robots.txt` 288 times a day. The one non-obvious rule is fact
-#3 above:
-
-```js
-const isPlainText = (result.contentType || '').includes('text/plain');
-body = isPlainText ? result.body : '';   // HTML 404 page => treat as absent
-```
-
-Cache the empty string too, so a missing file is not re-fetched every sweep.
-
-### Step 5 — `src/libs/rateLimiter.js`
+### Step 4 — `src/libs/rateLimiter.js`
 
 Responsibility: per-source politeness, plus a sweep lock.
 
@@ -259,7 +246,7 @@ it — being throttled is not an error and must not consume a retry attempt.
 full 28-page sweep can exceed five minutes. Without the lock, sweeps stack up and
 you self-inflict a rate-limit spiral. Release only if the token is still yours.
 
-### Step 6 — `src/libs/hash.js`
+### Step 5 — `src/libs/hash.js`
 
 `sha256(input)` plus a `stableHash(obj)` that sorts keys before serialising.
 
@@ -269,7 +256,7 @@ Page markup churns on every request — ad blocks, view counters, the sidebar
 calendar — so a page hash would report every fetch as a change. Row hashes are
 what gate downstream work.
 
-### Step 7 — `src/libs/adapters/source/armeps/listing.parser.js` ⚠️ tricky
+### Step 6 — `src/libs/adapters/source/armeps/listing.parser.js` ⚠️ tricky
 
 Responsibility: HTML string → `{ rows, pagination }`. **Pure function, no I/O,
 no DB, no network.** This is the file that breaks when the site is redesigned,
@@ -344,20 +331,20 @@ not against the network. Assert: 6 unique rows from page 1's 10 blocks, first
 `sourceId === '12347668'`, `publishedAt.toISOString()` ends in `12:08:00.000Z`
 (16:08 AMT), and `lastPage === 28`. That last assertion is your redesign alarm.
 
-### Step 8 — `src/libs/adapters/source/armeps/client.js`
+### Step 7 — `src/libs/adapters/source/armeps/client.js`
 
 Responsibility: URL construction and the politeness gate, so the worker never
-builds a URL or thinks about robots/rate limits.
+builds a URL or thinks about the request budget.
 
 ```js
 listingUrl(pathConfig, page)  // page 1 => no suffix; page N => `${path}${N}`
 fetchListing(pathConfig, page, { etag, lastModified })
 ```
 
-Order inside `fetchListing`: `robots.isAllowed` → `rateLimiter.acquire` (throw a
-typed `RateLimitedError` carrying `retryAfterMs` if non-zero) → `http.fetchPage`.
+Order inside `fetchListing`: `rateLimiter.acquire` (throw a typed
+`RateLimitedError` carrying `retryAfterMs` if non-zero) → `http.fetchPage`.
 
-### Step 9 — `src/repositories/sourcePayload.repository.js`
+### Step 8 — `src/repositories/sourcePayload.repository.js`
 
 The only file touching the `source_payloads` table.
 
@@ -379,7 +366,7 @@ latestFetchedAt(source)                    // last CHANGE — see correction bel
 `record` should swallow the unique-violation error (Postgres `23505`) — under a
 race the row already existing *is* the success condition.
 
-### Step 10 — `src/queues/index.js` + `names.js`
+### Step 9 — `src/queues/index.js` + `names.js`
 
 `names.js` exports `QUEUE` and `JOB` constants. Producers and consumers live in
 different processes, so a string typo is a job that silently never runs.
@@ -389,7 +376,7 @@ v1 needs `ingest.fetch` and `ingest.normalize`. Default job options:
 BACKOFF_BASE_MS }`, `removeOnComplete: { age: 86400 }`, `removeOnFail: false`
 (keep failures — they are the DLQ).
 
-### Step 11 — `src/workers/scraper.js` ⚠️ the centrepiece
+### Step 10 — `src/workers/scraper.js` ⚠️ the centrepiece
 
 Two handlers on `ingest.fetch`.
 
@@ -430,14 +417,14 @@ for each entry in `listingPaths` enqueue a `listing.page` job for page 1 with
 
 Points 3 and 6 are the two that actually matter. Everything else is plumbing.
 
-### Step 12 — `src/workers/index.js`
+### Step 11 — `src/workers/index.js`
 
 Worker process entry: build the BullMQ `Worker` instances with
 `redis.connectionOptions` and `concurrency` from the source config, register
 `SIGTERM`/`SIGINT` handlers that `await worker.close()` (in-flight jobs finish and
 are not lost), and log every `failed` event with the job name and attempt count.
 
-### Step 13 — prove it
+### Step 12 — prove it
 
 Before wiring the cron, run the sweep once by hand:
 

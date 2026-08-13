@@ -3,11 +3,7 @@ import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import redis from '../libs/redis.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
-import {
-  fetchListing,
-  RateLimitedError,
-  RobotsDeniedError,
-} from '../libs/adapters/source/armeps/client.js';
+import { fetchListing, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
 import sourcePayloads from '../repositories/sourcePayload.repository.js';
 import { ingestFetchQueue, ingestNormalizeQueue } from '../queues/index.js';
 import { JOB } from '../queues/names.js';
@@ -17,13 +13,6 @@ import { logger } from '../utils/logger.js';
 
 const { SCRAPER } = config;
 
-/**
- * Marks that a sweep completed successfully, whether or not it found anything.
- *
- * The freshness monitor must read THIS, not max(source_payloads.fetched_at):
- * unchanged content is deliberately never inserted, so a healthy source that
- * simply published nothing for an hour would look dead in the table.
- */
 const markSweepHealthy = (source) =>
   redis.getRedis().set(`sweep:ok:${source}`, Date.now(), 'EX', 7 * 24 * 60 * 60);
 
@@ -48,7 +37,6 @@ const rowFingerprint = (row) =>
     deadlineAt: row.deadlineAt,
   });
 
-/** Fan out one page-1 job per configured board. */
 const handleSweep = async (job) => {
   const { source } = job.data;
   const sourceConfig = getSourceConfig(source);
@@ -85,14 +73,8 @@ const handleListingPage = async (job, token) => {
     result = await fetchListing(listingPath, page);
   } catch (error) {
     if (error instanceof RateLimitedError) {
-      // Delay, do not fail: being throttled is not an error and must not consume
-      // one of the retry attempts.
       await job.moveToDelayed(Date.now() + error.retryAfterMs, token);
       throw new DelayedError();
-    }
-    if (error instanceof RobotsDeniedError) {
-      // Retrying will not change the answer.
-      throw new UnrecoverableError(error.message);
     }
     throw error;
   }
@@ -103,13 +85,6 @@ const handleListingPage = async (job, token) => {
     return { notModified: true };
   }
 
-  // Layout-health alarm. Zero *blocks* on a successful response means the markup
-  // changed — the #1 silent failure, where the pipeline "succeeds" while
-  // ingesting nothing, so it fails loudly.
-  //
-  // Zero *rows* with blocks present is a different thing entirely: the page held
-  // only direct-attachment notices, which is normal on the older pages. Treating
-  // those as identical is what made this alarm misfire on page 15.
   if (result.blocksSeen === 0) {
     throw new Error(
       `[${source}] "${slug}" page ${page} returned 200 with 0 tender blocks — parser likely broken`
@@ -118,14 +93,11 @@ const handleListingPage = async (job, token) => {
 
   const skipped = result.skipped ?? { noResourceId: 0, duplicate: 0 };
   if (skipped.noResourceId > 0) {
-    // Coverage signal: how much of the board v1 is knowingly leaving behind.
     log.info(
       `skipped ${skipped.noResourceId}/${result.blocksSeen} non-ARMEPS notices (no resourceId)`
     );
   }
 
-  // Store the page body once, for replay when the parser improves. The listing
-  // payload is audit material; the per-notice rows below are the dedupe anchors.
   const storage = await getStorage();
   const pageHash = sha256(result.response.body);
   const pageRef = `listing:${slug}:p${page}`;
@@ -152,24 +124,12 @@ const handleListingPage = async (job, token) => {
     await ingestNormalizeQueue.add(
       JOB.NORMALIZE_TENDER,
       { source, sourceId: row.sourceId, ref, hash, storageKey: pageKey, row },
-      // Dedupe at enqueue time as well as in the database. ':' is reserved in
-      // BullMQ key building, so separators are dashes.
       { jobId: `${source}-${row.sourceId}-${hash.slice(0, 12)}` }
     );
   }
 
   await markSweepHealthy(source);
 
-  // Early stop, bounded by the lookback window.
-  //
-  // The board is newest-first and reaches back to 2017 — it is a 9-year archive,
-  // not a live feed. lookbackHours is therefore the real depth control: keep
-  // paginating only while this page still holds notices newer than the cutoff.
-  //
-  // An earlier version also continued whenever a page had new rows, which on a
-  // cold start walked the entire archive and made maxListingPages the only real
-  // bound. Loading history is a deliberate backfill with its own date range, not
-  // something a routine 5-minute sweep should drift into.
   const oldest = result.rows
     .map((row) => row.publishedAt)
     .filter(Boolean)
