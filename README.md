@@ -32,7 +32,7 @@ one file is the highest-leverage work in the repo.
 | 6 — Post-award & polish | not started |
 
 The schema for all phases exists. The application code does not. A file-by-file gap analysis,
-ordered by what blocks what, is in [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
+ordered by what blocks what, is in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 ---
 
@@ -87,9 +87,8 @@ deliberate — the reasoning is recorded in [docs/ARCHITECTURE.md](docs/ARCHITEC
 | Document | Contents |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, boundaries, layering, folder structure, data model, queue topology |
-| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | Gap analysis against the reference spec, ordered by what blocks what |
+| [PROJECT_STATUS.md](PROJECT_STATUS.md) | Gap analysis against the reference spec, ordered by what blocks what |
 | [docs/SCRAPER_WORKFLOW.md](docs/SCRAPER_WORKFLOW.md) | The ingestion pipeline stage by stage |
-| [docs/SCRAPER_BUILD_GUIDE.md](docs/SCRAPER_BUILD_GUIDE.md) | How to build a new source adapter |
 
 The full product and engineering specification — business, product, database, API, security, AI,
 testing, deployment, operations, UX — lives in a separate documentation repository.

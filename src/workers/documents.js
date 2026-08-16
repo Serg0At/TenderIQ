@@ -1,0 +1,149 @@
+import { DelayedError, UnrecoverableError } from 'bullmq';
+import { getSourceConfig } from '../configs/sources.config.js';
+import { getStorage, tenderDocKey, tenderDocTextKey } from '../libs/storage/index.js';
+import { fetchDocument, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
+import { parseInvitation } from '../libs/adapters/source/armeps/invitation.parser.js';
+import sourcePayloads from '../repositories/sourcePayload.repo.js';
+import tenders from '../repositories/tender.repo.js';
+import { sha256 } from '../utils/hash.js';
+import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * Invitation archive -> CPV code, buyer tax ID, per-lot item descriptions.
+ *
+ * These three fields appear NOWHERE in the HTML. The detail page has no CPV,
+ * no tax ID and no item text; all of it lives inside `hraver.docx` in the
+ * archive linked as "Հրավեր". That makes this stage the only way to populate
+ * `tenders.cpv_code` and `parties.tax_id` — and CPV is what
+ * `price_benchmarks.cpv_code` groups comparables by, so benchmarks stay
+ * category-blind without it.
+ *
+ * Only `hraver.docx` is opened. The rest of the archive is per-lot technical
+ * specification files whose format varies (across 43 sampled entries: 18 .xls,
+ * 11 .rar, 11 .docx, 3 .xlsx). Those feed the later AI checklist, so no RAR or
+ * spreadsheet reader is needed here — and the archive is retained whole in
+ * object storage, so adding one later requires no re-download.
+ */
+
+const DOC_REF = (sourceId) => `invitation:${sourceId}`;
+
+export const handleTenderDocuments = async (job, token) => {
+  const { source, sourceId, invitationUrl } = job.data;
+  const log = logger.child({ job: job.name, source, sourceId });
+
+  if (!source || !sourceId || !invitationUrl) {
+    throw new UnrecoverableError('tender.documents requires source, sourceId and invitationUrl');
+  }
+  const sourceConfig = getSourceConfig(source);
+  if (!sourceConfig.downloadDocuments) {
+    return { skipped: 'documents_disabled' };
+  }
+
+  /**
+   * Origin check before any request is made.
+   *
+   * This is the one place where scraped content chooses a network destination:
+   * the URL comes verbatim out of the tender page's "Հրավեր" link. Relative
+   * hrefs are resolved against baseUrl by the detail parser, but an ABSOLUTE
+   * href in the page names its own host, and without this the worker would
+   * fetch it and store the response. Source text is data, never instructions —
+   * and that includes not letting it pick where we connect.
+   */
+  let origin;
+  try {
+    origin = new URL(invitationUrl).origin;
+  } catch {
+    throw new UnrecoverableError(`invitation URL is not parseable: "${invitationUrl}"`);
+  }
+  const expected = new URL(sourceConfig.baseUrl).origin;
+  if (origin !== expected) {
+    throw new UnrecoverableError(
+      `invitation URL origin ${origin} is not ${expected} — refusing to fetch off-source`
+    );
+  }
+
+  let result;
+  try {
+    result = await fetchDocument(invitationUrl);
+  } catch (error) {
+    if (error instanceof RateLimitedError) {
+      await job.moveToDelayed(Date.now() + error.retryAfterMs, token);
+      throw new DelayedError();
+    }
+    throw error;
+  }
+
+  const bytes = result.bytes;
+  if (!bytes?.length) throw new Error(`[${source}] invitation ${sourceId} returned an empty body`);
+  if (bytes.length > MAX_DOCUMENT_BYTES) {
+    throw new UnrecoverableError(
+      `[${source}] invitation ${sourceId} is ${bytes.length} bytes, over the ${MAX_DOCUMENT_BYTES} cap`
+    );
+  }
+
+  // Content-hash dedupe, identical to the detail stage: a re-issued invitation
+  // is a new object, an unchanged one costs a request and nothing more.
+  const ref = DOC_REF(sourceId);
+  const hash = sha256(bytes);
+  if (await sourcePayloads.existsWithHash(source, ref, hash)) {
+    return { unchanged: true };
+  }
+
+  const storage = await getStorage();
+  const archiveKey = tenderDocKey({ source, sourceId, hash, ext: 'zip' });
+  await storage.put(archiveKey, bytes, { contentType: result.contentType || 'application/zip' });
+
+  // Parse before recording the payload: if extraction throws, the job retries
+  // and the archive is re-read from storage rather than being marked done.
+  let parsed;
+  try {
+    parsed = parseInvitation(bytes);
+  } catch (error) {
+    throw new Error(`[${source}] invitation ${sourceId} could not be opened: ${error.message}`);
+  }
+
+  // The extracted text is the input the AI checklist stage will read, so it is
+  // stored beside the archive rather than re-derived on every use.
+  if (parsed.text) {
+    await storage.put(tenderDocTextKey({ source, sourceId, hash }), parsed.text, {
+      contentType: 'text/plain; charset=utf-8',
+    });
+  }
+
+  const facts = await tenders.applyInvitationFacts({
+    sourceId: `${source}:${sourceId}`,
+    url: invitationUrl,
+    storageKey: archiveKey,
+    taxId: parsed.taxId,
+    cpvCode: parsed.dominantCpv,
+  });
+
+  await sourcePayloads.record({ source, ref, storageKey: archiveKey, hash });
+
+  // Loud when the archive yielded nothing: it means hraver.docx was missing or
+  // its lot table was restructured, and CPV silently staying null would look
+  // exactly like a tender that never had one.
+  if (!parsed.taxId && parsed.lots.length === 0) {
+    log.warn(
+      `invitation parsed to no tax ID and no lots — entries: ${parsed.entries.slice(0, 6).join(', ')}`
+    );
+  }
+
+  log.info(
+    `invitation stored: ${parsed.lots.length} lots, cpv=${parsed.dominantCpv ?? '-'} ` +
+      `(${parsed.cpvCodes.length} distinct), taxId=${parsed.taxId ?? '-'}`,
+    facts
+  );
+
+  return {
+    stored: true,
+    storageKey: archiveKey,
+    lots: parsed.lots.length,
+    cpvCodes: parsed.cpvCodes.length,
+    taxId: Boolean(parsed.taxId),
+    ...facts,
+  };
+};
+
+export default { handleTenderDocuments };

@@ -7,6 +7,7 @@ function up(pg) {
     // Parties must exist before tenders and awards reference them.
     .createTable('parties', table => {
       table.string('id').primary();
+      table.string('source_id').unique();
       table.string('name').notNullable();
       table.string('tax_id');
       table.string('role').notNullable(); // buyer | supplier | both
@@ -23,7 +24,21 @@ function up(pg) {
       table.string('cpv_code');
       table.string('procedure_type').notNullable();
       table.string('status').notNullable();
+      // The source's own lifecycle label, verbatim. eauction publishes ten
+      // states (Նախաաճուրդային, Աճուրդ, Շնորհում, …) which collapse into the
+      // six-value `status` enum; this keeps the distinction queryable instead
+      // of showing a supplier "closed" for six different situations.
+      table.string('source_status');
       table.decimal('estimated_value', 18, 2);
+      table.string('reference_code');
+      // Indexed, not unique: the Ծածկագիր procedure code is the only natural
+      // join key to any second source (314/314 populated, 0 duplicates in live
+      // data), but a source republishing a code should surface as a detected
+      // conflict, not a failed insert.
+      table.index(['reference_code'], 'tenders_reference_code_idx');
+      table.string('goods_works_services');   // Ապրանք | Աշխատանք | Ծառայություն
+      table.timestamp('auction_at');
+      table.string('invitation_url');
       table.string('currency').notNullable().defaultTo('AMD');
       table.timestamp('published_at');
       table.timestamp('deadline_at');
@@ -32,15 +47,69 @@ function up(pg) {
       table.boolean('is_latest').notNullable().defaultTo(true);
     })
 
-    // Awards
+    // Awards — one row per winning lot, not per tender: a single e-auction
+    // routinely splits into dozens of independently awarded lots.
     .createTable('awards', table => {
       table.string('id').primary();
       table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
+      table.integer('lot_number');
       table.string('supplier_id').references('id').inTable('parties').onDelete('SET NULL');
       table.decimal('amount', 18, 2);
+      table.decimal('estimated_value', 18, 2);
       table.string('currency').notNullable().defaultTo('AMD');
       table.timestamp('awarded_at');
       table.string('status').notNullable();
+      // Which source wrote this row. `public_tender_bids` already carries one;
+      // without it here, a second award writer cannot be told apart, and the
+      // wholesale ledger replace in tender.repo.js would delete another
+      // source's rows on every re-normalize.
+      table.string('source').notNullable().defaultTo('armeps');
+      // `source` is part of the key because replaceLedger deletes scoped by
+      // source: without it, a second writer's row for the same lot collides
+      // with the first's, throws 23505, and aborts the whole transaction.
+      table.unique(['tender_id', 'lot_number', 'source'], { indexName: 'awards_tender_lot_source_uq' });
+    })
+
+    /**
+     * Every bid in a finished tender's "Գնառաջարկներ" ledger, winners and
+     * losers alike — one row per (tender, lot, bidding company).
+     *
+     * `awards` cannot hold this: it models the awarded outcome, and OCDS has no
+     * representation for "who else bid and lost". But that is precisely the
+     * win/loss, near-miss and bid-frequency data the benchmarks and ICP scoring
+     * need, and ARMEPS publishes it on every completed tender page — no
+     * external award-feed dependency required.
+     *
+     * Not to be confused with `bids`, which is tenant-private (organization_id,
+     * tracked_tender_id) and holds a TenderIQ customer's own bid. This table is
+     * public competitor data and is never tenant-scoped — hence the name.
+     */
+    .createTable('public_tender_bids', table => {
+      table.string('id').primary();
+      table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
+      table.integer('lot_number').notNullable();
+      // Nullable: a bidder whose name fails party resolution must not block
+      // storing the rest of the lot's public price data.
+      table.string('supplier_id').references('id').inTable('parties').onDelete('SET NULL');
+      table.integer('rank');                        // "Զբաղեցրած տեղ" — 1 = lot winner
+      table.decimal('budget_price', 18, 2);         // "Նախահաշվային գին"
+      table.decimal('initial_offer_price', 18, 2);  // "Նախնական առաջարկ — Գին"
+      table.decimal('final_offer_price', 18, 2);    // "Վերջին առաջարկ — Գին", the benchmark figure
+      table.float('vat_pct');
+      // 'accepted' | 'rejected', mapped from "Մասնակցի կարգավիճակ" (blank on
+      // the source page = accepted). Left a string, like every other status
+      // column here, rather than a Postgres ENUM.
+      table.string('status').notNullable();
+      table.string('application_url');
+      table.string('currency').notNullable().defaultTo('AMD');
+      table.string('source').notNullable().defaultTo('armeps');
+      table.timestamp('fetched_at').notNullable();
+      // A company cannot occupy two ranks in one lot. Also the idempotency key
+      // for the wholesale ledger replace on re-normalize.
+      table.unique(['tender_id', 'lot_number', 'supplier_id', 'source'], {
+        indexName: 'public_tender_bids_tender_lot_supplier_source_uq',
+      });
+      table.index(['tender_id'], 'public_tender_bids_tender_idx');
     })
 
     // Contracts
@@ -60,6 +129,10 @@ function up(pg) {
       table.string('storage_key').notNullable();
       table.string('kind').notNullable();
       table.boolean('parsed').notNullable().defaultTo(false);
+      // Lets the database arbitrate the concurrent-insert race instead of a
+      // read-then-insert, which two jobs can both pass. Same principle as
+      // source_payloads.
+      table.unique(['tender_id', 'storage_key'], { indexName: 'tender_documents_tender_key_uq' });
     })
 
     // Source payloads

@@ -44,12 +44,26 @@ const decode = (buffer, contentType) => {
   return iconv.decode(buffer, charset);
 };
 
+/**
+ * Hard ceiling on any single response body.
+ *
+ * Enforced by axios itself, which counts bytes as they arrive and destroys the
+ * stream on overflow — it does NOT need a Content-Length header, so a source
+ * that omits one (this one does) is still covered. axios defaults both limits
+ * to -1, i.e. unlimited, so without this an invitation link pointing at a
+ * multi-gigabyte object would be buffered whole into the worker process, which
+ * also runs ingest.fetch and ingest.normalize.
+ */
+export const MAX_DOCUMENT_BYTES = 60 * 1024 * 1024;
+
 const client = axios.create({
   timeout: SCRAPER.HTTP_TIMEOUT_MS,
   httpsAgent: agent,
   responseType: 'arraybuffer',
   maxRedirects: 5,
   decompress: true,
+  maxContentLength: MAX_DOCUMENT_BYTES,
+  maxBodyLength: MAX_DOCUMENT_BYTES,
   headers: {
     'User-Agent': SCRAPER.USER_AGENT,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -59,7 +73,7 @@ const client = axios.create({
   validateStatus: (status) => (status >= 200 && status < 300) || status === 304,
 });
 
-export const fetchPage = async (url, { etag, lastModified } = {}) => {
+export const fetchPage = async (url, { etag, lastModified, binary = false } = {}) => {
   const headers = {};
   if (etag) headers['If-None-Match'] = etag;
   if (lastModified) headers['If-Modified-Since'] = lastModified;
@@ -76,13 +90,17 @@ export const fetchPage = async (url, { etag, lastModified } = {}) => {
   return {
     status: response.status,
     notModified: false,
-    body: decode(buffer, contentType),
+    // Binary payloads (invitation archives) skip decoding: running a 600 KB
+    // ZIP through a utf-8 decoder produces a meaningless string and costs more
+    // than the request did.
+    body: binary ? null : decode(buffer, contentType),
     raw: buffer,
     contentType,
     etag: response.headers.etag,
     lastModified: response.headers['last-modified'],
   };
 };
+
 
 // Browser-rendered fetch removed — listing/detail parsers operate on
 // server-returned HTML only.

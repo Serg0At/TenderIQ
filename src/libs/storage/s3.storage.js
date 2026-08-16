@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import config from '../../configs/variables.config.js';
@@ -72,6 +73,30 @@ export const create = () => {
         if (error.$metadata && error.$metadata.httpStatusCode === 404) return null;
         throw error;
       }
+    },
+
+    /**
+     * Every key under a prefix, with the timestamp the object was written.
+     *
+     * Exists so `source_payloads` can be rebuilt from storage rather than
+     * re-crawled — see scripts/reindexPayloads.js. Yields as it pages rather
+     * than accumulating, because the raw bucket grows without bound by design.
+     */
+    async *list(prefix = '') {
+      let ContinuationToken;
+      do {
+        const result = await client.send(
+          new ListObjectsV2Command({
+            Bucket: STORAGE.BUCKET,
+            Prefix: prefix,
+            ContinuationToken,
+          })
+        );
+        for (const object of result.Contents ?? []) {
+          yield { key: object.Key, size: object.Size, lastModified: object.LastModified };
+        }
+        ContinuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
+      } while (ContinuationToken);
     },
 
     signedUrl(key, ttlSeconds = 900) {

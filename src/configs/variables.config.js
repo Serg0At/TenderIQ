@@ -102,8 +102,20 @@ const config = {
     ),
     /**
      * PEMs here are added to the TLS trust store alongside the system roots.
-     * gnumner.minfin.am omits its intermediate certificate, so without this Node
-     * cannot build a chain and every fetch fails verification.
+     *
+     * Do not delete this or `certs/` as dead weight. `gnumner.minfin.am` omits
+     * its intermediate certificate, so without the bundled CA Node cannot build
+     * a chain and every request to it fails — verified 2026-08-16:
+     *
+     *   eauction.armeps.am -> 302 OK with system roots alone
+     *   gnumner.minfin.am  -> UNABLE_TO_VERIFY_LEAF_SIGNATURE
+     *
+     * No *configured* source needs it today — eauction serves a valid chain.
+     * It stays because anything on gnumner still does: the official CPV
+     * dictionary at /website/images/original/, and the notice board if it is
+     * ever added as a source for non-e-auction procedures.
+     *
+     * Never "fix" a chain failure with rejectUnauthorized: false.
      */
     EXTRA_CA_DIR: optional('SCRAPER_EXTRA_CA_DIR', './certs'),
     HTTP_TIMEOUT_MS: int('SCRAPER_HTTP_TIMEOUT_MS', 30000),

@@ -27,6 +27,7 @@ async function down(pg) {
     'source_payloads',
     'tender_documents',
     'contracts',
+    'public_tender_bids',
     'awards',
     'tenders',
     'users',

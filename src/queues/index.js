@@ -27,10 +27,21 @@ export const ingestNormalizeQueue = new Queue(QUEUE.INGEST_NORMALIZE, {
   defaultJobOptions,
 });
 
-export const queues = [ingestFetchQueue, ingestNormalizeQueue];
+export const ingestBackfillQueue = new Queue(QUEUE.INGEST_BACKFILL, {
+  connection,
+  defaultJobOptions,
+});
+
+export const queues = [ingestFetchQueue, ingestNormalizeQueue, ingestBackfillQueue];
 
 export const closeQueues = async () => {
   await Promise.all(queues.map((queue) => queue.close()));
 };
 
-export default { ingestFetchQueue, ingestNormalizeQueue, queues, closeQueues };
+export default {
+  ingestFetchQueue,
+  ingestNormalizeQueue,
+  ingestBackfillQueue,
+  queues,
+  closeQueues,
+};

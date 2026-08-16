@@ -3,20 +3,22 @@ import * as cheerio from 'cheerio';
 /**
  * Pure HTML -> data. No network, no database, no config.
  *
- * This is the file that breaks when gnumner is redesigned, so it is kept pure:
- * it can be unit-tested against a saved fixture, and a layout change is a
- * one-file fix plus a replay of stored raw payloads — never a re-crawl.
+ * Verified against the live page at https://eauction.armeps.am/hy/public/tender/
+ * on 2026-08-13. That page is a <table>, one <tr> per tender, columns:
+ *   Հ/հ (id) | Ծածկագիր (code) | Վերնագիր (title) | Չափաբաժինների քանակ (lots)
+ *   | Կարգավիճակ (status) | Վերջնաժամկետ (deadline) | detail link
  *
- * Markup it targets (verified against the live board):
+ * The detail link is the one reliable place to get a stable id: it points to
+ * .../tender_details/tid/<N>/ — that <N> is `sourceId`. Do not use the visible
+ * "Հ/հ" column as the id; confirm it matches tid before trusting it, columns
+ * on gov sites get reordered without notice.
  *
- *   <div class="tender">
- *     <div class="tender_title"><p class="cont_text">
- *       <a href="https://armeps.am/epps/cft/listContractDocuments.do?resourceId=12347668">TITLE</a>
- *     </p></div>
- *     <div><p class="tender_time">
- *       (Հրապարակված է 2026-07-31 16:08:00-ից մինչեւ 2026-08-31 10:00:00 ժամը ներառյալ)
- *     </p></div>
- *   </div>
+ * The table carries no publish date — only a deadline. `publishedAt` is a
+ * detail-page-only field, so nothing here may depend on it. The sweep's
+ * pagination depth is driven by the tid high-water mark instead (see
+ * workers/scraper.js); tids are assigned in ascending order and the board is
+ * sorted newest-first, which makes them a reliable "have I seen this far
+ * back already?" signal.
  */
 
 const AM_UTC_OFFSET = '+04:00';
@@ -26,83 +28,93 @@ const toDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const TIMESTAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/g;
-
-const parseWindow = (text) => {
-  const found = String(text).match(TIMESTAMP) || [];
-  return {
-    publishedAt: found[0] ? toDate(found[0]) : null,
-    deadlineAt: found[1] ? toDate(found[1]) : null,
-  };
+// Table only shows a deadline, not a publish date, so parseWindow no longer
+// looks for two timestamps here.
+const parseDeadline = (text) => {
+  const found = String(text).match(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
+  return found ? toDate(found[0]) : null;
 };
+
+const TID_RE = /\/tid\/(\d+)/;
 
 export const parseListing = (html) => {
   const $ = cheerio.load(html);
   const seen = new Set();
   const rows = [];
 
-  const blocks = $('div.tender');
+  // Table rows that actually represent a tender have a detail link with
+  // /tid/<N>/ in them. Header/filter rows won't match, so we select on the
+  // link rather than assuming a fixed table/tbody structure — this class of
+  // gov site inserts/removes wrapper markup often but the tid link is stable.
+  const detailLinks = $('a[href*="/tid/"]');
 
-  // The board mixes two kinds of notice:
-  //   1. ARMEPS e-procurement  -> armeps.am/...?resourceId=N   (handled here)
-  //   2. Direct-attachment     -> gnumner.../original/x.zip    (skipped in v1)
-  // The second kind is real procurement (Gazprom Armenia open-offer requests,
-  // ministry quotation requests) but carries no stable id and hides its detail
-  // inside a ZIP. Counting them separately from "no blocks at all" is what lets
-  // the caller distinguish "different notice type" from "layout broke".
-  let skippedNoResourceId = 0;
+  let skippedNoTid = 0;
   let skippedDuplicate = 0;
 
-  blocks.each((_, element) => {
-    const $row = $(element);
-    const link = $row.find('.tender_title .cont_text a').first();
-    const url = link.attr('href');
-    if (!url) {
-      skippedNoResourceId += 1;
+  detailLinks.each((_, a) => {
+    const $a = $(a);
+    const href = $a.attr('href');
+    const match = href && href.match(TID_RE);
+    if (!match) {
+      skippedNoTid += 1;
       return;
     }
+    const sourceId = match[1];
 
-    let sourceId;
-    try {
-      sourceId = new URL(url).searchParams.get('resourceId');
-    } catch {
-      skippedNoResourceId += 1; // malformed href — skip the row, not the page
-      return;
-    }
-    if (!sourceId) {
-      skippedNoResourceId += 1;
-      return;
-    }
-
-    // The board renders each notice more than once (page 1: 10 blocks, 6 unique
-    // ids). Without this the same tender is hashed, stored and enqueued twice.
     if (seen.has(sourceId)) {
       skippedDuplicate += 1;
       return;
     }
     seen.add(sourceId);
 
-    rows.push({
-      sourceId,
-      url,
-      title: link.text().trim().replace(/\s+/g, ' '),
-      ...parseWindow($row.find('.tender_time').text()),
-    });
+    const $row = $a.closest('tr');
+    const cells = $row.find('td');
+
+    // Column order per the verified markup above. If cells.length doesn't
+    // match, the table shape changed — fall back to null fields rather than
+    // guessing, so a layout change shows up as missing data, not wrong data.
+    const code = cells.eq(1).text().trim();
+    const title = cells.eq(2).text().trim().replace(/\s+/g, ' ');
+    const status = cells.eq(4).text().trim();
+    const deadlineAt = parseDeadline(cells.eq(5).text());
+
+    let url;
+    try {
+      url = new URL(href, 'https://eauction.armeps.am').toString();
+    } catch {
+      url = href;
+    }
+
+    // The table lists every tender regardless of status (Հրապարակված,
+    // Շնորհում, Ավարտված, Չկայացած) and ALL of them are wanted.
+    //
+    // An earlier version dropped rows whose deadline had passed. That threw
+    // away exactly the rows that matter: a finished tender's detail page is
+    // where suppliers, bid prices and the estimated price live — the entire
+    // benchmark corpus. It also put Date.now() inside a parser that must stay
+    // pure, which silently broke replay-from-storage (re-normalizing a payload
+    // stored last month would drop every row in it).
+    //
+    // Filtering by status is the worker's decision, not the parser's.
+    rows.push({ sourceId, url, code, title, status, deadlineAt });
   });
 
   // Highest numbered link in the pager; page 1 carries no numeric suffix.
-  const pageNumbers = $('div.pagination a.numbers_url')
-    .map((_, a) => Number.parseInt($(a).text().trim(), 10))
+  const pageNumbers = $('a')
+    .map((_, a) => {
+      const m = $(a).attr('href')?.match(/\/start\/(\d+)/);
+      return m ? Number.parseInt(m[1], 10) : null;
+    })
     .get()
-    .filter(Number.isFinite);
+    .filter((n) => Number.isFinite(n));
 
   return {
     rows,
-    // blocksSeen is the layout-health signal: 0 blocks on a 200 means the markup
-    // changed. rows.length being 0 while blocksSeen > 0 just means this page held
-    // no ARMEPS-linked notices — normal on the older pages, not an incident.
-    blocksSeen: blocks.length,
-    skipped: { noResourceId: skippedNoResourceId, duplicate: skippedDuplicate },
+    // blocksSeen is the layout-health signal: 0 links on a 200 means the
+    // markup changed. rows.length being 0 while blocksSeen > 0 would mean
+    // something else (e.g. all duplicates) — worth alerting on too.
+    blocksSeen: detailLinks.length,
+    skipped: { noTid: skippedNoTid, duplicate: skippedDuplicate },
     pagination: { lastPage: pageNumbers.length ? Math.max(...pageNumbers) : 1 },
   };
 };

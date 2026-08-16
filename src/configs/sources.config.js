@@ -1,34 +1,37 @@
 const sources = {
   armeps: {
     enabled: true,
-    displayName: 'ARMEPS / gnumner live notices',
-    baseUrl: process.env.SOURCE_ARMEPS_BASE || 'https://eauction.armeps.am/hy/public/tender/',
+    displayName: 'ARMEPS e-auction (reverse auctions)',
+    baseUrl: process.env.SOURCE_ARMEPS_BASE || 'https://eauction.armeps.am',
     listingCron: process.env.SOURCE_ARMEPS_CRON || '*/5 * * * *',
-    rateLimit: { requests: 20, perMs: 60000 }, 
+    rateLimit: { requests: 20, perMs: 60000 },
     concurrency: 2,
+    /**
+     * Cold-start / post-outage bound only. Steady-state depth is the tid
+     * watermark in workers/scraper.js, which normally stops this board on
+     * page 1. There is deliberately no `lookbackHours` here: this listing
+     * table has no publish-date column, so any time-based depth rule would
+     * be comparing against a field that does not exist.
+     */
     maxListingPages: 40,
-    lookbackHours: 24 * 30,
+    /**
+     * Award-catching pass. Hourly rather than every five minutes: a result
+     * ledger appears once, hours after the auction, so there is nothing to
+     * gain from checking more often — and each run costs one request per
+     * unsettled tender out of the same 20/min budget the sweep uses.
+     *
+     * `refreshWindowDays` bounds how long a tender stays eligible; the batch
+     * cap keeps one run from monopolising the rate budget.
+     */
+    refreshCron: process.env.SOURCE_ARMEPS_REFRESH_CRON || '17 * * * *',
+    refreshWindowDays: 30,
+    maxRefreshBatch: 200,
     downloadDocuments: true,
-    listingPaths: [
-      { slug: 'open-competition', path: '/hy/page/bac_mrcuyti_haytararutyun_ev_hraver/' },
-    ],
-    detailBaseUrl: process.env.SOURCE_ARMEPS_DETAIL_BASE || 'https://eauction.armeps.am/hy/public/tender_details/tid/',
+    listingPaths: [{ slug: 'all-tenders', path: '/hy/public/tender/' }],
+    detailBaseUrl:
+      process.env.SOURCE_ARMEPS_DETAIL_BASE || 'https://eauction.armeps.am/hy/public/tender_details/tid/',
   },
 
-  ppcm: {
-    // PPCM is an importer, not a listing scraper. Enable it together with the
-    // importer worker; otherwise the generic sweep handler has no listing path
-    // to process and every scheduled job fails.
-    enabled: false,
-    displayName: 'PPCM award & contract exports',
-    baseUrl: process.env.SOURCE_PPCM_BASE || 'https://gnumner.minfin.am',
-    listingCron: process.env.SOURCE_PPCM_CRON || '0 3 * * *',
-    rateLimit: { requests: 10, perMs: 60000 },
-    concurrency: 1,
-    maxListingPages: 200,
-    lookbackHours: 24 * 7,
-    downloadDocuments: false,
-  },
 };
 
 const getSourceConfig = (key) => {

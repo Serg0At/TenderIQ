@@ -67,8 +67,10 @@ on a redesigned page must not affect request handling.
 These two rules carry most of the architecture. Breaking either is the main thing to catch in review:
 
 1. **Only repositories touch the database.** No Knex in services, controllers, or workers. The single
-   Knex instance lives at [db/knex.js](db/knex.js) (outside `src/`); repositories import it as
-   `../../db/knex.js`.
+   Knex instance lives at [src/libs/knex.js](src/libs/knex.js); repositories import it as
+   `../libs/knex.js`. Repositories own the import themselves and take an optional trailing
+   `trx = db` argument — they never accept a connection as their first parameter, which is what
+   leaks Knex into scripts.
 2. **Only the storage port touches object storage.** Nothing imports the AWS SDK directly — go
    through [src/libs/storage/index.js](src/libs/storage/index.js), which lazily picks the `s3` or
    `local` driver from `STORAGE.DRIVER` and owns the deterministic key helpers.
@@ -97,10 +99,20 @@ The moat. Everything else is a read model over what this produces. Detail:
 [docs/SCRAPER_WORKFLOW.md](docs/SCRAPER_WORKFLOW.md).
 
 ```
-scheduler --source.sweep--> ingest.fetch --listing.page--> (self, page N+1)
+scheduler --source.sweep----> ingest.fetch --listing.page--> (self, page N+1)
+                                                           --tender.detail--> (self)
+          --tender.refresh--> ingest.fetch --tender.detail--> (unsettled tenders, hourly)
                                          --> raw/ in object storage + source_payloads row
-                                         --normalize.tender--> ingest.normalize --> tenders/parties
+                                         --normalize.tender--> ingest.normalize
+                                             --> tenders / parties / awards / public_tender_bids
 ```
+
+**The listing writes no domain rows.** It is discovery only — it knows no buyer, no publish date and
+no prices, so a listing-shaped tender could only reach the table behind a fabricated buyer. Detail
+pages are the single writer. A finished tender's page additionally carries the `Գնառաջարկներ` bid
+ledger (every bidder, rank, budget price, final offer), which is the sole public source of award and
+supplier data — and the reason `tender.refresh` exists, since a tender settles long after it has
+fallen off page 1 where the sweep can no longer see it.
 
 What matters when touching it:
 
@@ -110,12 +122,21 @@ What matters when touching it:
   retried write is an overwrite, not a duplicate.
 - **A unique-violation on insert is success, not failure.** The constraint exists so the database,
   not application logic, arbitrates the concurrent-worker race —
-  `sourcePayload.repository.js:record()` returns `false` and the caller skips.
+  `sourcePayload.repo.js:record()` returns `false` and the caller skips.
 - **Raw payloads are kept forever.** When a parser improves, normalization replays from storage; the
   source is never re-crawled.
-- **Pagination depth is controlled by `lookbackHours`, not `maxListingPages`.** The board is a 9-year
-  archive reaching back to 2017, not a live feed. Continue to page N+1 only while the page still
-  holds notices newer than `since`. Loading history is a deliberate backfill with its own date range.
+- **Pagination depth is the tid high-water mark, not `maxListingPages` and not a time window.** The
+  board is a 9-year archive, not a live feed, and its listing table has **no publish-date column** —
+  a time-based rule would compare against a field that does not exist (it did, silently, and made
+  every sweep walk 40 pages). tids ascend with publication and the board is newest-first, so continue
+  to page N+1 only while the page's lowest tid is still above `sweep:tid:{source}:{slug}`. The
+  watermark advances only when a chain terminates, so a sweep that dies mid-chain re-walks the gap
+  rather than skipping it. `maxListingPages` is the cold-start bound only. Loading history is a
+  deliberate backfill with its own page range.
+- **Never filter rows by deadline in a parser.** Expired tenders are the *most* valuable ones — prices,
+  suppliers and awards exist only on finished pages. Filtering also puts a clock in a file that must
+  stay pure, which breaks replay-from-storage and makes fixture tests rot. Filter in the query
+  (`status`, `deadline_at` are columns); a row not scraped costs a re-crawl to recover.
 - **Error type determines retry semantics.** `RateLimitedError` → `job.moveToDelayed` + `DelayedError`
   (being throttled must not burn an attempt). Zero *blocks* on an HTTP 200 → throw, because a
   "successful" sweep that ingests nothing is the #1 silent failure. Zero *usable rows* with blocks
@@ -245,28 +266,31 @@ reference.
 The reference specification says Prisma, Zod, and feature-first folders with a `container.js`
 composition root. This codebase uses **Knex + hand-written migrations**, **Joi**, and layer-first
 folders. These are decisions, not gaps — don't "fix" them. Reasoning is recorded in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [PROJECT_STATUS.md](PROJECT_STATUS.md).
 Where reference docs say "Prisma client", read "Knex instance"; where they say "Zod schema", read
 "Joi schema".
 
 ## Current state
 
-Ingestion works end to end and is proven idempotent; **nothing downstream of it exists**. All 26
-tables exist, but schema is a promise, not progress.
+Ingestion runs end to end — discovery, detail, normalization, awards — and is proven idempotent.
+**Nothing downstream of it exists yet.**
 
-- `src/workers/normalizer.js` is an **empty file**. Raw payloads are stored and deduped, but
-  `tenders`/`parties` are empty. Every feature in every later phase reads from `tenders`, so this one
-  file blocks the product. It also owns amendment versioning (`version` / `is_latest`) and emitting
-  `TenderIngested` / `TenderAmended`.
-- `importer.js`, `aiExtractor.js`, and `middlewares/{auth,authorize,rateLimit}.js` are empty files too.
+- **Working:** `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writes
+  `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
+  hourly. `backfill.js` seeds the historical archive on its own queue and process.
+- **Single source:** `armeps` = eauction.armeps.am, reverse auctions only (`procedure_type` is
+  always `e_auction`). Non-e-auction procedures are not covered; that would mean adding the gnumner
+  notice board as a second source.
+- **PPCM was removed**, not deferred. It is an AngularJS SPA rather than the CSV feed the reference
+  spec assumes, and the eauction bid ledger already supplies the award data it existed for. `awards`
+  and `public_tender_bids` have a `source` column so a second writer can be added safely later.
+- **Empty on purpose:** `contracts` (post-award, phase 6) and `cpv_code` / `parties.tax_id` (both
+  live only inside the invitation ZIP — see the document stage).
+- `aiExtractor.js` and `middlewares/{auth,authorize,rateLimit}.js` are still empty files.
 - `src/features/index.js` is an empty router mounted at `/api/v1` — no routes, no auth, no
   `validate.js`, no central error handler.
-- `src/worker.js` is dead code (a placeholder `ingestion` queue superseded by `src/queues/index.js`)
-  that `src/app.js` still imports.
-- `src/workers/index.js` imports `../libs/knex.js`, which does not exist — the instance is at
-  `db/knex.js`. `npm run worker` fails at import until that is fixed.
 
-Read [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for the file-by-file gap analysis in blocking
+Read [PROJECT_STATUS.md](PROJECT_STATUS.md) for the file-by-file gap analysis in blocking
 order before starting anything non-trivial; it is kept current and states the recommended next step.
 
 ## Docs
@@ -274,9 +298,8 @@ order before starting anything non-trivial; it is kept current and states the re
 | Document | Contents |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, boundaries, layering, target folder tree, data model, queue topology, domain events |
-| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | gap analysis against the reference spec, ordered by what blocks what |
+| [PROJECT_STATUS.md](PROJECT_STATUS.md) | gap analysis against the reference spec, ordered by what blocks what |
 | [docs/SCRAPER_WORKFLOW.md](docs/SCRAPER_WORKFLOW.md) | ingestion pipeline stage by stage, idempotency and failure model |
-| [docs/SCRAPER_BUILD_GUIDE.md](docs/SCRAPER_BUILD_GUIDE.md) | how to build a new source adapter |
 
 ### Reference specification (outside this repo)
 

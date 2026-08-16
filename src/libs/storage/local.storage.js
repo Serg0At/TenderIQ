@@ -33,6 +33,40 @@ export const create = () => {
       }
     },
 
+    /**
+     * Every key under a prefix, with the timestamp the object was written.
+     *
+     * Exists so `source_payloads` can be rebuilt from storage rather than
+     * re-crawled — see scripts/reindexPayloads.js. Async generator because the
+     * S3 driver pages, and a caller that streams works against both.
+     */
+    async *list(prefix = '') {
+      const base = resolve(prefix);
+      const walk = async function* (dir) {
+        let entries;
+        try {
+          entries = await fs.readdir(dir, { withFileTypes: true });
+        } catch (error) {
+          if (error.code === 'ENOENT') return;
+          throw error;
+        }
+        for (const entry of entries) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            yield* walk(full);
+          } else {
+            const stat = await fs.stat(full);
+            yield {
+              key: path.relative(root, full).split(path.sep).join('/'),
+              size: stat.size,
+              lastModified: stat.mtime,
+            };
+          }
+        }
+      };
+      yield* walk(base);
+    },
+
     async signedUrl(key) {
       return `file://${resolve(key)}`;
     },

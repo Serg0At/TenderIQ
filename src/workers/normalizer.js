@@ -1,172 +1,170 @@
-import { createId } from '@paralleldrive/cuid2';
 import { UnrecoverableError } from 'bullmq';
-import db from '../libs/knex.js';
+import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage } from '../libs/storage/index.js';
-import { parseListing } from '../libs/adapters/source/armeps/listing.parser.js';
-import sourcePayloads from '../repositories/sourcePayload.repository.js';
-import { stableHash } from '../utils/hash.js';
+import { parseDetail } from '../libs/adapters/source/armeps/detail.parser.js';
+import sourcePayloads from '../repositories/sourcePayload.repo.js';
+import tenders from '../repositories/tender.repo.js';
+import { ingestFetchQueue } from '../queues/index.js';
+import { JOB, PRIORITY } from '../queues/names.js';
+import { sha256 } from '../utils/hash.js';
 import { logger } from '../utils/logger.js';
 import { validateNormalizedTender } from '../validations/index.js';
 
-const LISTING_BUYER = {
-  id: 'armeps:listing-buyer',
-  name: 'Unknown buyer (ARMEPS listing)',
-  role: 'buyer',
+/**
+ * Source payload -> domain entities. The only stage that writes tenders,
+ * parties, awards and bids.
+ *
+ * It runs on its own queue so a mapping bug can be fixed and replayed straight
+ * from object storage without re-crawling the source — which is also why this
+ * file re-parses the stored HTML rather than trusting anything the fetch job
+ * put in the job payload.
+ */
+
+/**
+ * Fallback for a status the adapter does not recognise.
+ *
+ * Degrade, do not discard. Throwing here used to lose an entire tender — title,
+ * buyer, deadline, the whole bid ledger — over one unrecognised label, and
+ * missed tenders are the product's #1 churn cause. The site has ten lifecycle
+ * states today and can add an eleventh whenever it likes.
+ *
+ * "Can a supplier still bid?" is answerable from the deadline alone, which is
+ * the only thing `status` is load-bearing for downstream. The exact Armenian
+ * label is preserved as `source_status`, so nothing is actually lost, and the
+ * warning is what prompts adding it to STATUS properly.
+ *
+ * The clock lives here rather than in the parser, which must stay pure.
+ */
+const statusFromDeadline = (detail, sourceId) => {
+  const fallback = detail.deadlineAt && detail.deadlineAt.getTime() < Date.now() ? 'closed' : 'active';
+  logger.warn(
+    `[normalizer] unmapped ARMEPS status ${JSON.stringify(detail.rawStatus)} on tender ` +
+      `${sourceId} — stored as "${fallback}" from its deadline. Add it to STATUS in ` +
+      'libs/adapters/source/armeps/detail.parser.js'
+  );
+  return fallback;
 };
 
-const fieldHash = (tender) =>
-  stableHash({
-    title: tender.title,
-    buyerId: tender.buyerId,
-    cpvCode: tender.cpvCode,
-    procedureType: tender.procedureType,
-    status: tender.status,
-    estimatedValue:
-      tender.estimatedValue === null || tender.estimatedValue === undefined
-        ? tender.estimatedValue
-        : String(tender.estimatedValue),
-    currency: tender.currency,
-    publishedAt: tender.publishedAt,
-    deadlineAt: tender.deadlineAt,
-    qnaDeadlineAt: tender.qnaDeadlineAt,
-  });
-
-const mapArmepsListing = (row) => ({
-  sourceId: `armeps:${row.sourceId}`,
-  title: row.title,
-  buyerId: LISTING_BUYER.id,
-  procedureType: 'open_competition',
-  status: 'active',
-  currency: 'AMD',
-  publishedAt: row.publishedAt,
-  deadlineAt: row.deadlineAt,
-  qnaDeadlineAt: null,
-  cpvCode: null,
-  estimatedValue: null,
-});
-
-const mapTender = (source, row) => {
-  if (source === 'armeps') return mapArmepsListing(row);
-  throw new UnrecoverableError(`no tender normalizer is registered for source "${source}"`);
+const mapArmepsDetail = (detail, sourceId) => {
+  return {
+    status: detail.status ?? statusFromDeadline(detail, sourceId),
+    sourceStatus: detail.rawStatus ?? null,
+    title: detail.title,
+    referenceCode: detail.code,
+    procedureType: detail.procedureType,
+    goodsWorksServices: detail.goodsWorksServices,
+    // Neither is published anywhere in the HTML; both live inside the
+    // invitation archive, which is a later stage.
+    cpvCode: null,
+    description: null,
+    estimatedValue: detail.estimatedValue,
+    currency: detail.currency,
+    publishedAt: detail.publishedAt,
+    deadlineAt: detail.deadlineAt,
+    qnaDeadlineAt: detail.qnaDeadlineAt,
+    auctionAt: detail.auctionAt,
+    invitationUrl: detail.invitationUrl,
+  };
 };
 
-const readArmepsRow = async ({ sourceId, storageKey }) => {
+const readPayload = async (storageKey) => {
   const storage = await getStorage();
   if (!(await storage.head(storageKey))) {
     throw new UnrecoverableError(
-      `raw payload is unavailable: "${storageKey}". Restore it in the configured storage backend or re-scrape this notice.`
+      `raw payload is unavailable: "${storageKey}". Restore it in the configured ` +
+        'storage backend or re-scrape this notice.'
     );
   }
-  const html = await storage.get(storageKey);
-  const row = parseListing(html.toString('utf8')).rows.find((candidate) => candidate.sourceId === sourceId);
-  if (!row) {
-    throw new UnrecoverableError(
-      `raw payload "${storageKey}" does not contain ARMEPS notice "${sourceId}"`
-    );
-  }
-  return row;
+  const body = await storage.get(storageKey);
+  return Buffer.isBuffer(body) ? body.toString('utf8') : String(body);
 };
 
-const changedFields = (before, after) =>
-  Object.keys(after).filter((key) => {
-    const oldValue = before[key] instanceof Date ? before[key].toISOString() : before[key];
-    const newValue = after[key] instanceof Date ? after[key].toISOString() : after[key];
-    return oldValue !== newValue;
-  });
-
-/**
- * Normalize one retained listing notice into its current tender record.
- *
- * `tenders.source_id` is unique in the current schema, so amendments update
- * that one row and advance `version`.  Once historical tender rows are added,
- * this transaction can insert the next version without changing the mapper.
- */
-export const normalizeTender = async ({ source, sourceId, ref, hash, storageKey }) => {
+export const normalizeTender = async ({
+  source,
+  sourceId,
+  ref,
+  hash,
+  storageKey,
+  priority = PRIORITY.LIVE,
+}) => {
   if (!source || !sourceId || !ref || !hash || !storageKey) {
-    throw new UnrecoverableError('normalize.tender requires source, sourceId, ref, hash, and storageKey');
+    throw new UnrecoverableError(
+      'normalize.tender requires source, sourceId, ref, hash, and storageKey'
+    );
+  }
+  if (source !== 'armeps') {
+    throw new UnrecoverableError(`no tender normalizer is registered for source "${source}"`);
   }
 
-  // Jobs are at-least-once and can finish out of order. Do not let an older
-  // listing snapshot overwrite a newer one that was queued after it.
-  const latestPayload = await sourcePayloads.findLatestByRef(source, ref);
-  if (!latestPayload || latestPayload.hash !== hash) {
+  // A newer payload for this ref means this job is describing a page that has
+  // already been superseded; normalizing it would walk the tender backwards.
+  const latest = await sourcePayloads.findLatestByRef(source, ref);
+  if (!latest || latest.hash !== hash) {
     return { event: null, skipped: 'stale_payload' };
   }
 
-  const row = source === 'armeps'
-    ? await readArmepsRow({ sourceId, storageKey })
-    : null;
-  const tender = validateNormalizedTender(mapTender(source, row));
+  const { baseUrl } = getSourceConfig(source);
+  const detail = parseDetail(await readPayload(storageKey), { baseUrl });
 
-  const candidateHash = fieldHash(tender);
-  const result = await db.transaction(async (trx) => {
-    await trx('parties')
-      .insert(LISTING_BUYER)
-      .onConflict('id')
-      .merge({ name: LISTING_BUYER.name, role: LISTING_BUYER.role });
+  // Layout-health alarm, the detail-page counterpart to blocksSeen: a page that
+  // parsed to no labels at all is a redesign, not an empty tender.
+  if (detail.labelsSeen === 0) {
+    throw new Error(
+      `[normalizer] ${source} detail ${sourceId} yielded 0 label/value pairs — parser likely broken`
+    );
+  }
 
-    const existing = await trx('tenders').where({ source_id: tender.sourceId }).forUpdate().first();
-    if (!existing) {
-      const id = createId();
-      await trx('tenders').insert({
-        id,
-        source_id: tender.sourceId,
-        title: tender.title,
-        buyer_id: tender.buyerId,
-        cpv_code: tender.cpvCode,
-        procedure_type: tender.procedureType,
-        status: tender.status,
-        estimated_value: tender.estimatedValue,
-        currency: tender.currency,
-        published_at: tender.publishedAt,
-        deadline_at: tender.deadlineAt,
-        qna_deadline_at: tender.qnaDeadlineAt,
-        version: 1,
-        is_latest: true,
-      });
-      return { event: 'TenderIngested', tenderId: id, version: 1 };
-    }
+  // The ledger table was present and every row was rejected. That is a column
+  // change, not an empty ledger — and persisting it would look identical to an
+  // active tender that simply has no bids yet. Failing here is what keeps the
+  // ledger-replace from being handed an empty result it would act on.
+  if (detail.malformedLedgerRows > 0 && detail.lots.length === 0) {
+    throw new Error(
+      `[normalizer] ${source} detail ${sourceId}: bid ledger present but all ` +
+        `${detail.malformedLedgerRows} rows failed the column check — ` +
+        'Գնառաջարկներ layout likely changed'
+    );
+  }
 
-    const existingHash = fieldHash({
-      title: existing.title,
-      buyerId: existing.buyer_id,
-      cpvCode: existing.cpv_code,
-      procedureType: existing.procedure_type,
-      status: existing.status,
-      estimatedValue: existing.estimated_value === null ? null : String(existing.estimated_value),
-      currency: existing.currency,
-      publishedAt: existing.published_at,
-      deadlineAt: existing.deadline_at,
-      qnaDeadlineAt: existing.qna_deadline_at,
-    });
-    if (existingHash === candidateHash) return { event: null, tenderId: existing.id, version: existing.version };
+  const tender = validateNormalizedTender(mapArmepsDetail(detail, sourceId));
 
-    const update = {
-      title: tender.title,
-      buyer_id: tender.buyerId,
-      cpv_code: tender.cpvCode,
-      procedure_type: tender.procedureType,
-      status: tender.status,
-      estimated_value: tender.estimatedValue,
-      currency: tender.currency,
-      published_at: tender.publishedAt,
-      deadline_at: tender.deadlineAt,
-      qna_deadline_at: tender.qnaDeadlineAt,
-      version: existing.version + 1,
-      is_latest: true,
-    };
-    await trx('tenders').where({ id: existing.id }).update(update);
-    return {
-      event: 'TenderAmended',
-      tenderId: existing.id,
-      version: existing.version + 1,
-      changedFields: changedFields(existing, update),
-    };
+  const result = await tenders.saveNormalized({
+    source,
+    sourceId: `${source}:${sourceId}`,
+    buyerName: detail.buyerName,
+    tender,
+    lots: detail.lots,
   });
 
-  // There is no event bus yet. Returning this minimal event payload gives the
-  // BullMQ completion record a durable hand-off point for matcher/notifier work.
-  if (result.event) logger.info(`[normalizer] ${result.event}`, result);
+  if (result.skipped === 'no_buyer') {
+    logger.warn(`[normalizer] ${source}:${sourceId} skipped — no buyer on the detail page`);
+    return result;
+  }
+
+  // Enqueued from here rather than from the detail fetch because this is the
+  // point at which the tender is known to exist in the database — the document
+  // stage updates it by source_id and would otherwise race its own creation.
+  //
+  // The jobId is keyed on the invitation URL, NOT on the detail payload hash.
+  // A tender walks Հրապարակված → Նախաաճուրդային → Աճուրդ → Շնորհում →
+  // Ավարտված, so the detail hash changes about five times and a hash-keyed id
+  // would re-download the same unchanged 600 KB archive on every one of them.
+  // The content-hash check inside the handler only skips the storage write —
+  // by then the request has already been paid for out of the 20/min budget.
+  if (result.event && detail.invitationUrl && getSourceConfig(source).downloadDocuments) {
+    await ingestFetchQueue.add(
+      JOB.TENDER_DOCUMENTS,
+      { source, sourceId, invitationUrl: detail.invitationUrl },
+      {
+        jobId: `${source}-docs-${sourceId}-${sha256(detail.invitationUrl).slice(0, 12)}`,
+        priority,
+      }
+    );
+  }
+
+  // There is no event bus yet. Returning the event gives the BullMQ completion
+  // record a durable hand-off point for the matcher/notifier to be built on.
+  if (result.event) logger.info(`[normalizer] ${result.event}`, { sourceId, ...result });
   return result;
 };
 

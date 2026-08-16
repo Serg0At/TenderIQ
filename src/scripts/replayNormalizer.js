@@ -3,7 +3,13 @@ import { getStorage } from '../libs/storage/index.js';
 import { closeQueues, ingestNormalizeQueue } from '../queues/index.js';
 import { JOB } from '../queues/names.js';
 
-const NOTICE_PREFIX = 'notice:';
+/**
+ * `detail:`, not `notice:`. Listing rows are discovery markers whose stored
+ * payload is the whole listing page; the normalizer reads tender detail pages.
+ * Replaying `notice:` refs would feed listing HTML to a detail parser and
+ * dead-letter every job.
+ */
+const DETAIL_PREFIX = 'detail:';
 const replayRunId = Date.now();
 
 /**
@@ -14,7 +20,7 @@ const replayRunId = Date.now();
 const replay = async () => {
   const storage = await getStorage();
   const payloads = await db('source_payloads')
-    .where('ref', 'like', `${NOTICE_PREFIX}%`)
+    .where('ref', 'like', `${DETAIL_PREFIX}%`)
     .orderBy([{ column: 'source', order: 'asc' }, { column: 'ref', order: 'asc' }, { column: 'fetched_at', order: 'desc' }]);
 
   const latestByNotice = new Map();
@@ -30,7 +36,7 @@ const replay = async () => {
       missing += 1;
       continue;
     }
-    const sourceId = payload.ref.slice(NOTICE_PREFIX.length);
+    const sourceId = payload.ref.slice(DETAIL_PREFIX.length);
     await ingestNormalizeQueue.add(
       JOB.NORMALIZE_TENDER,
       {

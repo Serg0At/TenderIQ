@@ -3,13 +3,15 @@ import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import redis from '../libs/redis.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
-import { fetchListing, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
-import sourcePayloads from '../repositories/sourcePayload.repository.js';
+import { fetchListing, fetchDetail, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
+import sourcePayloads from '../repositories/sourcePayload.repo.js';
+import tenders from '../repositories/tender.repo.js';
 import { ingestFetchQueue, ingestNormalizeQueue } from '../queues/index.js';
-import { JOB } from '../queues/names.js';
+import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256, stableHash } from '../utils/hash.js';
 import { withLock } from '../utils/rateLimiter.js';
 import { logger } from '../utils/logger.js';
+import { handleTenderDocuments } from './documents.js';
 
 const { SCRAPER } = config;
 
@@ -22,18 +24,66 @@ export const lastSuccessfulSweep = async (source) => {
 };
 
 /**
+ * Highest tid ingested by a *completed* sweep of this board.
+ *
+ * This is the pagination depth control. The listing table exposes no publish
+ * date (that is a detail-page field), so the previous `publishedAt >= since`
+ * rule compared undefined against a date, was therefore always true, and made
+ * every sweep walk `maxListingPages` — the exact inversion the design forbids.
+ *
+ * tids ascend with publication and the board is sorted newest-first, so
+ * "this page's lowest tid is at or below the watermark" is an exact statement
+ * that we have already seen everything from here down.
+ */
+const tidWatermarkKey = (source, slug) => `sweep:tid:${source}:${slug}`;
+
+const readTidWatermark = async (source, slug) => {
+  const value = await redis.getRedis().get(tidWatermarkKey(source, slug));
+  return value ? Number(value) : 0;
+};
+
+/**
+ * Advanced only when a sweep chain terminates, and only forwards. A sweep that
+ * dies mid-chain leaves the old value, so the next run re-walks the gap rather
+ * than skipping over notices it never actually ingested.
+ */
+const advanceTidWatermark = async (source, slug, tid) => {
+  if (!Number.isFinite(tid) || tid <= 0) return;
+  // Compare-and-set in one round trip. The sweep lock is released as soon as
+  // page 1 is enqueued, so two chains can be in flight at once; a read-then-
+  // write would let a slower chain's lower value overwrite a higher one and
+  // regress the watermark, causing pages to be re-walked indefinitely.
+  await redis
+    .getRedis()
+    .eval(
+      'local c = redis.call("GET", KEYS[1]) if (not c) or (tonumber(ARGV[1]) > tonumber(c)) then redis.call("SET", KEYS[1], ARGV[1]) end return 1',
+      1,
+      tidWatermarkKey(source, slug),
+      String(tid)
+    );
+};
+
+/**
  * Fields that define "this notice changed".
  *
  * Deliberately excludes the URL: if the source ever changed its URL scheme,
  * every tender in the system would flag as amended at once and re-notify every
  * customer. Title is included, so a buyer rewording the subject does re-alert —
  * the accepted cost of catching material rewordings.
+ *
+ * `status` is what drives the tender through Հրապարակված → Շնորհում →
+ * Ավարտված. Without it here, a tender reaching its auction never looks
+ * "changed", is never re-fetched, and its suppliers, bid prices and estimated
+ * price — which exist only on a finished tender's detail page — are never
+ * ingested at all. `publishedAt` is gone because the listing table has no such
+ * column; it was hashing undefined on every row.
  */
 const rowFingerprint = (row) =>
   stableHash({
     sourceId: row.sourceId,
+    code: row.code,
     title: row.title,
-    publishedAt: row.publishedAt,
+    status: row.status,
     deadlineAt: row.deadlineAt,
   });
 
@@ -42,20 +92,19 @@ const handleSweep = async (job) => {
   const sourceConfig = getSourceConfig(source);
   const log = logger.child({ job: JOB.SOURCE_SWEEP, source });
 
-  // A post-outage deep sweep can outlast the 5-minute cron; without this, runs
-  // stack up and the scraper rate-limits itself into a spiral.
   const { skipped } = await withLock(`sweep:${source}`, 10 * 60 * 1000, async () => {
-    const since = new Date(Date.now() - sourceConfig.lookbackHours * 60 * 60 * 1000);
-
     for (const board of sourceConfig.listingPaths) {
-      await ingestFetchQueue.add(JOB.LISTING_PAGE, {
-        source,
-        slug: board.slug,
-        listingPath: board.path,
-        page: 1,
-        since: since.toISOString(),
-      });
-      log.info(`enqueued page 1 of "${board.slug}" (since ${since.toISOString()})`);
+      // Read once, at the top of the chain: every page of this sweep compares
+      // against the same watermark, so a notice published mid-sweep cannot
+      // move the goalposts underneath the pages still in flight.
+      const sinceTid = await readTidWatermark(source, board.slug);
+
+      await ingestFetchQueue.add(
+        JOB.LISTING_PAGE,
+        { source, slug: board.slug, listingPath: board.path, page: 1, sinceTid },
+        { priority: PRIORITY.LIVE }
+      );
+      log.info(`enqueued page 1 of "${board.slug}" (sinceTid ${sinceTid})`);
     }
   });
 
@@ -64,7 +113,7 @@ const handleSweep = async (job) => {
 };
 
 const handleListingPage = async (job, token) => {
-  const { source, slug, listingPath, page, since } = job.data;
+  const { source, slug, listingPath, page, sinceTid = 0 } = job.data;
   const sourceConfig = getSourceConfig(source);
   const log = logger.child({ job: JOB.LISTING_PAGE, source, slug, page });
 
@@ -91,11 +140,10 @@ const handleListingPage = async (job, token) => {
     );
   }
 
-  const skipped = result.skipped ?? { noResourceId: 0, duplicate: 0 };
-  if (skipped.noResourceId > 0) {
-    log.info(
-      `skipped ${skipped.noResourceId}/${result.blocksSeen} non-ARMEPS notices (no resourceId)`
-    );
+  const skipped = result.skipped ?? { noTid: 0, duplicate: 0 };
+  if (skipped.noTid > 0) {
+    // Coverage signal: a detail link the parser could not read a tid out of.
+    log.info(`skipped ${skipped.noTid}/${result.blocksSeen} rows with no usable tid`);
   }
 
   const storage = await getStorage();
@@ -115,51 +163,182 @@ const handleListingPage = async (job, token) => {
 
     if (await sourcePayloads.existsWithHash(source, ref, hash)) continue;
 
-    const inserted = await sourcePayloads.record({ source, ref, storageKey: pageKey, hash });
-    // A concurrent worker won the race and already recorded it — not our job to
-    // enqueue normalization twice.
-    if (!inserted) continue;
+    // Discovery only: the listing knows no buyer, no publish date and no
+    // prices, so it must not write tenders. Detail is the single writer;
+    // listing's job ends at "this one moved".
+    //
+    // Enqueue BEFORE recording the fingerprint. Recording first meant a crash
+    // between the two left the notice marked as seen with no detail job ever
+    // created — the next sweep finds an unchanged hash and skips it forever, a
+    // silent permanent coverage hole. This order can only ever duplicate work,
+    // and the jobId already dedupes that.
+    await ingestFetchQueue.add(
+      JOB.TENDER_DETAIL,
+      { source, sourceId: row.sourceId, listingRef: ref, listingHash: hash },
+      { jobId: `${source}-detail-${row.sourceId}-${hash.slice(0, 12)}`, priority: PRIORITY.LIVE }
+    );
+
+    // A concurrent worker won the race and already recorded it.
+    if (!(await sourcePayloads.record({ source, ref, storageKey: pageKey, hash }))) continue;
 
     changed += 1;
-    await ingestNormalizeQueue.add(
-      JOB.NORMALIZE_TENDER,
-      { source, sourceId: row.sourceId, ref, hash, storageKey: pageKey, row },
-      { jobId: `${source}-${row.sourceId}-${hash.slice(0, 12)}` }
-    );
   }
 
   await markSweepHealthy(source);
 
-  const oldest = result.rows
-    .map((row) => row.publishedAt)
-    .filter(Boolean)
-    .sort((a, b) => a - b)[0];
-  const withinWindow = oldest ? oldest >= new Date(since) : true;
+  // Depth control. Page 1 observes the highest tid on the board and carries it
+  // down the chain; whichever page terminates the chain commits it as the new
+  // watermark. A page whose rows were all unusable yields no tids, so it cannot
+  // conclude anything and keeps going — bounded, as always, by maxPage.
+  const tids = result.rows.map((row) => Number(row.sourceId)).filter(Number.isFinite);
+  const highTid = job.data.highTid ?? (tids.length ? Math.max(...tids) : 0);
+  const pageMinTid = tids.length ? Math.min(...tids) : Infinity;
 
   const maxPage = Math.min(
     result.pagination?.lastPage ?? 1,
     sourceConfig.maxListingPages,
     SCRAPER.MAX_LISTING_PAGES
   );
-  const shouldContinue = withinWindow && page < maxPage;
+  const reachedSeen = pageMinTid <= sinceTid;
+  const shouldContinue = !reachedSeen && page < maxPage;
 
   log.info(
     `${result.blocksSeen} blocks, ${result.rows.length} usable, ${changed} new/changed, ` +
-      `oldest ${oldest?.toISOString()} — ` +
-      `${shouldContinue ? `continuing to page ${page + 1}` : 'stopping (outside lookback window)'}`
+      `tids ${pageMinTid}..${highTid} vs watermark ${sinceTid} — ` +
+      `${
+        shouldContinue
+          ? `continuing to page ${page + 1}`
+          : `stopping (${reachedSeen ? 'reached already-seen tids' : `page cap ${maxPage}`})`
+      }`
   );
 
   if (shouldContinue) {
-    await ingestFetchQueue.add(JOB.LISTING_PAGE, {
-      source,
-      slug,
-      listingPath,
-      page: page + 1,
-      since,
-    });
+    await ingestFetchQueue.add(
+      JOB.LISTING_PAGE,
+      { source, slug, listingPath, page: page + 1, sinceTid, highTid },
+      { priority: PRIORITY.LIVE }
+    );
+  } else {
+    await advanceTidWatermark(source, slug, highTid);
   }
 
   return { rows: result.rows.length, changed, continued: shouldContinue };
+};
+
+/**
+ * Fetch one tender's detail page — the only page that carries the buyer, the
+ * publish date, and (once finished) the per-lot bid ledger.
+ *
+ * Stored under ref `detail:{sourceId}`, deliberately NOT the `notice:{sourceId}`
+ * the listing uses. Sharing a ref would put two different documents under one
+ * identity, and since normalizeTender only proceeds when its payload is still
+ * the latest for that ref, each stage would keep invalidating the other's
+ * queued job — a silent standoff in which neither ever normalizes.
+ */
+export const handleTenderDetail = async (job, token) => {
+  const { source, sourceId, priority = PRIORITY.LIVE } = job.data;
+  const log = logger.child({ job: JOB.TENDER_DETAIL, source, sourceId });
+
+  let result;
+  try {
+    result = await fetchDetail(sourceId);
+  } catch (error) {
+    if (error instanceof RateLimitedError) {
+      await job.moveToDelayed(Date.now() + error.retryAfterMs, token);
+      throw new DelayedError();
+    }
+    throw error;
+  }
+
+  if (result.notModified) {
+    log.info('304 not modified');
+    return { notModified: true };
+  }
+
+  const ref = `detail:${sourceId}`;
+  const body = result.response.body;
+  const hash = sha256(body);
+
+  if (await sourcePayloads.existsWithHash(source, ref, hash)) {
+    return { unchanged: true };
+  }
+
+  const storage = await getStorage();
+  const key = rawKey({ source, ref, hash, ext: 'html' });
+  await storage.put(key, body, { contentType: 'text/html' });
+
+  // Lost race — a concurrent worker already recorded this exact page and
+  // enqueued its normalize job. Enqueueing a second one is not harmful (the
+  // jobId dedupes) but returning early keeps the log honest.
+  const inserted = await sourcePayloads.record({ source, ref, storageKey: key, hash });
+  if (!inserted) return { unchanged: true };
+
+  // Priority is carried through from whoever asked for this detail page, so a
+  // seed-originated normalize never queues ahead of a live one.
+  await ingestNormalizeQueue.add(
+    JOB.NORMALIZE_TENDER,
+    { source, sourceId, ref, hash, storageKey: key, priority },
+    { jobId: `${source}-normalize-${sourceId}-${hash.slice(0, 12)}`, priority }
+  );
+
+  log.info('detail stored, normalize enqueued', { storageKey: key });
+  return { stored: true, storageKey: key };
+};
+
+/**
+ * Re-check tenders whose auction has passed but which have not settled.
+ *
+ * The counterpart to the listing sweep. That one answers "what is new?" by
+ * walking the board; this one answers "what has resolved?" by asking the
+ * database — the only way to reach a tender that finished long after it fell
+ * off the first page.
+ *
+ * It enqueues plain `tender.detail` jobs, so everything downstream is shared:
+ * same rate budget, same content-hash dedupe (an unchanged page costs one
+ * request and writes nothing), same normalize path.
+ */
+const handleRefreshSweep = async (job) => {
+  const { source } = job.data;
+  const sourceConfig = getSourceConfig(source);
+  const log = logger.child({ job: JOB.TENDER_REFRESH, source });
+
+  const stale = await tenders.findNeedingRefresh({
+    source,
+    windowDays: sourceConfig.refreshWindowDays,
+    limit: sourceConfig.maxRefreshBatch,
+  });
+
+  if (!stale.length) {
+    log.info('nothing awaiting results');
+    return { queued: 0 };
+  }
+
+  // One re-check per tender per hour at most. Without this, an overlapping run
+  // would queue the same tender twice and pay for it out of the rate budget.
+  const bucket = Math.floor(Date.now() / (60 * 60 * 1000));
+  const prefix = `${source}:`;
+
+  let queued = 0;
+  for (const tender of stale) {
+    // findNeedingRefresh already constrains source_id to this source's prefix.
+    const sourceId = tender.source_id.slice(prefix.length);
+
+    await ingestFetchQueue.add(
+      JOB.TENDER_DETAIL,
+      { source, sourceId, reason: 'refresh' },
+      { jobId: `${source}-refresh-${sourceId}-${bucket}`, priority: PRIORITY.LIVE }
+    );
+    queued += 1;
+  }
+
+  // Reported so a backlog is visible: consistently hitting the cap means the
+  // batch size is too small for the volume of unsettled tenders.
+  const capped = stale.length === sourceConfig.maxRefreshBatch;
+  log.info(
+    `queued ${queued} re-checks${capped ? ` (batch cap ${sourceConfig.maxRefreshBatch} reached)` : ''}`
+  );
+
+  return { queued, capped };
 };
 
 /** Processor for the ingest.fetch queue. */
@@ -169,6 +348,12 @@ export const processIngestFetch = async (job, token) => {
       return handleSweep(job);
     case JOB.LISTING_PAGE:
       return handleListingPage(job, token);
+    case JOB.TENDER_DETAIL:
+      return handleTenderDetail(job, token);
+    case JOB.TENDER_DOCUMENTS:
+      return handleTenderDocuments(job, token);
+    case JOB.TENDER_REFRESH:
+      return handleRefreshSweep(job);
     default:
       throw new UnrecoverableError(`unknown job "${job.name}" on ingest.fetch`);
   }

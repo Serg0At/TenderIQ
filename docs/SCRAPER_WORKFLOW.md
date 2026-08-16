@@ -22,12 +22,15 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
-| `armeps` | HTML scrape of live notices | `*/5 * * * *` | `tenders`, `tender_documents`, `parties` (buyer) |
-| `ppcm` | CSV/Excel export import | `0 3 * * *` | `awards`, `contracts`, `parties` (supplier) |
+| `armeps` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
+| `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `armeps` upstream; downstream unchanged |
 
-Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `rateLimit`, `concurrency`,
-`maxListingPages`, `lookbackHours`, `downloadDocuments`.
+Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit`, `concurrency`,
+`maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`.
+
+There is deliberately no `lookbackHours` on `armeps`: the eauction listing table has no publish-date
+column, so depth is driven by the tid high-water mark instead (stage 3).
 Cross-source defaults live under `config.SCRAPER` in
 [src/configs/variables.config.js](src/configs/variables.config.js).
 
@@ -176,17 +179,26 @@ and replayed without re-fetching.
 Downstream consumers — matcher, notifier, intelligence recompute — are separate workers
 subscribed to those events, and are out of scope for this document.
 
-### 7. PPCM import — `import.ppcm`
+### 7. PPCM import — parked, not built
 
-1. Download the daily CSV/Excel export; hash the file.
-2. Known file hash → no-op.
-3. Store raw under `raw/ppcm/{ref}/{hash}.csv`.
-4. Stream rows; the idempotency key per row is `(file-independent award reference)`, so a
-   re-published export updates rather than duplicates.
-5. Resolve/create supplier and buyer `parties` by tax ID, falling back to normalized name.
-6. Upsert `awards` and `contracts`; link to `tenders` by `source_id` when the tender is known,
-   otherwise park the award for re-linking on the next tender ingest.
-7. Emit `AwardIngested` per award — this drives price-benchmark recompute.
+The steps previously described here (download the daily CSV/Excel export, hash the file, stream
+rows) described a source that does not exist in that form. Verified 2026-08-16:
+
+- PPCM is **"Procurement Plan & Contracts Management"**, served at `armeps.am/ppcm` — **not**
+  `gnumner.minfin.am`, which is what `sources.config.js` claimed.
+- It is an **AngularJS SPA** (`#/report/<uuid>`). `/ppcm/public/contracts` and
+  `/ppcm/public/bid-report` both return the app shell as `text/html`, so ingesting it requires
+  reverse-engineering its XHR API or driving a headless browser.
+- The reference spec never enumerates a single PPCM column; it records the question as open
+  (`research/Open Questions.md` Q4, *"Exactly what award data is public and when?"*).
+
+**Award history no longer depends on it.** Stage 4 parses the `Գնառաջարկներ` ledger off every
+finished tender's detail page — per lot: every bidder, rank, budget price, initial and final offer,
+VAT, accepted/rejected — which is finer-grained than a tender-level export. That writes `awards`,
+`public_tender_bids` and supplier `parties` directly.
+
+PPCM's one unique contribution is **signed contract values**, which can diverge from the auction's
+final offer after renegotiation. That feeds post-award (phase 6); `contracts` stays empty until then.
 
 ---
 
@@ -304,7 +316,7 @@ downstream consumer stay as they are.
 | Schema + composite unique `(source, ref, hash)` on `source_payloads` | done |
 | `utils/{logger,hash,http,rateLimiter}.js` | done, verified live |
 | ARMEPS adapter: `listing.parser.js` + `client.js` | done, verified live |
-| `repositories/sourcePayload.repository.js` | done |
+| `repositories/sourcePayload.repo.js` | done |
 | `queues/{names,index,scheduler}.js` | done |
 | `workers/{scraper,index}.js` — sweep + chained listing pagination | **done, proven idempotent** |
 | `importer` / `normalizer` / `aiExtractor` workers | empty stubs |

@@ -14,7 +14,7 @@ import { logger } from '../utils/logger.js';
  */
 const register = async () => {
   for (const source of listEnabledSources()) {
-    const { listingCron, displayName } = getSourceConfig(source);
+    const { listingCron, refreshCron, displayName } = getSourceConfig(source);
 
     await ingestFetchQueue.upsertJobScheduler(
       `sweep-${source}`,
@@ -23,6 +23,19 @@ const register = async () => {
     );
 
     logger.info(`[scheduler] ${displayName}: sweep scheduled "${listingCron}"`);
+
+    // Discovery and settlement are two different questions and run on two
+    // different clocks — see JOB.TENDER_REFRESH. Without this second schedule,
+    // awards are only ever ingested for tenders that happen to settle while
+    // still inside the sweep's tid watermark window.
+    if (refreshCron) {
+      await ingestFetchQueue.upsertJobScheduler(
+        `refresh-${source}`,
+        { pattern: refreshCron },
+        { name: JOB.TENDER_REFRESH, data: { source } }
+      );
+      logger.info(`[scheduler] ${displayName}: result re-check scheduled "${refreshCron}"`);
+    }
   }
 
   const schedulers = await ingestFetchQueue.getJobSchedulers();

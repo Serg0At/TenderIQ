@@ -1,19 +1,45 @@
 import Joi from 'joi';
 
-// Normalized listing data is intentionally smaller than the eventual detail
-// model: ARMEPS listing pages do not expose buyer, CPV, or value information.
+/**
+ * Shape of a tender as mapped from a source detail page, validated before it
+ * reaches the database.
+ *
+ * `buyerId` is absent on purpose: the buyer is resolved to a party inside the
+ * repository transaction, so it does not exist yet at validation time.
+ *
+ * Enums are pinned here rather than left as free strings — the source publishes
+ * Armenian lifecycle labels, and this is the boundary where an unmapped one has
+ * to fail instead of reaching a column every downstream filter reads.
+ */
+export const PROCEDURE_TYPES = ['open', 'quotation', 'single_source', 'e_auction', 'restricted'];
+export const TENDER_STATUSES = ['planned', 'active', 'amended', 'closed', 'awarded', 'cancelled'];
+
 export const normalizedTenderSchema = Joi.object({
-  sourceId: Joi.string().trim().min(1).required(),
   title: Joi.string().trim().min(1).required(),
-  buyerId: Joi.string().trim().min(1).required(),
-  procedureType: Joi.string().trim().min(1).required(),
-  status: Joi.string().trim().min(1).required(),
+  referenceCode: Joi.string().trim().allow(null),
+  procedureType: Joi.string()
+    .valid(...PROCEDURE_TYPES)
+    .required(),
+  goodsWorksServices: Joi.string().trim().allow(null),
+  status: Joi.string()
+    .valid(...TENDER_STATUSES)
+    .required(),
+  // Free text on purpose: this is the source's own label, and constraining it
+  // to a known set would defeat the point of keeping it.
+  sourceStatus: Joi.string().trim().allow(null, ''),
   currency: Joi.string().length(3).required(),
   cpvCode: Joi.string().trim().allow(null),
+  description: Joi.string().trim().allow(null, ''),
   estimatedValue: Joi.number().precision(2).allow(null),
   publishedAt: Joi.date().allow(null),
   deadlineAt: Joi.date().allow(null),
   qnaDeadlineAt: Joi.date().allow(null),
-}).required();
+  auctionAt: Joi.date().allow(null),
+  invitationUrl: Joi.string().uri().allow(null),
+})
+  .required()
+  // Whitelist: anything a mapper adds without a rule here is dropped rather
+  // than carried into a repository that would try to write it as a column.
+  .options({ stripUnknown: true });
 
 export default normalizedTenderSchema;
