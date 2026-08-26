@@ -4,7 +4,9 @@ import knexConfigs from '../../src/configs/knex.config.js';
 
 function up(pg) {
   return pg.schema
-    // Parties must exist before tenders and awards reference them.
+
+    // parties — Every organisation seen in procurement, buyer or supplier, so one company is a
+    // single row no matter how often it appears.
     .createTable('parties', table => {
       table.string('id').primary();
       table.string('source_id').unique();
@@ -14,12 +16,13 @@ function up(pg) {
       table.string('region');
     })
 
-    // Tenders
+    // tenders — One row per procurement notice — the OCDS-aligned core that every downstream
+    // feature reads from.
     .createTable('tenders', table => {
       table.string('id').primary();
       table.string('source_id').notNullable().unique();
-      table.string('title').notNullable();
-      table.string('description');
+      table.text('title').notNullable();
+      table.text('description');
       table.string('buyer_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
       table.string('cpv_code');
       table.string('procedure_type').notNullable();
@@ -31,10 +34,6 @@ function up(pg) {
       table.string('source_status');
       table.decimal('estimated_value', 18, 2);
       table.string('reference_code');
-      // Indexed, not unique: the Ծածկագիր procedure code is the only natural
-      // join key to any second source (314/314 populated, 0 duplicates in live
-      // data), but a source republishing a code should surface as a detected
-      // conflict, not a failed insert.
       table.index(['reference_code'], 'tenders_reference_code_idx');
       table.string('goods_works_services');   // Ապրանք | Աշխատանք | Ծառայություն
       table.timestamp('auction_at');
@@ -45,10 +44,12 @@ function up(pg) {
       table.timestamp('qna_deadline_at');
       table.integer('version').notNullable().defaultTo(1);
       table.boolean('is_latest').notNullable().defaultTo(true);
+      // Buyer profiles and buyer-scoped benchmarks both filter on this.
+      table.index(['buyer_id'], 'tenders_buyer_idx');
     })
 
-    // Awards — one row per winning lot, not per tender: a single e-auction
-    // routinely splits into dozens of independently awarded lots.
+    // awards — The winner of each individual lot, with the price it won at alongside the
+    // buyer's budget for that lot.
     .createTable('awards', table => {
       table.string('id').primary();
       table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
@@ -59,37 +60,20 @@ function up(pg) {
       table.string('currency').notNullable().defaultTo('AMD');
       table.timestamp('awarded_at');
       table.string('status').notNullable();
-      // Which source wrote this row. `public_tender_bids` already carries one;
-      // without it here, a second award writer cannot be told apart, and the
-      // wholesale ledger replace in tender.repo.js would delete another
-      // source's rows on every re-normalize.
       table.string('source').notNullable().defaultTo('armeps');
-      // `source` is part of the key because replaceLedger deletes scoped by
-      // source: without it, a second writer's row for the same lot collides
-      // with the first's, throws 23505, and aborts the whole transaction.
       table.unique(['tender_id', 'lot_number', 'source'], { indexName: 'awards_tender_lot_source_uq' });
+      // Supplier profiles filter by party; without this every win-rate read is
+      // a sequential scan. Mirrored in add_intelligence_indexes.js.
+      table.index(['supplier_id'], 'awards_supplier_idx');
     })
 
-    /**
-     * Every bid in a finished tender's "Գնառաջարկներ" ledger, winners and
-     * losers alike — one row per (tender, lot, bidding company).
-     *
-     * `awards` cannot hold this: it models the awarded outcome, and OCDS has no
-     * representation for "who else bid and lost". But that is precisely the
-     * win/loss, near-miss and bid-frequency data the benchmarks and ICP scoring
-     * need, and ARMEPS publishes it on every completed tender page — no
-     * external award-feed dependency required.
-     *
-     * Not to be confused with `bids`, which is tenant-private (organization_id,
-     * tracked_tender_id) and holds a TenderIQ customer's own bid. This table is
-     * public competitor data and is never tenant-scoped — hence the name.
-     */
+    // public_tender_bids — Every competing bid on a finished tender, losers included — the
+    // comparables corpus for benchmarks and competitor analysis, distinct from `bids` which is
+    // a customer's own private bid.
     .createTable('public_tender_bids', table => {
       table.string('id').primary();
       table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
       table.integer('lot_number').notNullable();
-      // Nullable: a bidder whose name fails party resolution must not block
-      // storing the rest of the lot's public price data.
       table.string('supplier_id').references('id').inTable('parties').onDelete('SET NULL');
       table.integer('rank');                        // "Զբաղեցրած տեղ" — 1 = lot winner
       table.decimal('budget_price', 18, 2);         // "Նախահաշվային գին"
@@ -110,9 +94,39 @@ function up(pg) {
         indexName: 'public_tender_bids_tender_lot_supplier_source_uq',
       });
       table.index(['tender_id'], 'public_tender_bids_tender_idx');
+      table.index(['supplier_id'], 'public_tender_bids_supplier_idx');
+      // The competitor-price read walks one tender's ledger ordered by lot then
+      // rank; this serves the ordering, not just the filter.
+      table.index(['tender_id', 'lot_number', 'rank'], 'public_tender_bids_tender_lot_rank_idx');
     })
 
-    // Contracts
+    // tender_lots — The separately-biddable slices of a tender, each with its own CPV code and
+    // item text, because one tender routinely spans many categories.
+    .createTable('tender_lots', table => {
+      table.string('id').primary();
+      table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
+      table.integer('lot_number').notNullable();
+      table.string('cpv_code');
+      // A row is one ITEM, not one lot. The invitation's Ծածկագիր cell reads
+      // "45000000/2" — code then item sequence — so a lot routinely carries
+      // several, and keying on (tender, lot) alone threw 23505 on every
+      // multi-item lot, aborting applyInvitationFacts and taking the CPV, the
+      // buyer tax ID and the document row down with it.
+      table.integer('item_sequence').notNullable();
+      table.text('name');
+      // `source` is in the key for the same reason as awards: the replace is
+      // scoped by source, so a second writer's row must not collide with the
+      // first's. Both key columns are NOT NULL because a NULL never collides in
+      // a Postgres unique index, which would silently reopen the duplicate.
+      table.string('source').notNullable().defaultTo('armeps');
+      table.unique(['tender_id', 'lot_number', 'item_sequence', 'source'], {
+        indexName: 'tender_lots_tender_lot_item_source_uq',
+      });
+      table.index(['cpv_code'], 'tender_lots_cpv_idx');
+    })
+
+    // contracts — Signed contract values following an award; deliberately empty until
+    // post-award tracking is built (phase 6).
     .createTable('contracts', table => {
       table.string('id').primary();
       table.string('award_id').notNullable().references('id').inTable('awards').onDelete('CASCADE');
@@ -121,7 +135,8 @@ function up(pg) {
       table.string('status').notNullable();
     })
 
-    // Tender documents
+    // tender_documents — A pointer to each file published with a tender, since the file itself
+    // lives in object storage rather than the database.
     .createTable('tender_documents', table => {
       table.string('id').primary();
       table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
@@ -135,7 +150,8 @@ function up(pg) {
       table.unique(['tender_id', 'storage_key'], { indexName: 'tender_documents_tender_key_uq' });
     })
 
-    // Source payloads
+    // source_payloads — The fetch ledger — what was retrieved, when, and where its raw copy
+    // sits — which is what makes ingestion idempotent and re-parseable without re-crawling.
     .createTable('source_payloads', table => {
       table.string('id').primary();
       table.string('source').notNullable();
@@ -148,24 +164,50 @@ function up(pg) {
       });
     })
 
-    // Users, organizations, roles, and memberships
+    // users — A person who can sign in; identity only, with access to any organisation granted
+    // through memberships.
     .createTable('users', table => {
       table.string('id').primary();
       table.string('email').notNullable().unique();
       table.string('password_hash').notNullable();
       table.string('locale').notNullable().defaultTo('hy');
     })
+
+    // organizations — A supplier company using TenderIQ, and the tenant boundary that every
+    // private table is scoped by.
     .createTable('organizations', table => {
       table.string('id').primary();
       table.string('name').notNullable();
       table.string('type'); // IT, construction, medical...
       table.string('created_by').notNullable().references('id').inTable('users').onDelete('RESTRICT');
     })
+
+    // roles — Named permission sets (owner, admin, coordinator, viewer, consultant) that
+    // memberships assign.
     .createTable('roles', table => {
       table.string('id').primary();
       table.string('name').notNullable().unique();
-      table.specificType('permissions', 'text[]').notNullable().defaultTo('{}');
     })
+
+    // permissions — One row per fine-grained capability string ('tender:read', 'bid:write').
+    // A real table rather than a text[] on roles, so a permission is a thing the schema knows
+    // about: joinable, countable, and impossible to grant under a name that does not exist.
+    .createTable('permissions', table => {
+      table.string('id').primary();
+      table.string('key').notNullable().unique();
+    })
+
+    // role_permissions — Which capabilities each role carries. The unique key is what makes
+    // re-seeding idempotent; both sides cascade, so dropping a role or a permission cannot
+    // strand a grant behind it.
+    .createTable('role_permissions', table => {
+      table.string('id').primary();
+      table.string('role_id').notNullable().references('id').inTable('roles').onDelete('CASCADE');
+      table.string('permission_id').notNullable().references('id').inTable('permissions').onDelete('CASCADE');
+      table.unique(['role_id', 'permission_id'], { indexName: 'role_permissions_role_permission_uq' });
+    })
+
+    // memberships — Which user belongs to which organisation, and in what role.
     .createTable('memberships', table => {
       table.string('id').primary();
       table.string('user_id').notNullable().references('id').inTable('users').onDelete('CASCADE');
@@ -174,7 +216,8 @@ function up(pg) {
       table.unique(['user_id', 'organization_id']);
     })
 
-    // Tracked tenders
+    // tracked_tenders — A tender an organisation has decided to pursue, and the anchor every
+    // bid-workflow table hangs off.
     .createTable('tracked_tenders', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
@@ -187,7 +230,8 @@ function up(pg) {
       table.unique(['organization_id', 'tender_id']);
     })
 
-    // Bids
+    // bids — An organisation's own bid on a tracked tender, locked into a read-only snapshot
+    // once submitted.
     .createTable('bids', table => {
       table.string('id').primary();
       table.string('tracked_tender_id').notNullable().unique().references('id').inTable('tracked_tenders').onDelete('CASCADE');
@@ -199,12 +243,15 @@ function up(pg) {
       table.timestamp('updated_at').defaultTo(pg.fn.now());
     })
 
-    // Checklists and checklist items
+    // checklists — Per-tracked-tender container for the requirements a bid has to satisfy.
     .createTable('checklists', table => {
       table.string('id').primary();
       table.string('tracked_tender_id').notNullable().unique().references('id').inTable('tracked_tenders').onDelete('CASCADE');
       table.timestamp('created_at').defaultTo(pg.fn.now());
     })
+
+    // checklist_items — A single bid requirement, AI-extracted or manual, carrying a
+    // confidence score so low-confidence ones can route to human review.
     .createTable('checklist_items', table => {
       table.string('id').primary();
       table.string('checklist_id').notNullable().references('id').inTable('checklists').onDelete('CASCADE');
@@ -215,7 +262,7 @@ function up(pg) {
       table.timestamp('created_at').defaultTo(pg.fn.now());
     })
 
-    // Tasks
+    // tasks — Assignable work items with due dates, for coordinating a bid across a team.
     .createTable('tasks', table => {
       table.string('id').primary();
       table.string('tracked_tender_id').notNullable().references('id').inTable('tracked_tenders').onDelete('CASCADE');
@@ -227,7 +274,8 @@ function up(pg) {
       table.timestamp('updated_at').defaultTo(pg.fn.now());
     })
 
-    // Vault documents
+    // vault_documents — An organisation's reusable certificates and licences, with expiry
+    // tracked so an expired one can never be attached to a bid.
     .createTable('vault_documents', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
@@ -238,7 +286,8 @@ function up(pg) {
       table.timestamp('created_at').defaultTo(pg.fn.now());
     })
 
-    // Saved searches
+    // saved_searches — A stored discovery profile that newly ingested tenders are matched
+    // against to raise alerts.
     .createTable('saved_searches', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
@@ -252,19 +301,36 @@ function up(pg) {
       table.timestamp('updated_at').defaultTo(pg.fn.now());
     })
 
-    // Pricing and party analytics
+    // price_benchmarks — Precomputed price statistics per CPV so intelligence reads stay fast
+    // and are never calculated live.
     .createTable('price_benchmarks', table => {
       // CUIDs are generated by the application, as with the existing tables.
       table.string('id').primary();
       table.string('cpv_code').notNullable();
       table.string('buyer_id').references('id').inTable('parties').onDelete('SET NULL');
       table.integer('sample_size').notNullable();
+      // How many distinct TENDERS those awards came from. sample_size counts
+      // awards and awards are per lot, so one multi-lot procurement can clear
+      // the comparables threshold alone — this is what separates "33 awards
+      // across 33 buys" from "33 lots of one buy". Mirrored in
+      // add_intelligence_indexes.js.
+      table.integer('distinct_tenders');
       table.decimal('min_price', 18, 2);
       table.decimal('median_price', 18, 2);
       table.decimal('max_price', 18, 2);
-      table.float('avg_discount_pct');
+      // decimal, not float: a percentage stored as float4 reads back with
+      // seven digits of single-precision noise (6.8833737 for 6.88).
+      table.decimal('avg_discount_pct', 6, 2);
       table.timestamp('computed_at').notNullable();
+      // Deliberately not unique: a NULL never collides in a Postgres unique
+      // index, so a unique constraint would silently permit duplicate global
+      // (buyer-less) rows. The repository arbitrates; this only makes the
+      // per-request lookup cheap once buyer-specific rows multiply the table.
+      table.index(['cpv_code', 'buyer_id'], 'price_benchmarks_cpv_buyer_idx');
     })
+
+    // buyer_profiles — Aggregated behaviour of a buying agency — spend, volume, and which
+    // suppliers keep winning its tenders.
     .createTable('buyer_profiles', table => {
       table.string('id').primary();
       table.string('buyer_id').notNullable().unique().references('id').inTable('parties').onDelete('CASCADE');
@@ -272,15 +338,21 @@ function up(pg) {
       table.integer('tender_count').notNullable();
       table.specificType('favored_supplier_ids', 'text[]').notNullable();
     })
+
+    // supplier_profiles — Aggregated behaviour of a competitor — win rate, categories bid on,
+    // and typical discount.
     .createTable('supplier_profiles', table => {
       table.string('id').primary();
       table.string('supplier_id').notNullable().unique().references('id').inTable('parties').onDelete('CASCADE');
       table.float('win_rate');
       table.specificType('categories', 'text[]').notNullable();
-      table.float('avg_discount_pct');
+      // decimal, not float: a percentage stored as float4 reads back with
+      // seven digits of single-precision noise (6.8833737 for 6.88).
+      table.decimal('avg_discount_pct', 6, 2);
     })
 
-    // Notifications and alert delivery history
+    // notifications — One alert raised for a user, recorded independently of how or whether it
+    // was delivered.
     .createTable('notifications', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
@@ -289,22 +361,68 @@ function up(pg) {
       table.string('tender_id').references('id').inTable('tenders').onDelete('SET NULL');
       table.jsonb('payload').notNullable();
       table.timestamp('read_at');
+      // Ordering column. CUID2 is deliberately not sortable, so `order by id`
+      // is arbitrary — an alert feed has to be chronological, and the cursor
+      // rule needs a stable sort key with an id tiebreaker.
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['organization_id', 'created_at'], 'notifications_org_created_idx');
     })
+
+    // channel_subscriptions — Where an org's alerts actually go. A Telegram bot
+    // cannot open a conversation, so a chat has to be linked by the user messaging
+    // the bot first; that gives a subscription a lifecycle (pending → verified →
+    // revoked) which a column on `organizations` has nowhere to hold. Per-recipient
+    // quiet hours (BR-10) live here for the same reason. Mirrored in
+    // add_channel_subscriptions.js.
+    .createTable('channel_subscriptions', table => {
+      table.string('id').primary();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      // SET NULL, not CASCADE: the org keeps its alerts when the person who set
+      // the chat up leaves.
+      table.string('user_id').references('id').inTable('users').onDelete('SET NULL');
+      table.string('channel').notNullable(); // telegram | email | viber
+      // Null until confirmed — for Telegram the chat id is not knowable until
+      // the user messages the bot.
+      table.string('address');
+      table.string('link_token');
+      table.timestamp('token_expires_at');
+      table.timestamp('verified_at');
+      // Kept rather than deleted, so re-linking is an update and the trail survives.
+      table.timestamp('revoked_at');
+      // Local wall-clock hours; a window that wraps midnight (22 → 8) is normal.
+      table.smallint('quiet_hours_start');
+      table.smallint('quiet_hours_end');
+      table.string('timezone').notNullable().defaultTo('Asia/Yerevan');
+      table.integer('failure_count').notNullable().defaultTo(0);
+      table.text('last_error');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.timestamp('updated_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['organization_id', 'channel'], 'channel_subscriptions_org_channel_idx');
+      table.index(['channel', 'address'], 'channel_subscriptions_channel_address_idx');
+    })
+
+    // alert_deliveries — The per-channel delivery attempt and outcome for a notification.
     .createTable('alert_deliveries', table => {
       table.string('id').primary();
       table.string('notification_id').notNullable().references('id').inTable('notifications').onDelete('CASCADE');
       table.string('channel').notNullable();
       table.string('status').notNullable();
       table.timestamp('sent_at');
+      // Quiet hours defer a delivery rather than dropping it, so a waiting
+      // alert must be distinguishable from a failed one.
+      table.timestamp('deferred_until');
+      table.text('detail');
     })
 
-    // Billing
+    // plans — The subscription tiers on offer and the features each one entitles.
     .createTable('plans', table => {
       table.string('id').primary();
       table.string('name').notNullable();
       table.decimal('price_usd', 18, 2).notNullable();
       table.specificType('features', 'text[]').notNullable();
     })
+
+    // subscriptions — Which plan an organisation is on, and when it renews.
     .createTable('subscriptions', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().unique().references('id').inTable('organizations').onDelete('CASCADE');
@@ -312,6 +430,8 @@ function up(pg) {
       table.string('status').notNullable();
       table.timestamp('renews_at');
     })
+
+    // invoices — Billing history per organisation.
     .createTable('invoices', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
@@ -320,7 +440,8 @@ function up(pg) {
       table.timestamp('issued_at').notNullable();
     })
 
-    // Audit trail
+    // audit_logs — Immutable record of who did what to which entity, for security review and
+    // compliance.
     .createTable('audit_logs', table => {
       table.string('id').primary();
       table.string('organization_id').references('id').inTable('organizations').onDelete('SET NULL');
@@ -331,6 +452,22 @@ function up(pg) {
       table.jsonb('metadata').notNullable();
       table.timestamp('at').notNullable().defaultTo(pg.fn.now());
     });
+}
+
+/**
+ * Partial unique indexes, which Knex's schema builder cannot express.
+ *
+ * Both need a WHERE clause to be correct rather than merely present:
+ * `address` is NULL while a link is pending and a NULL never collides in a
+ * Postgres unique index, so an unfiltered constraint would permit two confirmed
+ * duplicates of the same chat while appearing to forbid them.
+ */
+async function indexes(pg) {
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS channel_subscriptions_live_uq
+     ON channel_subscriptions (organization_id, channel, address)
+     WHERE address IS NOT NULL AND revoked_at IS NULL`);
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS channel_subscriptions_token_uq
+     ON channel_subscriptions (link_token) WHERE link_token IS NOT NULL`);
 }
 
 async function init() {
@@ -344,6 +481,7 @@ async function init() {
 
     await pg.transaction(async trx => {
       await up(trx);
+      await indexes(trx);
     });
 
     console.log('✅ Successfully created all tables in transaction');

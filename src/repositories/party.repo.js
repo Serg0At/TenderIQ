@@ -97,6 +97,20 @@ export default class PartyRepository {
     return trx(TABLE).where({ source_id: sourceId }).first();
   }
 
+  /**
+   * One party by internal id — the lookup the profile endpoints use to decide
+   * existence before computing anything.
+   *
+   * `role` is checked by the caller rather than filtered here: a party that
+   * buys in one tender and supplies in another is stored as 'both', so
+   * filtering on an exact role in SQL would 404 a real supplier purely because
+   * it also happens to buy.
+   */
+  static async findById(id, trx = db) {
+    if (!id) return null;
+    return trx(TABLE).where({ id }).first();
+  }
+
   static async countByRole(role, trx = db) {
     const row = await trx(TABLE).where({ role }).count('* as c').first();
     return Number(row.c);

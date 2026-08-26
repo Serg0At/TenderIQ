@@ -56,6 +56,13 @@ const rowFingerprint = (row) =>
     deadlineAt: row.deadlineAt,
   });
 
+/**
+ * Ceiling on how deep a seed will ever walk, independent of what the pager
+ * claims. A source that renders a nonsense "last page" must not turn into an
+ * unbounded crawl.
+ */
+const MAX_BACKFILL_PAGES = 2000;
+
 const progressKey = (source, slug) => `backfill:${source}:${slug}`;
 
 export const backfillProgress = async (source, slug) => {
@@ -119,9 +126,14 @@ const handleBackfillPage = async (job, token) => {
     enqueued += 1;
   }
 
+  // Resolve the archive's end from the pager on this very page when the seed
+  // did not pin one, then carry it down the chain so later pages do not
+  // re-derive it. Bounded by the source's cap either way.
+  const resolvedToPage = toPage ?? Math.min(result.pagination?.lastPage ?? 1, MAX_BACKFILL_PAGES);
+
   const totalQueued = queued + enqueued;
   const nextPage = page + 1;
-  const shouldContinue = nextPage <= toPage;
+  const shouldContinue = nextPage <= resolvedToPage;
 
   // Checkpoint is observational: resumption comes from the chained job in
   // Redis, not from this key. It exists so an operator can see where a run that
@@ -130,7 +142,7 @@ const handleBackfillPage = async (job, token) => {
     .getRedis()
     .set(
       progressKey(source, slug),
-      JSON.stringify({ page, toPage, totalQueued, at: new Date().toISOString() })
+      JSON.stringify({ page, toPage: resolvedToPage, totalQueued, at: new Date().toISOString() })
     );
 
   log.info(
@@ -141,14 +153,14 @@ const handleBackfillPage = async (job, token) => {
   if (shouldContinue) {
     await ingestBackfillQueue.add(
       JOB.BACKFILL_PAGE,
-      { source, slug, listingPath, page: nextPage, toPage, queued: totalQueued },
+      { source, slug, listingPath, page: nextPage, toPage: resolvedToPage, queued: totalQueued },
       { priority: PRIORITY.BACKFILL }
     );
   } else {
-    log.info(`backfill complete — ${totalQueued} detail pages queued across ${toPage} pages`);
+    log.info(`backfill complete — ${totalQueued} detail pages queued across ${resolvedToPage} pages`);
   }
 
-  return { page, enqueued, totalQueued, continued: shouldContinue };
+  return { page, enqueued, totalQueued, toPage: resolvedToPage, continued: shouldContinue };
 };
 
 export const processBackfill = async (job, token) => {
@@ -171,28 +183,31 @@ export const processBackfill = async (job, token) => {
  * existing chain keeps going and this adds a second starting point, so check
  * `backfillProgress()` first if that is not what you want.
  */
-export const startBackfill = async ({ source = 'armeps', fromPage = 2, toPage } = {}) => {
+export const startBackfill = async ({ source = 'armeps', fromPage = 2, toPage = null } = {}) => {
   const sourceConfig = getSourceConfig(source);
   const board = sourceConfig.listingPaths[0];
 
-  // Discover the real end of the archive rather than trusting a hard-coded
-  // number that silently rots as the board grows.
-  let lastPage = toPage;
-  if (!lastPage) {
-    const probe = await fetchListing(board.path, 1);
-    lastPage = probe.pagination?.lastPage ?? 1;
-  }
-
+  // Deliberately makes NO network call.
+  //
+  // This used to fetch page 1 just to read the pager and learn where the
+  // archive ends. That put a rate-limited request in a command-line path with
+  // no retry: with the live worker already using the shared budget, the probe
+  // threw RateLimitedError and the whole command died before queueing
+  // anything. The first page job fetches that same pager anyway, so the end of
+  // the archive is resolved there instead — see handleBackfillPage.
   await ingestBackfillQueue.add(
     JOB.BACKFILL_PAGE,
-    { source, slug: board.slug, listingPath: board.path, page: fromPage, toPage: lastPage, queued: 0 },
+    { source, slug: board.slug, listingPath: board.path, page: fromPage, toPage, queued: 0 },
     // Deterministic id so running `backfill:start` twice does not create two
     // concurrent chains competing for one rate budget.
     { jobId: `${source}-backfill-seed-${fromPage}`, priority: PRIORITY.BACKFILL }
   );
 
-  logger.info(`[backfill] queued pages ${fromPage}..${lastPage} of "${board.slug}"`);
-  return { fromPage, toPage: lastPage };
+  logger.info(
+    `[backfill] queued from page ${fromPage} of "${board.slug}" ` +
+      `(end ${toPage ? `set to ${toPage}` : 'resolved from the pager on the first fetch'})`
+  );
+  return { fromPage, toPage };
 };
 
 /**
@@ -208,7 +223,16 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   };
 
   if (process.argv.includes('--start')) {
-    await startBackfill({ fromPage: arg('from', 2), toPage: arg('to', undefined) });
+    try {
+      await startBackfill({ fromPage: arg('from', 2), toPage: arg('to', null) });
+    } catch (error) {
+      // A seed failure must not surface as an unhandled rejection with a stack
+      // trace; an operator needs to know whether anything was queued.
+      logger.error(`[backfill] could not queue the seed: ${error.message}`);
+      await closeQueues();
+      await redis.closeRedis();
+      process.exit(1);
+    }
   } else {
     const progress = await backfillProgress('armeps', getSourceConfig('armeps').listingPaths[0].slug);
     logger.info(

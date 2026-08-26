@@ -13,12 +13,29 @@
     "reindex": "node src/scripts/reindexPayloads.js",
     "normalize:replay": "node src/scripts/replayNormalizer.js",
     "scheduler": "node src/queues/scheduler.js",
+    "seed": "node src/scripts/seed.js",
     "migrate:up": "node db/migrations/create_table.js",
-    "migrate:down": "node db/migrations/drop_table.js"
+    "migrate:down": "node db/migrations/drop_table.js",
+    "documents:backfill": "node src/scripts/backfillDocuments.js",
+    "telegram:webhook": "node src/scripts/telegramWebhook.js",
+    "migrate:channels": "node db/migrations/add_channel_subscriptions.js"
+  },
+  "scriptsDescriptions": {
+    "worker": "Run the BullMQ worker process that consumes the fetch, normalize and document queues.",
+    "worker:dev": "Same worker process under nodemon, for editing job handlers.",
+    "backfill": "Resume a historical archive seed from its Redis page checkpoint, on its own queue and process.",
+    "backfill:start": "Begin a fresh historical seed, walking listing pages newest-first (--from/--to bound the range).",
+    "reindex": "Rebuild source_payloads from object storage after a schema drop, so the archive never has to be re-crawled.",
+    "normalize:replay": "Requeue the latest stored detail payload for every tender, re-normalizing from storage after a parser fix.",
+    "scheduler": "Upsert the repeatable sweep and refresh schedules into Redis and exit — a deploy step, not a daemon.",
+    "documents:backfill": "Fetch the invitation archive for tenders that never got one, filling in CPV codes and buyer tax IDs.",
+    "telegram:webhook": "Register or clear the Telegram webhook URL with the Bot API (--set <url> | --delete | --info).",
+    "migrate:channels": "Create channel_subscriptions and the alert_deliveries defer columns. Additive and idempotent — safe to re-run against a live database, unlike migrate:up."
   },
   "author": "At",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
     "@aws-sdk/client-s3": "^3.716.0",
     "@aws-sdk/s3-request-presigner": "^3.716.0",
     "@paralleldrive/cuid2": "^2.2.2",
@@ -35,6 +52,7 @@
     "iconv-lite": "^0.6.3",
     "ioredis": "^6.0.0",
     "joi": "^18.2.3",
+    "jsonwebtoken": "^9.0.3",
     "knex": "^3.3.0",
     "pdf-parse": "^1.1.1",
     "pg": "^8.22.0",

@@ -5,7 +5,7 @@
 > [backend build guide](../CRM/gov-tender-monitoring/docs/backend/build-guide/README.md)
 > phases 0–6.
 >
-> **Assessed:** 2026-08-17 · against the live codebase and the live Neon database.
+> **Assessed:** 2026-08-21 · against the live codebase and the live Neon database.
 >
 > Companions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
 > [docs/SCRAPER_WORKFLOW.md](docs/SCRAPER_WORKFLOW.md) ·
@@ -16,18 +16,21 @@
 ## The headline
 
 ```
-source_payloads = 1285    tenders = 104    parties = 281
-awards = 721              public_tender_bids = 1886    tender_documents = 55
+source_payloads = 6261   tenders = 2590   parties = 1442   tender_lots = 3210
+awards = 17051           public_tender_bids = 65075        tender_documents = 329
 ```
 
-**The pipeline is closed end to end.** The previous assessment's single blocking item — an empty
-`src/workers/normalizer.js` — is written, and raw payloads now become domain entities: tenders with
-a real buyer, per-lot awards, and the full public bid ledger behind them.
+**Ingestion, the API foundation, and discovery all exist.** The pipeline runs end to end —
+listing sweep → detail fetch → normalize → invitation archive → match → alert — behind an
+authenticated, rate-limited, role-gated HTTP API.
 
-What changed is not only that tenders exist. `public_tender_bids` is new, and it is the thing the
-intelligence layer was missing: 1,886 rows of *who else bid and what they offered*, which no part of
-the reference specification expected to be obtainable without the PPCM export. Phase 3 is now
-blocked on code, not on data.
+The historical seed is **mid-run**: page 49 of 982, so the figures above are roughly **2.5% of
+the eventual corpus** (~29,000 tenders, ~230k awards, ~773k bids). Everything downstream of
+ingestion is being built against a sample, not the finished dataset.
+
+`public_tender_bids` remains the thing the reference specification did not expect to be
+obtainable: 13,837 rows of *who else bid and what they offered*, scraped from the public
+`Գնառաջարկներ` ledger with no PPCM dependency. That is the entire feedstock for phase 3.
 
 ---
 
@@ -35,152 +38,211 @@ blocked on code, not on data.
 
 | Phase | Reference scope | State |
 |---|---|---|
-| **0 — Foundation** | repo, config, entrypoints, middleware, auth, seed, health check | **~40%** |
-| **1 — Ingestion** (moat feedstock) | scraper, normalizer, backfill, documents, freshness | **~85%** |
-| **2 — Discovery** (the hook) | SavedSearch, tender API, matcher, notifier, reminders | **0%** |
-| **3 — Intelligence** (the moat) | price benchmarks, buyer/supplier profiles | **0% code — data now present** |
+| **0 — Foundation** | repo, config, entrypoints, middleware, auth, seed, health check | **done** |
+| **1 — Ingestion** (moat feedstock) | scraper, normalizer, backfill, documents, freshness | **done — seed running** |
+| **2 — Discovery** (the hook) | SavedSearch, tender API, matcher, notifier, reminders | **built — Telegram delivers** |
+| **3 — Intelligence** (the moat) | price benchmarks, buyer/supplier profiles | **built** — benchmarks, competitor prices, profiles, AI recommendation |
 | **4 — Bid workflow** (the glue) | pipeline, vault, AI checklist, tasks | **0%** |
-| **5 — Accounts & billing** | plans, subscriptions, invoices, bank transfer | **0%** |
+| **5 — Accounts & billing** | plans, subscriptions, invoices, bank transfer | **schema + seeded plans only** |
 | **6 — Post-award & polish** | contracts, win/loss, exports, admin dashboard | **0%** |
 
-Phases 2–6 have their **schema** and, for phase 3, their **feedstock**. They still have **zero
-application code**.
+There is **no frontend of any kind**. Everything below is API-only.
 
 ---
 
-## Done
-
-### Phase 0 — Foundation (partial, unchanged)
+## Phase 0 — Foundation · done
 
 | Item | State |
 |---|---|
-| Express + PostgreSQL + Redis + BullMQ stack | done |
-| `variables.config.js` — env load + validate, refuses to boot on a missing key | done |
-| `server.js` / `app.js` / `workers/index.js` entrypoints | done |
-| Structured logging (winston, console + file transports) | done |
-| Graceful worker shutdown (drains in-flight jobs on SIGTERM) | done |
-| `docker-compose.yml` — redis + minio + bucket bootstrap, optional local postgres | done |
+| Express + PostgreSQL + Redis + BullMQ + MinIO stack | done |
+| `variables.config.js` — validates env, refuses to boot on a bad value | done |
+| `middlewares/auth.js` — JWT verify, `TOKEN_EXPIRED` distinct from `UNAUTHENTICATED` | done |
+| `middlewares/authorize.js` — role matrix + plan entitlement, default-deny | done |
+| `middlewares/validate.js` — Joi at the HTTP boundary, `stripUnknown` | done |
+| `middlewares/error.js` — one error envelope; unexpected errors become `INTERNAL_ERROR` + log ref | done |
+| `middlewares/rateLimit.js` — Redis-backed, per-user then per-IP, fails open | done |
+| Auth flows — register / login / refresh (rotation + reuse detection) / logout / me | done |
+| `npm run seed` — 5 roles, 5 plans | done |
+| `GET /api/v1/health` — shares `checkHealth()` with the scheduled monitor | done |
 
-### Phase 1 — Ingestion
+The permission matrix is verified case by case: `owner` holds `billing:manage` and `admin` does
+not; `viewer` cannot write a bid; a free plan blocks `intelligence:read` for **every** role
+including owner; an unknown role is denied.
+
+Refresh-token reuse revokes the whole family — replaying a consumed token kills the legitimately
+rotated one too, which is the correct reading of an ambiguous theft signal.
+
+---
+
+## Phase 1 — Ingestion · done, seed in progress
+
+Working: `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writing
+`tenders` / `parties` / `awards` / `public_tender_bids` / `tender_lots`; `tender.refresh`
+re-checking unsettled tenders hourly; `tender.documents` extracting CPV, buyer tax ID and per-lot
+item text from the invitation archive; `backfill.js` seeding the archive on its own queue and
+process; `health.check` every 5 minutes.
 
 | Item | State |
 |---|---|
-| OCDS-aligned schema + `public_tender_bids` | done |
-| Composite unique `(source, ref, hash)` on `source_payloads` | done |
-| ARMEPS **listing** sweep — table parser, tid high-water pagination, rate-limit gate, TLS chain fix | done, verified live |
-| ARMEPS **detail** parser — 10 lifecycle statuses, per-lot `Գնառաջարկներ` bid ledger | done, verified live |
-| **Normalizer** — payload → `tenders` / `parties` / `awards` / `public_tender_bids` | **done** |
-| Amendment versioning (`version`, `is_latest`) + `TenderIngested` / `TenderAmended` | done |
-| `tender.refresh` — DB-driven hourly re-check of settled tenders | done |
-| `tender.documents` — invitation archive → CPV code, buyer tax ID, per-lot items | done |
-| Historical backfill worker (own queue, own process, resumable, low priority) | done, not yet run to completion |
-| `reindexPayloads.js` — rebuild `source_payloads` from storage after a schema drop | done |
-| `replayNormalizer.js` — re-normalize from retained payloads, no re-crawl | done |
-| Raw payload retention, deterministic content-hash keys, `list()` on both storage drivers | done |
-| Retry / backoff / DLQ policy | done |
-| **Idempotency** | **proven**: a repeat sweep writes 0 rows and enqueues 0 jobs |
-| Scheduler registration (`sweep-{source}`, `refresh-{source}`) | done |
+| Historical seed | **running** — page 49/982, resumable, `backfillDocuments: false` |
+| Freshness + DLQ + backlog monitor | done — was the last unbuilt item in the reference build order |
+| `npm run reindex` | rebuilds `source_payloads` from object storage — makes schema changes cheap |
+| `npm run documents:backfill` | fetches invitations the normalizer never enqueued |
+| Coverage metric (NFR-DATA-2) | **dropped by decision** — signals emitted, nothing consumes them |
+| Parser fixture tests | **dropped by decision** — no test runner in the project |
 
-### Outside the phase list
+### Known coverage limits
 
-`prospects.repo.js` + `prospectScoring.service.js` + `exportProspects.js` turn the public bid ledger
-into a ranked ICP prospect list for founder-led sales. Not a product feature and not on the phase
-path — a research tool that exists because the data happened to be there. See
-[docs/PROSPECT_FEASIBILITY.md](docs/PROSPECT_FEASIBILITY.md).
+- **e-auctions only.** `procedure_type` is always `e_auction`; open competition, quotation,
+  single-source and restricted procedures are not ingested. Adding them means the gnumner
+  notice board as a second source.
+- **CPV and buyer tax ID are sparse** — 264 of 724 tenders and 114 of 690 parties. Both exist
+  only inside the invitation archive, and the seed skips archives while `backfillDocuments` is
+  false. Run `npm run documents:backfill` in batches to close the gap.
+- **PPCM was removed**, not deferred: it is an AngularJS SPA at armeps.am/ppcm, not the CSV feed
+  the reference assumes, and the bid ledger already supplies the award data it existed for.
+  `contracts` therefore has no writer and stays empty until phase 6.
 
 ---
 
-## Missing, in blocking order
+## Phase 2 — Discovery · built, one gap
 
-### 1. Freshness and coverage monitoring
-
-`sweep:ok:{source}` is written on every successful page and read by `lastSuccessfulSweep(source)` —
-and **nothing calls it**. Missing tenders are the reference's #1 churn cause, so a silently broken
-scraper is still the largest operational risk in the system. Needs a monitor job comparing against
-`SCRAPER.FRESHNESS_SLA_MINUTES` (15), plus zero-block, DLQ-depth and skipped-row alerting.
-
-This is small, and it protects everything already built.
-
-### 2. Run the backfill to completion
-
-The worker is written and idempotent but the archive is still ~97% unread: 104 tenders ingested
-against roughly 29,000 on the board. The corpus size *is* the intelligence product — benchmarks
-return `insufficient_data` until comparables exist. It is a multi-day run at the shared 20 req/min
-budget, so it should be started early and left going.
-
-### 3. Phase 0 gaps that block any API at all
-
-| Gap | Detail |
+| Item | State |
 |---|---|
-| Middleware | `middlewares/{auth,authorize,rateLimit}.js` are **empty files**; `validate.js` and `error.js` do not exist |
-| Routes | `app.js` mounts `/api/v1`, but `features/index.js` is an **empty Router** — no routes are registered |
-| Auth flows | `features/auth/` exists as stubs: `auth.service.js` is empty, `auth.controller.js` has an empty `login()`, `auth.routes.js` registers nothing |
-| Health check | not created |
-| Seed | no roles or plans seeded; `users`, `organizations`, `roles`, `plans` all empty |
+| `GET /tenders` — CPV (incl. per-lot), keyword, buyer, region, value, procedure, status, deadline | done |
+| Cursor pagination with id tiebreaker | done |
+| `GET /tenders/:id` — detail with lots and documents | done |
+| Saved-search CRUD, tenant-scoped | done |
+| Matcher — hierarchical CPV + keyword scoring, region/value as hard filters | done |
+| Notifications + per-channel delivery tracking + dedupe | done |
+| Deadline reminders at 72h and 24h | done |
+| Amendment re-notification with a change summary | done |
+| **Delivery channels** | **Telegram live** — link flow, quiet hours, auto-revoke. email/viber still `failed` |
+| Daily digest | not built |
+| Relevance ranking of the tender list | not built (scoring exists, drives alerts only) |
 
-### 4. Rest of ingestion
+**The hook reaches a user once a bot token is set.** Telegram is built end to end: an org mints a
+`t.me/<bot>?start=<token>` deep link, the user opens it, the bot records the chat and alerts flow.
+Quiet hours (BR-10) defer rather than drop, and a blocked bot or five consecutive failures revokes
+the subscription instead of retrying forever.
 
-| Gap | Why it matters |
+Two things still needed to make it live: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` from
+@BotFather, and `npm run migrate:channels` on any environment other than this one.
+
+Inbound updates run in `polling` mode by default because the project has no public HTTPS endpoint;
+`TELEGRAM_MODE=webhook` plus `npm run telegram:webhook -- --set <url>` switches to webhooks. Polling
+must run in exactly one process — set `TELEGRAM_MODE=off` on every worker replica but one.
+
+**The spec's email fallback is not built**, because there is no email channel to fall back to. A
+Telegram failure is recorded and, if permanent, revokes the chat; it does not reroute.
+
+---
+
+## Phase 3 — Intelligence · built
+
+| Item | State |
 |---|---|
-| AI extraction (`workers/aiExtractor.js`) | **empty file**. The invitation archive's text is extracted and stored, so the input is ready; the phase-4 checklist reads it |
-| PPCM importer | **Parked, not blocking.** An AngularJS SPA at armeps.am/ppcm, not the CSV/Excel export the reference assumed. Its only unique contribution is signed contract values (phase 6) — `importer.js` was deleted rather than left as a misleading stub |
-| Per-lot technical specs | Retained in the archive but unparsed (.xls / .rar / .xlsx). Feeds phase 4, needs no re-download |
-| Second source | ARMEPS e-auction is the only configured board. Non-e-auction procedures are not covered |
+| `GET /tenders/:id/benchmark` · `GET /benchmarks/:cpv` | done — tiered, materialised |
+| **`GET /tenders/:id/competitor-prices`** | done — per-lot winner, price, every bidder named |
+| `GET /competition` — expected bidder count | done — works on UNSETTLED tenders |
+| `GET /suppliers/:id/profile` — the competitor profile | done |
+| `GET /buyers/:id/profile` | done |
+| `GET /tenders/:id/price-recommendation` | done — needs `ANTHROPIC_API_KEY` to explain |
+| Buyer-specific benchmark materialisation | done — 44 pairs, pre-filtered in SQL |
+| Nightly `profiles.recompute` + `benchmarks.recompute` | done — scheduled 03:23 / 04:41 |
 
-### 5. Phases 2–6
+Competitor prices are the headline because they need **no CPV**: keyed by tender id, they
+work across the whole corpus rather than the third of it that has a category.
 
-No code. In dependency order: matcher + notifier (needs `tenders` + `saved_searches`) → benchmarks
-(needs `awards` + `public_tender_bids`, **both now populated**) → workflow → billing.
+Profiles are read live from indexed single-party lookups, so they are correct the moment a
+tender settles; the materialised rows exist for whole-population work (ranking, exports, the
+AI evidence packet). The nightly rebuild is set-based — one query per aggregate, not one per
+party, which took it from ~25 minutes to 4.8 seconds.
 
----
+### Sample independence — the honesty gap in the comparables threshold
 
-## Open defects
+`sample_size` counts awards, and awards are **per lot**, so one multi-lot procurement can
+clear `MIN_COMPARABLES` alone. Measured on the live corpus:
 
-Found in review, not yet fixed. Listed so they are not rediscovered later.
-
-| Severity | Where | Issue |
-|---|---|---|
-| **critical** | `utils/http.js` | The axios instance sets no `maxContentLength` / `maxBodyLength` (axios defaults to unlimited), so `MAX_DOCUMENT_BYTES` is only checked after the whole body is buffered. An oversized archive OOMs the worker process before the guard runs |
-| warning | `invitation.parser.js` | Two nested ZIP decompressions with no size cap — the byte limit buys nothing past the wire |
-| warning | `workers/normalizer.js` | The `tender.documents` job id is keyed on the detail-page hash, so each amendment re-downloads the same unchanged archive (~5× per tender lifecycle) |
-| warning | `invitation.parser.js` | The buyer's tax ID is the first `ՀՎՀՀ` match anywhere in the document; any other party's number appearing earlier is attributed to the buyer |
-| warning | `workers/documents.js` | `invitationUrl` comes from scraped HTML and is fetched with no origin check |
-
----
-
-## Assumed by the reference, absent here
-
-| Area | State |
+| categories clearing the 5-award threshold | 55 |
 |---|---|
-| **Tests** | **none** — `tests/` exists but is empty; no runner in `devDependencies`. The listing- and detail-parser fixture tests are the ones that would catch an ARMEPS redesign before customers do |
-| **API layer** | none — reference `/api` specifies endpoints, pagination, filtering, sorting, versioning, rate limits, webhooks, error codes |
-| **Frontend** | none — reference specifies a Next.js + Tailwind client |
-| **CI/CD** | none — no `.github/`, no `Dockerfile`, despite `/deployment` covering both |
-| **Dead code** | `src/queues/worker.js` still exports the placeholder `ingestionQueue` that `app.js` imports; superseded by `src/queues/index.js`. It also reads `connectionOptions.host` off a default import that has no such property, so it silently connects to localhost |
+| ...drawn from fewer than 5 distinct tenders | **47** |
+| ...drawn from exactly ONE tender | **15** |
+
+CPV 33141205 reports 33 comparable awards that are 33 lots of a single buy. A median over
+those is one observation, not 33 — precisely what the threshold exists to prevent.
+
+`price_benchmarks.distinct_tenders` now records this and it is returned on every benchmark
+and in the AI evidence packet, and the AI prompt is required to cap confidence at `low` when
+it is thin. **The threshold itself is unchanged** — raising it to require independent tenders
+would unpublish roughly 47 of 55 benchmarks, which is a product call, not a bug fix.
+
+### Remaining
+
+`tracked_tenders`, `bids`, `checklists`, `checklist_items`, `tasks`, `vault_documents`,
+`contracts`, `subscriptions`, `invoices`, `audit_logs` still have **no writer**.
+
+`src/workers/aiExtractor.js` is the only empty file left. Its input is already prepared:
+the document stage stores ~250k characters of extracted invitation text per tender. The
+Anthropic adapter it will use now exists at `src/libs/adapters/ai/anthropic.js`.
+
+### The two decisions that were owed — both now made
+
+1. **The comparables threshold** is `INTELLIGENCE.MIN_COMPARABLES = 5`, in
+   `variables.config.js`. Below it every rate and every benchmark returns `insufficient_data`
+   rather than a number. See the independence caveat above — 5 *awards* is not yet 5
+   *procurements*.
+2. **CPV coverage** was accepted as-is rather than blocking on the backfill. The decision that
+   made that viable: competitor prices and win rates need no CPV, so the headline features work
+   across the whole corpus. Only `categories` on a supplier profile and category benchmarks are
+   CPV-gated, and both say so on the wire instead of returning a silently short answer.
+
 
 ---
 
-## Deliberate deviations from the reference
+## Data-quality rules learned the hard way
 
-Not omissions — decisions, recorded so they are not mistaken for gaps.
+Two defects were found by comparing stored numbers against what they physically should be.
+Neither was visible to schema, null or referential-integrity checks.
 
-| Reference says | TenderIQ does | Why |
-|---|---|---|
-| Prisma | **Knex** + hand-written migrations | Explicit SQL, no hidden queries; repositories are the only DB layer |
-| Zod validation | **Joi** | Already a dependency |
-| Feature-first folders + `container.js` | Layer-first (`utils/`, `repositories/`, `services/`, `workers/`, `libs/adapters/`) | Fewer moving parts at this size; the seams that matter (storage port, source adapters, repositories) are intact |
-| PPCM as the award-data source | ARMEPS e-auction bid ledger | Finer-grained (per lot, every bidder, not just the winner) and needs no SPA reverse-engineering |
+- **Awards must come from an ACCEPTED bid, not merely rank 1.** The source ranks rejected
+  submissions too (`Մերժված`). Awarding on rank alone recorded 21% of awards to companies the
+  buyer had thrown out, including a 6,666,600,000,000 AMD bid against a 75,000 budget — a real
+  value published by the source, not a parse error.
+  `TenderRepository.rebuildAwardsFromBids()` repairs this from stored bids with no re-crawl.
+- **Money statistics must exclude rejected bids.** Including them put the average bid at
+  317,831,314,144 AMD instead of 2,957,029 — a 107,000x error feeding ICP scoring. Participation
+  and win/loss counts still count rejects, because being rejected is still bidding and still
+  losing.
+
+**Sanity checks to re-run after the seed finishes** — all three held at the last check:
+
+| check | expected |
+|---|---|
+| awards backed by a rejected bid | **0** |
+| average winning discount vs budget | ~15–25% (currently 16.2%) |
+| largest single award | hundreds of millions AMD, not trillions |
+
+Also note: **workers must be restarted after a code change.** Node does not hot-reload, so a
+long-running worker keeps writing with the logic it booted on — which is how the rejected-bid
+defect reappeared after being fixed.
 
 ---
 
 ## Recommended next step
 
-**Start the backfill, then build Phase 0 auth and the tender API while it runs.**
+**Set `ANTHROPIC_API_KEY`.** The price-recommendation endpoint is built, gated and tested
+against stubbed model responses, but has never made a live call — it currently answers
+`evidence_only` and returns the numbers without the narrative.
 
-The backfill is the long pole — days of wall-clock time at the politeness budget, and every
-intelligence feature is a function of how much of the archive it has read. It needs no supervision
-once started, so it should not be serialised behind anything.
+Then, in order:
 
-That leaves the freshness monitor (small, protects what exists) and Phase 0 middleware + auth as the
-work to do in parallel. Discovery is the first thing a customer can see, and it cannot be built
-until a request can be authenticated and scoped to a tenant.
+1. **One real alert channel (Telegram).** Discovery still does not reach a user; every
+   channel returns `failed`. This is the oldest unblocked item.
+2. **A frontend.** Everything in phase 3 is API-only, and competitor prices are a table —
+   the feature is close to unusable without a screen.
+3. **`npm run documents:backfill` over the corpus**, which widens CPV coverage and with it
+   category benchmarks and supplier `categories`.
+4. **Revisit sample independence** once the seed finishes. The 47-of-55 figure above is
+   measured on 2.5% of the eventual corpus and should improve on its own; if it does not,
+   requiring distinct tenders in the threshold becomes the right call.

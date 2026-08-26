@@ -54,7 +54,7 @@ const decode = (buffer, contentType) => {
  * multi-gigabyte object would be buffered whole into the worker process, which
  * also runs ingest.fetch and ingest.normalize.
  */
-export const MAX_DOCUMENT_BYTES = 60 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = SCRAPER.MAX_DOCUMENT_BYTES;
 
 const client = axios.create({
   timeout: SCRAPER.HTTP_TIMEOUT_MS,

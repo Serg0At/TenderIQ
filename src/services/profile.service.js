@@ -1,0 +1,231 @@
+import config from '../configs/variables.config.js';
+import profiles from '../repositories/profile.repo.js';
+
+const { INTELLIGENCE } = config;
+
+/**
+ * Buyer and supplier profiles.
+ *
+ * A supplier profile is a **competitor** profile — the thing a customer buys
+ * this product for. A buyer profile is the agency they are selling to.
+ *
+ * The honest-intelligence rule applies to every RATE on this page and to no
+ * COUNT. "This company has bid 3 times and won 2" is a fact and is always
+ * reported. "This company wins 67% of the time" is a statistic, it is drawn
+ * from three observations, and it is the kind of number a supplier would price
+ * against and lose money on. So counts are unconditional and rates are gated
+ * behind the same `MIN_COMPARABLES` threshold benchmarks use — below it the
+ * rate is null and carries its own explanation.
+ *
+ * The whole page is derived from published public record. Nothing tenant-
+ * private is read, and every figure is reproducible from `tenders`, `awards`
+ * and `public_tender_bids`.
+ */
+
+const num = (value) => (value === null || value === undefined ? null : Number(value));
+const int = (value) => Number(value ?? 0);
+
+/**
+ * A ratio as a percentage, or null when the denominator is too small to carry
+ * one. `sample` and `required` travel with the null so a client can say
+ * "3 of 5 bids needed" rather than showing a blank.
+ */
+const rate = (numerator, denominator, { min = INTELLIGENCE.MIN_COMPARABLES } = {}) => {
+  const d = Number(denominator);
+  if (!Number.isFinite(d) || d <= 0) return { value: null, status: 'no_data', sample: 0 };
+  if (d < min) {
+    return { value: null, status: 'insufficient_data', sample: d, required: min };
+  }
+  return {
+    value: Math.round((Number(numerator) / d) * 1000) / 10,
+    status: 'ok',
+    sample: d,
+  };
+};
+
+export default class ProfileService {
+  /**
+   * A competitor's profile.
+   *
+   * `party` is the row from `parties`, resolved by the controller so existence
+   * (and the 404) is decided in one place.
+   */
+  static async forSupplier(party, { sinceMonths = null } = {}) {
+    const { activity, wins, categories, rivals } = await profiles.computeSupplier(party.id, {
+      sinceMonths,
+    });
+
+    const lotsBid = int(activity?.lots_bid);
+    const lotsWon = int(wins?.lots_won);
+
+    return {
+      supplier: {
+        id: party.id,
+        name: party.name,
+        taxId: party.tax_id ?? null,
+        region: party.region ?? null,
+      },
+
+      activity: {
+        lotsBid,
+        lotsWon,
+        lotsLost: lotsBid - lotsWon,
+        tendersBid: int(activity?.tenders_bid),
+        tendersWon: int(wins?.tenders_won),
+        // Rejected bids are IN the denominator: being disqualified is still
+        // having bid and still having lost. Reported separately so a reader
+        // can see how much of the loss column is disqualification rather than
+        // being outpriced — a materially different competitor.
+        lotsRejected: int(activity?.lots_rejected),
+        firstSeen: activity?.first_seen ?? null,
+        lastSeen: activity?.last_seen ?? null,
+      },
+
+      // The headline figure, and the one that needs no CPV code — which is why
+      // this endpoint works across the whole corpus while categories below are
+      // thin.
+      winRate: rate(lotsWon, lotsBid),
+
+      pricing: {
+        // How this company prices in general, over its accepted bids.
+        avgDiscountPct: num(activity?.avg_discount_pct),
+        // How deep it goes on the ones it actually takes. The gap between the
+        // two is the useful signal: a competitor whose winning discount is far
+        // below its typical one is winning on something other than price.
+        avgWinningDiscountPct: num(wins?.avg_winning_discount_pct),
+        totalWon: num(wins?.total_won),
+        largestWin: num(wins?.largest_win),
+        currency: 'AMD',
+      },
+
+      /**
+       * Categories require a CPV code, which exists on roughly a third of the
+       * corpus, so this list understates what a competitor covers. Saying so
+       * beats a silently short list that reads as "they don't do that".
+       */
+      categories: {
+        status: categories.length ? 'ok' : 'no_data',
+        coverageNote:
+          'Derived from tenders whose CPV code is known. CPV is published only inside the invitation archive, so a supplier active in a category may not appear under it.',
+        items: categories.map((c) => ({ cpvCode: c.cpv_code, lotsBid: int(c.lots_bid) })),
+      },
+
+      /**
+       * Who this company keeps running into. Counted from shared lots, with
+       * the head-to-head record attached as evidence.
+       */
+      frequentRivals: rivals,
+    };
+  }
+
+  /** A buying agency's profile. */
+  static async forBuyer(party, { sinceMonths = null } = {}) {
+    const { volume, spend, competition, suppliers } = await profiles.computeBuyer(party.id, {
+      sinceMonths,
+    });
+
+    const lotsAwarded = int(spend?.lots_awarded);
+    const totalSpend = num(spend?.total_spend);
+    const sampleLots = int(competition?.sample_lots);
+
+    return {
+      buyer: {
+        id: party.id,
+        name: party.name,
+        taxId: party.tax_id ?? null,
+        region: party.region ?? null,
+      },
+
+      volume: {
+        tenderCount: int(volume?.tender_count),
+        tendersAwarded: int(spend?.tenders_awarded),
+        lotsAwarded,
+        firstSeen: volume?.first_seen ?? null,
+        lastSeen: volume?.last_seen ?? null,
+      },
+
+      spend: {
+        totalSpend,
+        totalBudget: num(spend?.total_budget),
+        totalEstimated: num(volume?.total_estimated),
+        // How far below its own budget this buyer typically settles — the
+        // number a supplier uses to judge how aggressively to price.
+        avgDiscountPct: num(spend?.avg_discount_pct),
+        distinctWinners: int(spend?.distinct_winners),
+        currency: 'AMD',
+      },
+
+      /**
+       * How contested this buyer's work is. `soleBidderRate` is the one a
+       * supplier should read first: a buyer whose lots routinely draw one
+       * bidder is a buyer whose lots are winnable.
+       */
+      competition: {
+        sampleLots,
+        avgBidders: num(competition?.avg_bidders),
+        medianBidders: num(competition?.median_bidders),
+        soleBidderLots: int(competition?.sole_bidder_lots),
+        soleBidderRate: rate(int(competition?.sole_bidder_lots), sampleLots),
+      },
+
+      /**
+       * The suppliers that have won this buyer's work most often, with the
+       * counts they were ranked on.
+       *
+       * Named `topSuppliers`, not "favored" — the stored column is called
+       * `favored_supplier_ids` and that word is a conclusion this data cannot
+       * support. Repeat wins have many ordinary explanations: the firm may be
+       * the only one in the region that does the work, or simply the cheapest.
+       * Non-competitive concerns are reportable only as signals with evidence,
+       * never as accusations, so what ships is the evidence — award count,
+       * value, share — and the reader draws their own conclusion.
+       */
+      topSuppliers: suppliers.map((s) => ({
+        ...s,
+        shareOfAwardsPct:
+          lotsAwarded > 0 ? Math.round((s.awardCount / lotsAwarded) * 1000) / 10 : null,
+        shareOfSpendPct:
+          totalSpend > 0 ? Math.round(((s.totalValue ?? 0) / totalSpend) * 1000) / 10 : null,
+      })),
+    };
+  }
+
+  // ------------------------------------------------------- materialise / read
+
+  /**
+   * Compute and store. Only the four columns the schema has are persisted; the
+   * richer read above is assembled live from indexed single-party lookups,
+   * which is well inside the 2s intelligence budget.
+   *
+   * A win rate that is below the threshold is stored as null rather than as a
+   * number, so nothing reading `supplier_profiles` directly — a future export,
+   * an AI prompt — can pick up a rate the API itself refuses to state.
+   */
+  static async recomputeSupplier(supplierId) {
+    const { activity, wins, categories } = await profiles.computeSupplier(supplierId);
+    const lotsBid = int(activity?.lots_bid);
+    const winRate = rate(int(wins?.lots_won), lotsBid);
+
+    await profiles.upsertSupplier({
+      supplierId,
+      winRate: winRate.value === null ? null : winRate.value / 100,
+      categories: categories.map((c) => c.cpv_code),
+      avgDiscountPct: num(activity?.avg_discount_pct),
+    });
+
+    return { supplierId, lotsBid, winRate: winRate.value };
+  }
+
+  static async recomputeBuyer(buyerId) {
+    const { volume, spend, suppliers } = await profiles.computeBuyer(buyerId);
+
+    await profiles.upsertBuyer({
+      buyerId,
+      totalSpend: num(spend?.total_spend),
+      tenderCount: int(volume?.tender_count),
+      favoredSupplierIds: suppliers.map((s) => s.supplierId),
+    });
+
+    return { buyerId, tenderCount: int(volume?.tender_count) };
+  }
+}

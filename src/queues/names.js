@@ -14,6 +14,18 @@ export const QUEUE = {
    * source in Redis, so both processes draw on one budget.
    */
   INGEST_BACKFILL: 'ingest.backfill',
+  /**
+   * Health checks and housekeeping. Separate from ingest.fetch on purpose: the
+   * moment you most need the alarm is when the fetch queue is backed up, and a
+   * check sitting behind that backlog would stay silent exactly then.
+   */
+  MAINTENANCE: 'maintenance',
+  /**
+   * Matching and alert delivery. Separate from ingest.normalize so that fanning
+   * one tender out across every saved search — unbounded work — can never slow
+   * the write path that produced it.
+   */
+  ALERTS: 'alerts',
 };
 
 export const JOB = {
@@ -41,6 +53,30 @@ export const JOB = {
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',
+  /** Freshness, dead-letter depth and backlog — see workers/health.js. */
+  HEALTH_CHECK: 'health.check',
+  /** Refresh materialised price benchmarks — one tender's categories, or all. */
+  RECOMPUTE_BENCHMARKS: 'benchmarks.recompute',
+  /**
+   * Rebuild buyer and supplier profiles. Separate from the benchmark job
+   * because they fail independently and on different schedules: a benchmark
+   * recompute is per-category and cheap, a profile rebuild walks every party.
+   * Sharing a job name would make one of them invisible in the failed set.
+   */
+  RECOMPUTE_PROFILES: 'profiles.recompute',
+  /** One ingested/amended tender vs every saved search. */
+  MATCH_TENDER: 'match.tender',
+  /** Hourly scan for approaching deadlines on already-matched tenders. */
+  DEADLINE_REMINDER: 'deadline.reminder',
+  /**
+   * Send alerts whose quiet window has passed.
+   *
+   * The deferred `alert_deliveries` row is the queue, not a BullMQ delayed job:
+   * a quiet window runs for hours, and a delayed job holding the payload that
+   * long would be lost to a Redis flush while the alert itself is already
+   * durable in Postgres. This sweep re-reads and sends.
+   */
+  DELIVER_DEFERRED: 'notify.deferred',
 };
 
 /**

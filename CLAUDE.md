@@ -42,7 +42,7 @@ that would catch a gnumner redesign before customers do.
 2-space, single-quote, semicolon.
 
 Migrations are hand-run scripts, not the Knex CLI. `migrate:up` runs `up()` over the whole schema in
-one transaction and is not idempotent; `migrate:down` drops all 26 tables. A schema change means
+one transaction and is not idempotent; `migrate:down` drops all 30 tables. A schema change means
 editing `db/migrations/create_table.js` *and* `drop_table.js`, or adding a new script.
 
 ## Processes
@@ -173,8 +173,7 @@ Controllers hold no branching business logic and no DB access; services know not
 
 ## API conventions
 
-Not yet implemented — `src/features/index.js` is an empty router. When building endpoints, follow the
-reference spec rather than inventing a shape:
+Implemented — see `src/features/*/`. Follow the existing shape rather than inventing one:
 
 - **Base path `/api/v1`**, plural resource nouns (`/tenders`, `/tracked-tenders`, `/vault-documents`).
   GET / POST / PATCH / DELETE. Time is ISO-8601 UTC. IDs are opaque CUID2 strings — never expose
@@ -227,7 +226,9 @@ undisclosed), `vault_documents.valid_until` (non-expiring docs) — features deg
 
 ## AI layer
 
-Not built yet (`src/workers/aiExtractor.js` is empty). When it is:
+The adapter and the first consumer exist: `src/libs/adapters/ai/anthropic.js` (the only file
+that imports the SDK) and `services/priceRecommendation.service.js`. `aiExtractor.js` is still
+empty. The rules below are enforced in that service and must hold for anything added:
 
 - **Anthropic Claude API.** Use the current model IDs — `claude-opus-5`, `claude-sonnet-5`,
   `claude-haiku-4-5`. The reference spec's `ai/Model Selection.md` names an older generation; treat
@@ -272,8 +273,8 @@ Where reference docs say "Prisma client", read "Knex instance"; where they say "
 
 ## Current state
 
-Ingestion runs end to end — discovery, detail, normalization, awards — and is proven idempotent.
-**Nothing downstream of it exists yet.**
+Ingestion, the HTTP API, discovery and the intelligence layer all run. **Bid workflow
+(phase 4) onward does not.**
 
 - **Working:** `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
@@ -286,9 +287,28 @@ Ingestion runs end to end — discovery, detail, normalization, awards — and i
   and `public_tender_bids` have a `source` column so a second writer can be added safely later.
 - **Empty on purpose:** `contracts` (post-award, phase 6) and `cpv_code` / `parties.tax_id` (both
   live only inside the invitation ZIP — see the document stage).
-- `aiExtractor.js` and `middlewares/{auth,authorize,rateLimit}.js` are still empty files.
-- `src/features/index.js` is an empty router mounted at `/api/v1` — no routes, no auth, no
-  `validate.js`, no central error handler.
+- **Telegram is the one live delivery channel.** A bot cannot open a conversation, so a chat is
+  linked by the user opening a `t.me/<bot>?start=<token>` deep link; the token is single-use and
+  short-lived, and the chat id lands in `channel_subscriptions`. Quiet hours defer an alert to a
+  `deferred` row that `notify.deferred` sweeps, never drop it. **A channel records its own
+  `alert_deliveries` rows and callers must not** — Telegram fans one alert out to every linked
+  chat, so one row per destination is the honest record.
+- **API:** `/api/v1` serves auth, tenders, saved searches, notifications, intelligence and
+  integrations behind the four authorization gates. `middlewares/{auth,authorize,rateLimit,validate,error}.js` are all
+  implemented.
+- **Intelligence (phase 3) is built:** price benchmarks (tiered, materialised, including
+  buyer-specific pairs), `competitor-prices` per tender, expected competition, buyer and supplier
+  profiles, and an AI price recommendation. Competitor prices and win rates are the features that
+  need **no CPV**, which is why they work across the whole corpus.
+- **`sample_size` is not sample independence.** Awards are per lot, so one multi-lot procurement
+  can clear `MIN_COMPARABLES` alone — 47 of the 55 categories that pass draw from fewer than five
+  distinct tenders. `price_benchmarks.distinct_tenders` carries the real figure; anything that
+  states a confidence must read it, not `sample_size`.
+- `aiExtractor.js` is still an empty file, but the Anthropic adapter it needs now exists at
+  `src/libs/adapters/ai/anthropic.js` — the only file permitted to import the SDK.
+- **Schema changes against the live database go in an additive script**, not `create_table.js`:
+  `npm run migrate:intelligence` is the pattern — `IF NOT EXISTS` throughout, safe to re-run,
+  with the same change mirrored into `create_table.js` so a fresh database matches.
 
 Read [PROJECT_STATUS.md](PROJECT_STATUS.md) for the file-by-file gap analysis in blocking
 order before starting anything non-trivial; it is kept current and states the recommended next step.

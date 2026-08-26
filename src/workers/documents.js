@@ -112,12 +112,25 @@ export const handleTenderDocuments = async (job, token) => {
   }
 
   const facts = await tenders.applyInvitationFacts({
+    source,
     sourceId: `${source}:${sourceId}`,
     url: invitationUrl,
     storageKey: archiveKey,
     taxId: parsed.taxId,
     cpvCode: parsed.dominantCpv,
+    lots: parsed.lots,
   });
+
+  // Rows parsed but not one usable lot number means the first column of the
+  // Ծածկագիր table moved. Without this it is silent: the lots simply are not
+  // written, and `parsed.lots.length` below is non-zero so that warning misses
+  // it — the same zero-usable-rows-on-a-200 failure the sweep alarms on.
+  if (facts.lotsSeen > 0 && facts.lotsWritten === 0) {
+    log.warn(
+      `invitation parsed ${facts.lotsSeen} lot row(s) but none carried a usable ` +
+        'lot number — the Ծածկագիր table layout likely changed'
+    );
+  }
 
   await sourcePayloads.record({ source, ref, storageKey: archiveKey, hash });
 

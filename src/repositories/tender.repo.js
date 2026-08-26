@@ -141,11 +141,23 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
         fetched_at: fetchedAt,
       });
 
-      // One award per lot. A tie (or a re-run lot) can show two rank-1 bidders,
-      // which would violate the awards unique key, abort the whole transaction
-      // and leave the tender permanently un-normalized. The losing duplicate is
-      // still preserved in full on public_tender_bids.
-      if (bid.rank === 1 && !awardedLots.has(lot.lotNumber)) {
+      /**
+       * The award goes to the best-ranked ACCEPTED bid, not simply to rank 1.
+       *
+       * The source ranks every submission including the ones it rejected
+       * (`Մերժված`), and a lot whose rank-1 bidder was rejected is won by the
+       * next valid bidder — or by nobody. Awarding on rank alone recorded 544
+       * of 2,469 awards (22%) to companies the source had explicitly rejected,
+       * including a bid of 6,666,600,000,000 AMD against a 75,000 budget that
+       * the buyer had thrown out. That corrupts exactly what the awards table
+       * exists for: who really won, and at what price.
+       *
+       * Bids arrive rank-sorted, so the first accepted one encountered per lot
+       * is the winner. A lot with no accepted bid produces no award, which is
+       * the honest reading of a failed lot.
+       */
+      const accepted = bid.participantStatus ? false : true;
+      if (accepted && !awardedLots.has(lot.lotNumber)) {
         awardedLots.add(lot.lotNumber);
         awardRows.push({
           id: createId(),
@@ -176,7 +188,208 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
   return { awards: awardRows.length, bids: bidRows.length };
 };
 
+
+/**
+ * Opaque cursor: the exact sort key of the last row returned.
+ *
+ * Offset pagination silently repeats or skips rows when inserts land mid-scan,
+ * and a feed of newly published tenders is exactly that case — the sweep writes
+ * while a user pages. The id tiebreaker is not optional: two tenders published
+ * in the same second would otherwise straddle a page boundary and one would be
+ * lost.
+ */
+const encodeCursor = (row) =>
+  Buffer.from(`${row.published_at ? new Date(row.published_at).toISOString() : ''}|${row.id}`).toString('base64url');
+
+const decodeCursor = (cursor) => {
+  if (!cursor) return null;
+  try {
+    const [at, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+    return id ? { publishedAt: at || null, id } : null;
+  } catch {
+    return null;
+  }
+};
+
 export default class TenderRepository {
+
+  /**
+   * Filtered, cursor-paginated tender search — the discovery query.
+   *
+   * CPV matches the tender headline code OR any of its lots. That is the whole
+   * point of tender_lots: a tender whose lot 7 of 18 is a supplier's category
+   * must surface for them, and matching only `tenders.cpv_code` would silently
+   * hide it. A missed tender is the product's #1 churn cause.
+   *
+   * Only `is_latest` rows are returned, so an amended tender appears once, at
+   * its current version.
+   */
+  static async search({
+    cpvCodes = [],
+    keyword = null,
+    buyerId = null,
+    region = null,
+    minValue = null,
+    maxValue = null,
+    procedureType = null,
+    status = null,
+    deadlineAfter = null,
+    deadlineBefore = null,
+    limit = 20,
+    cursor = null,
+  } = {}, trx = db) {
+    // Sort key coalesces NULL publish dates to -infinity so the row-value
+    // cursor comparison stays valid instead of silently dropping them.
+    const SORT = trx.raw("coalesce(t.published_at, '-infinity'::timestamp)");
+
+    const query = trx(`${TABLE} as t`)
+      .join('parties as b', 'b.id', 't.buyer_id')
+      .where('t.is_latest', true)
+      .select(
+        't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
+        't.procedure_type', 't.status', 't.source_status', 't.estimated_value',
+        't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
+        'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region'
+      );
+
+    if (cpvCodes.length) {
+      query.where((q) =>
+        q.whereIn('t.cpv_code', cpvCodes).orWhereExists((sub) =>
+          sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereIn('l.cpv_code', cpvCodes)
+        )
+      );
+    }
+
+    if (keyword) {
+      // ILIKE rather than full-text search: Postgres ships no Armenian
+      // dictionary, so a tsvector would only tokenise, not stem — and at this
+      // corpus size a scan costs milliseconds. Revisit with a trigram index
+      // when the archive is fully seeded.
+      const like = `%${String(keyword).trim()}%`;
+      query.where((q) =>
+        q.whereILike('t.title', like).orWhereILike('t.reference_code', like).orWhereExists((sub) =>
+          sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereILike('l.name', like)
+        )
+      );
+    }
+
+    if (buyerId) query.where('t.buyer_id', buyerId);
+    if (region) query.whereILike('b.region', `%${region}%`);
+    if (procedureType) query.where('t.procedure_type', procedureType);
+    if (status) query.whereIn('t.status', Array.isArray(status) ? status : [status]);
+    if (minValue !== null) query.where('t.estimated_value', '>=', minValue);
+    if (maxValue !== null) query.where('t.estimated_value', '<=', maxValue);
+    if (deadlineAfter) query.where('t.deadline_at', '>=', deadlineAfter);
+    if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
+
+    const after = decodeCursor(cursor);
+    if (after) {
+      query.whereRaw(`(coalesce(t.published_at, '-infinity'::timestamp), t.id) < (?, ?)`, [
+        after.publishedAt ?? '-infinity',
+        after.id,
+      ]);
+    }
+
+    // One extra row answers "is there a next page?" without a second count
+    // query, which on a filtered scan would cost as much as the page itself.
+    const rows = await query.orderBy([{ column: SORT, order: 'desc' }, { column: 't.id', order: 'desc' }]).limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return { rows: page, cursor: page.length ? encodeCursor(page[page.length - 1]) : null, hasMore };
+  }
+
+  /** Full detail for one tender, including its lots. */
+  static async findDetail(id, trx = db) {
+    const tender = await trx(`${TABLE} as t`)
+      .join('parties as b', 'b.id', 't.buyer_id')
+      .where('t.id', id)
+      .select('t.*', 'b.name as buyer_name', 'b.tax_id as buyer_tax_id', 'b.region as buyer_region')
+      .first();
+    if (!tender) return null;
+
+    const [lots, documents] = await Promise.all([
+      trx('tender_lots').where({ tender_id: id }).orderBy('lot_number').select('lot_number', 'cpv_code', 'name'),
+      trx('tender_documents').where({ tender_id: id }).select('kind', 'url', 'parsed'),
+    ]);
+
+    return { ...tender, lots, documents };
+  }
+
+
+  /**
+   * Tenders whose invitation archive was never fetched.
+   *
+   * The document stage is triggered by the normalizer, and only when a tender
+   * actually CHANGED (`result.event`). That leaves two permanent gaps:
+   *
+   *   1. A settled tender never changes again, so it emits no further event —
+   *      nothing will ever enqueue its invitation.
+   *   2. The historical seed skips archives entirely while `backfillDocuments`
+   *      is false, so every tender it ingests starts with no CPV and no buyer
+   *      tax ID.
+   *
+   * Neither self-heals, and both look identical in the data to "this tender has
+   * no CPV". This query is how those get picked up deliberately — the same
+   * shape as findNeedingRefresh, driven from the database rather than from the
+   * board.
+   */
+  static async findMissingInvitationDocuments({ source = 'armeps', limit = 500 }, trx = db) {
+    return trx(`${TABLE} as t`)
+      .leftJoin('tender_documents as d', 'd.tender_id', 't.id')
+      .whereNotNull('t.invitation_url')
+      .whereNull('d.id')
+      .andWhere('t.source_id', 'like', `${source}:%`)
+      // Newest first: recent tenders are the ones a supplier might still act
+      // on, so they get their category filled in first.
+      .orderBy('t.published_at', 'desc')
+      .limit(limit)
+      .select('t.id', 't.source_id', 't.invitation_url');
+  }
+
+
+  /**
+   * Rebuild `awards` from the stored bid ledger.
+   *
+   * A repair path, not part of normal ingestion. Awards used to be written for
+   * whichever bid ranked 1, including bids the source had rejected — so 22% of
+   * them named the wrong company at an invalid price. Fixing the writer only
+   * helps tenders that change again, and a settled tender never does.
+   *
+   * `public_tender_bids` already stores rank AND accept/reject status for every
+   * bid, so the correct winner can be recomputed entirely from the database —
+   * no re-crawl, no re-parse. The winner is the lowest-ranked accepted bid per
+   * lot; a lot with no accepted bid yields no award.
+   */
+  static async rebuildAwardsFromBids({ source = 'armeps' } = {}) {
+    return db.transaction(async (trx) => {
+      const before = Number((await trx('awards').where({ source }).count('* as c').first()).c);
+
+      await trx('awards').where({ source }).del();
+
+      // DISTINCT ON keeps the first row per (tender, lot) after ordering by
+      // rank — Postgres doing the winner selection in one pass.
+      const inserted = await trx.raw(
+        `INSERT INTO awards (id, tender_id, lot_number, supplier_id, amount, estimated_value, currency, awarded_at, status, source)
+         SELECT DISTINCT ON (b.tender_id, b.lot_number)
+                substr(md5(random()::text || b.id), 1, 24),
+                b.tender_id, b.lot_number, b.supplier_id,
+                b.final_offer_price, b.budget_price, b.currency,
+                t.auction_at, 'awarded', b.source
+           FROM public_tender_bids b
+           JOIN tenders t ON t.id = b.tender_id
+          WHERE b.source = ?
+            AND b.status = 'accepted'
+            AND b.supplier_id IS NOT NULL
+          ORDER BY b.tender_id, b.lot_number, b.rank ASC NULLS LAST`,
+        [source]
+      );
+
+      const after = Number((await trx('awards').where({ source }).count('* as c').first()).c);
+      return { before, after, rebuilt: inserted.rowCount ?? after };
+    });
+  }
+
   static async findBySourceId(sourceId, trx = db) {
     return trx(TABLE).where({ source_id: sourceId }).first();
   }
@@ -189,7 +402,7 @@ export default class TenderRepository {
    * so this is the only path that can ever populate them. One transaction, so
    * a tender never shows a CPV whose source document was not recorded.
    */
-  static async applyInvitationFacts({ sourceId, url, storageKey, taxId, cpvCode }) {
+  static async applyInvitationFacts({ source = 'armeps', sourceId, url, storageKey, taxId, cpvCode, lots = [] }) {
     return db.transaction(async (trx) => {
       const tender = await trx(TABLE).where({ source_id: sourceId }).first();
       if (!tender) return { skipped: 'unknown_tender' };
@@ -201,6 +414,38 @@ export default class TenderRepository {
       }
 
       const taxIdSet = taxId ? await parties.setTaxId(tender.buyer_id, taxId, trx) : false;
+
+      // Replace rather than merge: the invitation lists the lots in full, so it
+      // is authoritative, and a lot removed by an addendum must disappear here
+      // too. Only when something parsed — an empty result means the lot table
+      // moved, not that the tender lost its lots.
+      //
+      // Collapsed on the storage key rather than left to the unique index. The
+      // invitation prints most lots twice, in a summary table and a detail
+      // table, and the two can disagree; the parser deliberately keeps both.
+      // Letting that reach Postgres makes a disagreement a 23505 that aborts
+      // this transaction and loses the CPV, the tax ID and the document row
+      // along with the lots. Last one wins instead.
+      const rows = new Map();
+      for (const lot of lots) {
+        if (!Number.isFinite(lot.lotNumber)) continue;
+        const itemSequence = Number.isFinite(lot.itemSequence) ? lot.itemSequence : 0;
+        rows.set(`${lot.lotNumber}:${itemSequence}`, {
+          id: createId(),
+          tender_id: tender.id,
+          lot_number: lot.lotNumber,
+          cpv_code: lot.cpvCode ?? null,
+          item_sequence: itemSequence,
+          name: lot.name ?? null,
+          source,
+        });
+      }
+
+      const lotsWritten = rows.size;
+      if (lotsWritten) {
+        await trx('tender_lots').where({ tender_id: tender.id, source }).del();
+        await trx('tender_lots').insert([...rows.values()]);
+      }
 
       // Unique on (tender_id, storage_key), so a concurrent job losing this
       // race is a no-op rather than a duplicate row or a thrown 23505.
@@ -220,6 +465,8 @@ export default class TenderRepository {
         tenderId: tender.id,
         cpvSet: Boolean(cpvCode && !tender.cpv_code),
         taxIdSet,
+        lotsSeen: lots.length,
+        lotsWritten,
         documentRecorded: (inserted?.rowCount ?? 0) > 0,
       };
     });

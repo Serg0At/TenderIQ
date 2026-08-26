@@ -57,10 +57,23 @@ export const listProspectCandidates = async (
       trx.raw('count(distinct b.tender_id)::int as tender_count'),
       trx.raw(`count(*) filter (where b.rank = 1 and b.status <> 'rejected')::int as win_count`),
       trx.raw(`count(*) filter (where b.rank <> 1 or b.status = 'rejected')::int as loss_count`),
-      trx.raw('sum(b.final_offer_price)::numeric as total_final_value'),
-      trx.raw('percentile_cont(0.5) within group (order by b.final_offer_price)::numeric as median_final_value'),
-      trx.raw('min(b.final_offer_price)::numeric as min_final_value'),
-      trx.raw('max(b.final_offer_price)::numeric as max_final_value'),
+      /**
+       * Money statistics count ACCEPTED bids only.
+       *
+       * A rejected bid was thrown out by the buyer, so it is not evidence of
+       * what anything sells for — and it is where the garbage lives: one
+       * bidder submitted 6,666,600,000,000 AMD against a 75,000 budget and was
+       * duly rejected. Including rejects put the average bid at 317 billion
+       * AMD instead of 3 million, a 107,000x error that fed straight into
+       * value-density scoring.
+       *
+       * The win/loss counts above deliberately do NOT filter: being rejected
+       * is still participation, and still a loss.
+       */
+      trx.raw(`sum(b.final_offer_price) filter (where b.status = 'accepted')::numeric as total_final_value`),
+      trx.raw(`percentile_cont(0.5) within group (order by b.final_offer_price) filter (where b.status = 'accepted')::numeric as median_final_value`),
+      trx.raw(`min(b.final_offer_price) filter (where b.status = 'accepted')::numeric as min_final_value`),
+      trx.raw(`max(b.final_offer_price) filter (where b.status = 'accepted')::numeric as max_final_value`),
       trx.raw('min(t.published_at) as first_tender_published_at'),
       trx.raw('max(t.published_at) as last_tender_published_at'),
       // Titles + goods/works/services labels for the last N tenders this
@@ -120,8 +133,13 @@ export const getProofSheetData = async (supplierId, { sinceMonths = 24 } = {}, t
     .join('tenders as t', 't.id', 'lost.tender_id')
     .join('parties as buyer', 'buyer.id', 't.buyer_id')
     .leftJoin('public_tender_bids as won', function joinWinner() {
+      // The rival to compare against is the winning bid — which means the
+      // best-ranked ACCEPTED bid, not whatever ranked 1. A rejected rank-1
+      // bidder never won the lot, and comparing a real price against their
+      // discarded number produces a meaningless "% above winner".
       this.on('won.tender_id', '=', 'lost.tender_id')
         .andOn('won.lot_number', '=', 'lost.lot_number')
+        .andOn('won.status', '=', trx.raw(`'accepted'`))
         .andOn('won.rank', '=', trx.raw('1'));
     })
     .leftJoin('parties as rival', 'rival.id', 'won.supplier_id')

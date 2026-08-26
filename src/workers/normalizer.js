@@ -4,7 +4,7 @@ import { getStorage } from '../libs/storage/index.js';
 import { parseDetail } from '../libs/adapters/source/armeps/detail.parser.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
-import { ingestFetchQueue } from '../queues/index.js';
+import { ingestFetchQueue, alertsQueue, maintenanceQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256 } from '../utils/hash.js';
 import { logger } from '../utils/logger.js';
@@ -103,8 +103,8 @@ export const normalizeTender = async ({
     return { event: null, skipped: 'stale_payload' };
   }
 
-  const { baseUrl } = getSourceConfig(source);
-  const detail = parseDetail(await readPayload(storageKey), { baseUrl });
+  const sourceConfig = getSourceConfig(source);
+  const detail = parseDetail(await readPayload(storageKey), { baseUrl: sourceConfig.baseUrl });
 
   // Layout-health alarm, the detail-page counterpart to blocksSeen: a page that
   // parsed to no labels at all is a redesign, not an empty tender.
@@ -151,7 +151,12 @@ export const normalizeTender = async ({
   // would re-download the same unchanged 600 KB archive on every one of them.
   // The content-hash check inside the handler only skips the storage write —
   // by then the request has already been paid for out of the 20/min budget.
-  if (result.event && detail.invitationUrl && getSourceConfig(source).downloadDocuments) {
+  // The seed skips archives unless explicitly opted in — see backfillDocuments.
+  const documentsWanted =
+    sourceConfig.downloadDocuments &&
+    (priority !== PRIORITY.BACKFILL || sourceConfig.backfillDocuments === true);
+
+  if (result.event && detail.invitationUrl && documentsWanted) {
     await ingestFetchQueue.add(
       JOB.TENDER_DOCUMENTS,
       { source, sourceId, invitationUrl: detail.invitationUrl },
@@ -162,8 +167,32 @@ export const normalizeTender = async ({
     );
   }
 
-  // There is no event bus yet. Returning the event gives the BullMQ completion
-  // record a durable hand-off point for the matcher/notifier to be built on.
+  // The domain event, delivered as a job. Only on a real change, so a
+  // re-normalize that moved nothing cannot re-alert anyone.
+  if (result.event) {
+    await alertsQueue.add(
+      JOB.MATCH_TENDER,
+      { tenderId: result.tenderId, event: result.event, changedFields: result.changedFields ?? [] },
+      {
+        // Keyed on the tender's version so each amendment matches exactly once,
+        // however many times this job is retried.
+        jobId: `match-${result.tenderId}-v${result.version}`,
+        priority,
+      }
+    );
+  }
+
+  // A settled tender changes what "similar tenders won at" means for its
+  // categories, so its benchmarks are refreshed. Only when awards actually
+  // landed — an active tender with no ledger moves no prices.
+  if (result.event && (result.awards ?? 0) > 0) {
+    await maintenanceQueue.add(
+      JOB.RECOMPUTE_BENCHMARKS,
+      { tenderId: result.tenderId },
+      { jobId: `benchmarks-${result.tenderId}-v${result.version}`, priority }
+    );
+  }
+
   if (result.event) logger.info(`[normalizer] ${result.event}`, { sourceId, ...result });
   return result;
 };
