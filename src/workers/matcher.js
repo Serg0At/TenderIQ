@@ -3,7 +3,7 @@ import { JOB } from '../queues/names.js';
 import savedSearches from '../repositories/savedSearch.repo.js';
 import notifications from '../repositories/notification.repo.js';
 import tenders from '../repositories/tender.repo.js';
-import { getChannel } from '../services/delivery.service.js';
+import { getChannel, channelsForOrg } from '../services/delivery.service.js';
 import { scoreMatch, MATCH_THRESHOLD } from '../services/matcher.service.js';
 import { logger } from '../utils/logger.js';
 
@@ -89,9 +89,19 @@ export const handleTenderMatched = async (job) => {
     // matcher is silent rather than a second ping.
     if (!created) continue;
 
-    // Fall back to the log channel when a profile names none, so a match is
-    // never silently created and never delivered.
-    const channels = profile.channels?.length ? profile.channels : ['log'];
+    /**
+     * A profile that names no channel is asking to be reached however this org
+     * can be reached — so resolve it now rather than falling back to `log`,
+     * which is an operator record and not a delivery. Reminders and vault
+     * expiry already route through `channelsForOrg` for the same reason.
+     *
+     * Dedupe is per (org, tender, type) and only a newly created notification
+     * reaches this line, so this runs at most once per org per tender however
+     * many of that org's profiles matched.
+     */
+    const channels = profile.channels?.length
+      ? profile.channels
+      : await channelsForOrg(profile.organization_id);
     for (const channelName of channels) {
       const channel = getChannel(channelName);
       // The channel writes its own alert_deliveries rows — one per destination

@@ -6,7 +6,13 @@ import trackedTenderRoutes from './trackedTenders/trackedTender.routes.js';
 import supplierIdentityRoutes from './trackedTenders/supplierIdentity.routes.js';
 import vaultRoutes from './vault/vaultDocument.routes.js';
 import notificationRoutes from './notifications/notification.routes.js';
-import intelligenceRoutes from './intelligence/intelligence.routes.js';
+import {
+  tenderIntelligenceRoutes,
+  benchmarkRoutes,
+  competitionRoutes,
+  supplierRoutes,
+  buyerRoutes,
+} from './intelligence/intelligence.routes.js';
 import integrationRoutes from './integrations/integration.routes.js';
 import { checkHealth, publicReport } from '../workers/health.js';
 import { ok } from '../utils/respond.js';
@@ -41,7 +47,18 @@ router.use('/organization', supplierIdentityRoutes);
 router.use('/vault-documents', vaultRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/integrations', integrationRoutes);
-// Mounted at the root so it can own /tenders/:id/benchmark alongside /benchmarks/:cpv.
-router.use('/', intelligenceRoutes);
+
+// Intelligence spans five prefixes rather than one namespace, so it is mounted
+// once per prefix. It must NOT be mounted at '/': a router there matches every
+// unrouted path, so its auth gate ran before the 404 handler could and a typo
+// answered 401 — or, for a Free plan, 402 "upgrade to reach this" about an
+// endpoint that does not exist. The tender-scoped half goes after
+// `tenderRoutes` so /tenders and /tenders/:id keep their own `tender:read`
+// gate instead of inheriting the Pro-only one.
+router.use('/tenders', tenderIntelligenceRoutes);
+router.use('/benchmarks', benchmarkRoutes);
+router.use('/competition', competitionRoutes);
+router.use('/suppliers', supplierRoutes);
+router.use('/buyers', buyerRoutes);
 
 export default router;

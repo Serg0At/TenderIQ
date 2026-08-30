@@ -62,6 +62,10 @@ function up(pg) {
       table.string('status').notNullable();
       table.string('source').notNullable().defaultTo('armeps');
       table.unique(['tender_id', 'lot_number', 'source'], { indexName: 'awards_tender_lot_source_uq' });
+      // The parent side of the key `contracts` anchors on. Trivially satisfied — `id` is
+      // already the primary key — and it exists only so a composite FK can reference the
+      // pair, which is what stops a contract naming an award from a different tender.
+      table.unique(['id', 'tender_id'], { indexName: 'awards_id_tender_uq' });
       // Supplier profiles filter by party; without this every win-rate read is
       // a sequential scan. Mirrored in add_intelligence_indexes.js.
       table.index(['supplier_id'], 'awards_supplier_idx');
@@ -125,11 +129,19 @@ function up(pg) {
       table.index(['cpv_code'], 'tender_lots_cpv_idx');
     })
 
-    // contracts — Signed contract values following an award; deliberately empty until
+    // contracts — Signed contract values following a procurement; deliberately empty until
     // post-award tracking is built (phase 6).
     .createTable('contracts', table => {
       table.string('id').primary();
-      table.string('award_id').notNullable().references('id').inTable('awards').onDelete('CASCADE');
+      // The anchor is the TENDER, not the award. Requiring an award asserted that every
+      // contract follows a separately published one, which is false for single-source and
+      // direct awards, and it inverts OCDS — a release is keyed by the process (`ocid`,
+      // the tender) and `awardID` is a pointer within it.
+      table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
+      // Nullable, and carrying NO single-column FK of its own: it is half of the composite
+      // key in indexes(), and an independent FK beside that key is what lets the two
+      // disagree about which award belongs to which tender.
+      table.string('award_id');
       table.decimal('value', 18, 2);
       table.timestamp('signed_at');
       table.string('status').notNullable();
@@ -432,8 +444,7 @@ function up(pg) {
     // cannot open a conversation, so a chat has to be linked by the user messaging
     // the bot first; that gives a subscription a lifecycle (pending → verified →
     // revoked) which a column on `organizations` has nowhere to hold. Per-recipient
-    // quiet hours (BR-10) live here for the same reason. Mirrored in
-    // add_channel_subscriptions.js.
+    // quiet hours (BR-10) live here for the same reason. 
     .createTable('channel_subscriptions', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
@@ -640,6 +651,28 @@ async function indexes(pg) {
      FOREIGN KEY (vault_document_id, organization_id)
      REFERENCES vault_documents (id, organization_id)
      ON DELETE SET NULL (vault_document_id)`);
+
+  /**
+   * A contract cannot name an award belonging to a different tender.
+   *
+   * MATCH SIMPLE — the default, stated because it is load-bearing — makes the whole
+   * constraint inert when `award_id` is NULL, which is exactly the single-source case the
+   * nullable column exists for. When an award IS named, the pair must agree.
+   *
+   * SET NULL takes a column list for the same reason checklist_items -> vault_documents
+   * does: a listless composite SET NULL nulls EVERY column in the key, so deleting an
+   * award would try to null `tender_id` too and fail its NOT NULL. Deleting an award
+   * detaches the contract from it; the contract, and its tender, remain.
+   */
+  await pg.raw(`ALTER TABLE contracts ADD CONSTRAINT contracts_award_tender_fk
+     FOREIGN KEY (award_id, tender_id)
+     REFERENCES awards (id, tender_id) MATCH SIMPLE
+     ON DELETE SET NULL (award_id)`);
+
+  // Every sibling table holding a tender FK carries a leading-tender_id index; this one
+  // also backs the cascade when a tender is deleted.
+  await pg.raw(`CREATE INDEX IF NOT EXISTS contracts_tender_idx
+     ON contracts (tender_id)`);
 
   await pg.raw(`CREATE INDEX IF NOT EXISTS notifications_subject_idx
      ON notifications (organization_id, type, subject_id) WHERE subject_id IS NOT NULL`);

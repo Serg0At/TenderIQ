@@ -292,14 +292,18 @@ Load-bearing details:
   the parent's `UNIQUE (id, organization_id)`, so the denormalised org id cannot drift. Two
   independent foreign keys do not achieve this: Postgres accepted a `bids` row claiming org B
   whose `tracked_tenders` parent belonged to org A. `bids_parent_org_fk` is the pattern.
-- **Phase 6, decided ahead of time:** `contracts.award_id` is `NOT NULL` today, which asserts
+- **`contracts` is anchored on the tender, not the award.** `award_id NOT NULL` asserted that
   every contract has a separately published award. That is false for single-source and direct
   awards, and inverts OCDS — where a release is keyed by the process (`ocid`, i.e. the tender)
-  and `awardID` is a pointer within it. `contracts` should carry `tender_id` (NOT NULL, FK to
-  `tenders`) with `award_id` nullable, anchored by a composite FK on `(award_id, tender_id)`
-  against `awards UNIQUE (id, tender_id)`. `MATCH SIMPLE` makes the composite inert when
-  `award_id` is NULL, which is exactly right. Rationale in PROJECT_STATUS.md; not built —
-  `contracts` has no writer.
+  and `awardID` is a pointer within it. So `contracts` carries `tender_id` (NOT NULL, FK to
+  `tenders`) with `award_id` nullable and no single-column FK of its own, anchored by
+  `contracts_award_tender_fk` on `(award_id, tender_id)` against `awards_id_tender_uq`.
+  `MATCH SIMPLE` makes the composite inert when `award_id` is NULL, which is exactly the
+  single-source case; when an award IS named the pair must agree, so a contract cannot claim
+  an award from a different tender. `ON DELETE SET NULL (award_id)` takes the column list for
+  the same reason `checklist_items` does — a listless composite SET NULL would null
+  `tender_id` too and fail its NOT NULL. Applied while the table was empty, which is why
+  `tender_id` could be NOT NULL with no backfill; `contracts` still has no writer (phase 6).
 - `bids` and `public_tender_bids` are two tables on purpose and must stay that way. `bids` is
   private tenant data that never leaves its tenant; `public_tender_bids` is public record that
   feeds benchmarks published across the whole corpus. Merging them would put a supplier's

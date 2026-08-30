@@ -20,9 +20,6 @@ async function down(pg) {
     'checklists',
     'bids',
     'tracked_tenders',
-    // After checklist_items, not before: checklist_items carries the composite FK
-    // (vault_document_id, organization_id) into this table, so dropping it earlier
-    // aborts the whole transaction and migrate:down can never complete.
     'vault_documents',
     'memberships',
     'role_permissions',

@@ -67,6 +67,23 @@ const intList = (key, fallback) => {
   return [...new Set(parsed)].sort((a, b) => b - a);
 };
 
+/**
+ * A comma-separated list of origins, normalised for comparison against a
+ * browser's `Origin` header: lower-cased and stripped of any trailing slash,
+ * because `http://localhost:3000/` in an env file and `http://localhost:3000`
+ * on the wire are the same origin and a literal string match would say
+ * otherwise. Deduped, order irrelevant.
+ */
+const originList = (key, fallback) => {
+  const raw = optional(key, undefined);
+  if (raw === undefined) return fallback;
+  const parsed = String(raw)
+    .split(',')
+    .map((part) => part.trim().toLowerCase().replace(/\/+$/, ''))
+    .filter(Boolean);
+  return [...new Set(parsed)];
+};
+
 const bool = (key, fallback) => {
   const raw = optional(key, undefined);
   if (raw === undefined) return fallback;
@@ -105,6 +122,28 @@ const config = {
   LOG_LEVEL: optional('LOG_LEVEL', 'info'),
 
   ADMIN_PASSWORD: optional('ADMIN_PASSWORD', undefined),
+
+  /**
+   * Browser access control. `CORS_ORIGIN` is a comma-separated allowlist; the
+   * name matches the `cors` option it feeds, and it is the one spelling — an
+   * env file that said `CORS` while the code read `CORS_ORIGIN` silently fell
+   * through to a wildcard for the whole of this project's life.
+   *
+   * There is deliberately no wildcard here. `origin: '*'` alongside
+   * `credentials: true` is a combination browsers reject outright for any
+   * credentialed request, so it reads as permissive while actually being
+   * broken; reflecting whatever origin asks would be worse, since it hands
+   * every site on the internet the ability to make credentialed calls.
+   *
+   * An empty list therefore means "no cross-origin browser access", not
+   * "all". That is fail-closed and costs nothing to the clients that do not
+   * send an `Origin` header at all — curl, server-to-server, same-origin — as
+   * CORS never applies to them. Outside production an empty list reflects the
+   * caller instead, so a dev frontend on any localhost port just works.
+   */
+  CORS: {
+    ORIGINS: originList('CORS_ORIGIN', []),
+  },
 
   PSQL: {
     PORT: int('PSQL_PORT', 5432),
@@ -348,4 +387,4 @@ const config = {
 };
 
 export default config;
-export { required, optional, int, intList, bool, oneOf };
+export { required, optional, int, intList, originList, bool, oneOf };

@@ -444,9 +444,9 @@ order before starting anything non-trivial; it is kept current and states the re
 | Document | Contents |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, boundaries, layering, target folder tree, data model, queue topology, domain events |
-| [PROJECT_STATUS.md](PROJECT_STATUS.md) | gap analysis against the reference spec, ordered by what blocks what |
 | [docs/SCRAPER_WORKFLOW.md](docs/SCRAPER_WORKFLOW.md) | ingestion pipeline stage by stage, idempotency and failure model |
 | [docs/AI_COST_MODEL.md](docs/AI_COST_MODEL.md) | what each AI feature costs, measured vs estimated, cost levers, quota design |
+| [docs/COMPETITORS.md](docs/COMPETITORS.md) | field notes on itender.am — the closest real competitor, absent from the spec |
 
 ### Reference specification (outside this repo)
 
