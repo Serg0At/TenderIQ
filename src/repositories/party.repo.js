@@ -111,6 +111,31 @@ export default class PartyRepository {
     return trx(TABLE).where({ id }).first();
   }
 
+  /**
+   * Find a supplier by name, so an organisation can claim its own identity.
+   *
+   * Search rather than auto-match on purpose. Party names here are scraped
+   * Armenian legal names with inconsistent quoting ("ՍՊԸ" vs «ՍՊԸ»), and a
+   * fuzzy auto-link would eventually attach one company's win record to
+   * another company's account — a failure nobody would see, because the numbers
+   * would simply be wrong rather than missing. A human picks from this list.
+   *
+   * `bid_count` is what makes the list usable: several parties can share a
+   * trading name, and the one with 40 bids is almost always the one meant.
+   */
+  static async searchSuppliers({ query, limit = 20 }, trx = db) {
+    const like = `%${String(query).trim()}%`;
+    return trx(`${TABLE} as p`)
+      .leftJoin('public_tender_bids as b', 'b.supplier_id', 'p.id')
+      .whereIn('p.role', ['supplier', 'both'])
+      .andWhere((q) => q.whereILike('p.name', like).orWhere('p.tax_id', String(query).trim()))
+      .groupBy('p.id', 'p.name', 'p.tax_id', 'p.region')
+      .select('p.id', 'p.name', 'p.tax_id', 'p.region')
+      .count('b.id as bid_count')
+      .orderBy('bid_count', 'desc')
+      .limit(limit);
+  }
+
   static async countByRole(role, trx = db) {
     const row = await trx(TABLE).where({ role }).count('* as c').first();
     return Number(row.c);

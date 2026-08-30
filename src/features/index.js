@@ -2,6 +2,9 @@ import { Router } from 'express';
 import authRoutes from './auth/auth.routes.js';
 import tenderRoutes from './tenders/tender.routes.js';
 import savedSearchRoutes from './savedSearches/savedSearch.routes.js';
+import trackedTenderRoutes from './trackedTenders/trackedTender.routes.js';
+import supplierIdentityRoutes from './trackedTenders/supplierIdentity.routes.js';
+import vaultRoutes from './vault/vaultDocument.routes.js';
 import notificationRoutes from './notifications/notification.routes.js';
 import intelligenceRoutes from './intelligence/intelligence.routes.js';
 import integrationRoutes from './integrations/integration.routes.js';
@@ -30,6 +33,12 @@ router.get('/health', async (_req, res) => {
 router.use('/auth', authRoutes);
 router.use('/tenders', tenderRoutes);
 router.use('/saved-searches', savedSearchRoutes);
+router.use('/tracked-tenders', trackedTenderRoutes);
+// The supplier identity lives under /organization rather than beside the
+// pipeline: it is an org-level fact that bid outcomes happen to be the first
+// consumer of, and it will outlive this feature folder.
+router.use('/organization', supplierIdentityRoutes);
+router.use('/vault-documents', vaultRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/integrations', integrationRoutes);
 // Mounted at the root so it can own /tenders/:id/benchmark alongside /benchmarks/:cpv.

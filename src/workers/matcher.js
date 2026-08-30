@@ -121,10 +121,28 @@ export const handleTenderMatched = async (job) => {
  */
 export const processMatch = async (job) => {
   switch (job.name) {
+    // processReminder, not handleDeadlineReminders: it runs BOTH the matched
+    // safety net and the tighter pipeline countdown. Calling the inner function
+    // directly is how the countdown would silently never fire.
     case JOB.DEADLINE_REMINDER:
-      return (await import('./reminder.js')).handleDeadlineReminders();
+      return (await import('./reminder.js')).processReminder();
     case JOB.DELIVER_DEFERRED:
       return (await import('./notifier.js')).handleDeferredDeliveries();
+    /**
+     * Rides this queue rather than MAINTENANCE because what it produces is a
+     * customer-visible result — "you won" — not housekeeping, and it must not
+     * queue behind a nightly profile rebuild on the day someone is waiting to
+     * find out.
+     */
+    case JOB.RECONCILE_BIDS:
+      return (await import('../services/bidOutcome.service.js')).default.reconcile();
+    case JOB.EXTRACT_CHECKLIST:
+      return (await import('./aiExtractor.js')).handleChecklistExtract(job);
+    // processVaultExpiry, not one of the inner handlers: it runs the warning
+    // sweep, the lapsed sweep AND the pending-upload prune. Calling an inner
+    // function directly is how the other two would silently never fire.
+    case JOB.VAULT_EXPIRY:
+      return (await import('./vaultExpiry.js')).processVaultExpiry();
     case JOB.MATCH_TENDER:
     default:
       return handleTenderMatched(job);

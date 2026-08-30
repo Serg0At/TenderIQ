@@ -43,7 +43,7 @@ that would catch a gnumner redesign before customers do.
 
 Migrations are hand-run scripts, not the Knex CLI. `migrate:up` runs `up()` over the whole schema in
 one transaction and is not idempotent; `migrate:down` drops all 30 tables. A schema change means
-editing `db/migrations/create_table.js` *and* `drop_table.js`, or adding a new script.
+editing `migrations/create_table.js` *and* `drop_table.js`, or adding a new script.
 
 ## Processes
 
@@ -80,7 +80,18 @@ Related invariants:
 - **Every third party lives behind an adapter** in `src/libs/adapters/<kind>/` — never inline. One
   procurement source = one folder = one parser file to change when the site redesigns.
 - **Tenant isolation is a repository responsibility.** Private queries are scoped by
-  `organization_id` by the repository, not by the caller.
+  `organization_id` by the repository, not by the caller. **Every private table carries the
+  column itself** rather than reaching an org through a join — a two-hop isolation check is one
+  refactor away from being dropped. But a denormalised org id anchored to nothing is *worse*
+  than none: it is a cross-tenant leak that reads as correct. So a child of a private table
+  takes a **composite foreign key** on `(parent_id, organization_id)` referencing the parent's
+  `UNIQUE (id, organization_id)`, and does not also carry a single-column FK to the parent.
+  `bids` → `tracked_tenders` is the worked example; `checklists` and `checklist_items` carry it
+  too, and `checklist_items` → `vault_documents` is the same shape one table across. Postgres accepted a mismatched row before this existed — it was verified, not
+  theorised. One wrinkle worth knowing: a composite `ON DELETE SET NULL` nulls **every**
+  column in the key, `organization_id` included, which fails its NOT NULL — so the optional
+  attachment uses `ON DELETE SET NULL (vault_document_id)` (Postgres 15+). This was found by
+  deleting an attached document, not by reading the manual.
 - **Queue and job names are constants** in [src/queues/names.js](src/queues/names.js). Producers and
   consumers are in different processes, so a typo isn't a crash — it's a job that is silently never
   picked up.
@@ -165,7 +176,7 @@ toward feature folders under `src/features/`. The target tree and per-artifact p
 Roughly: HTTP endpoint → `features/<feature>/{routes,controller}.js` · business rule → `service.js` ·
 SQL → `repository.js` · site parser → `libs/adapters/source/<source>/` · any third-party call →
 `libs/adapters/<kind>/` · background job → `workers/<worker>.js` calling existing services · table
-change → `db/migrations/`.
+change → `migrations/`.
 
 Layering, one direction only: Router → Middleware → Controller → Service → Repository → Knex.
 Controllers hold no branching business logic and no DB access; services know nothing about
@@ -213,8 +224,16 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
   is mandatory — it is a legal and reputational constraint, not a wording preference.
 - **No duplicate alert** for the same tender/event to the same user; respect channel preferences and
   quiet hours.
-- **Expired certificates cannot be attached to a bid package**; a bid in `submitted` state is a
-  read-only locked snapshot.
+- **Expired certificates cannot be attached to a bid package** — enforced by
+  `VaultDocumentService.assertAttachable`, whose one caller today is checklist attachment and
+  whose second will be the bid package; **a bid in
+  `submitted` state is a read-only locked snapshot** — enforced in `trackedTender.service.js`
+  and by a `where locked = false` guard inside the UPDATE itself, so the loser of a concurrent
+  submit is told rather than silently overwriting a submission timestamp.
+- **A tenant's own win rate obeys the same threshold as a public benchmark.** Below
+  `INTELLIGENCE.MIN_COMPARABLES` decided bids, `/tracked-tenders/performance` returns
+  `basis: 'insufficient_data'` and a null rate. One decided bid is 0% or 100%, and both are
+  noise wearing a percentage sign. Raw counts are still returned.
 - **Publish only aggregated/anonymized statistics externally.** Private tenant data (bids, vault)
   never leaves its tenant.
 
@@ -231,7 +250,13 @@ that imports the SDK) and `services/priceRecommendation.service.js`. `aiExtracto
 empty. The rules below are enforced in that service and must hold for anything added:
 
 - **Anthropic Claude API.** Use the current model IDs — `claude-opus-5`, `claude-sonnet-5`,
-  `claude-haiku-4-5`. The reference spec's `ai/Model Selection.md` names an older generation; treat
+  `claude-haiku-4-5`. `ANTHROPIC_BASE_URL` optionally routes the SDK through a
+  Messages-API-compatible gateway (OpenRouter is verified working: base URL
+  `https://openrouter.ai/api` — **not** `.../api/v1`, the SDK appends `/v1/messages` itself —
+  with `AI_MODEL=anthropic/claude-opus-5`). A gateway is only acceptable if it honours
+  `output_config.format` json_schema; without it the extractor loses the schema-constrained
+  output its safety design rests on, and the downgrade is silent. Verify before trusting a new
+  one. The reference spec's `ai/Model Selection.md` names an older generation; treat
   its *routing logic* as current (cheap model for bulk classification, stronger model for hard or
   ambiguous extraction, escalate on low confidence) and its *model IDs* as stale.
 - **Structured outputs, always.** Extraction and classification return schema-validated JSON — no
@@ -273,8 +298,14 @@ Where reference docs say "Prisma client", read "Knex instance"; where they say "
 
 ## Current state
 
-Ingestion, the HTTP API, discovery and the intelligence layer all run. **Bid workflow
-(phase 4) onward does not.**
+Ingestion, the HTTP API, discovery, the intelligence layer, the **bid pipeline**, the **AI
+checklist** and the **document vault** all run. Phase 5 (accounts and billing) and 6
+(post-award) do not exist.
+
+**Team tasks were cut**, not deferred — the assignment/due-date feature was built and then
+removed as unnecessary. Do not rebuild it from the reference spec's `product/Feature List.md`
+(which still lists "Tasks, assignments, roles" as P1) without asking; that is a product
+decision that has already been made.
 
 - **Working:** `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
@@ -287,6 +318,7 @@ Ingestion, the HTTP API, discovery and the intelligence layer all run. **Bid wor
   and `public_tender_bids` have a `source` column so a second writer can be added safely later.
 - **Empty on purpose:** `contracts` (post-award, phase 6) and `cpv_code` / `parties.tax_id` (both
   live only inside the invitation ZIP — see the document stage).
+- **Still no writer:** `contracts`, `subscriptions`, `invoices`, `audit_logs` — all phase 5/6.
 - **Telegram is the one live delivery channel.** A bot cannot open a conversation, so a chat is
   linked by the user opening a `t.me/<bot>?start=<token>` deep link; the token is single-use and
   short-lived, and the chat id lands in `channel_subscriptions`. Quiet hours defer an alert to a
@@ -300,15 +332,109 @@ Ingestion, the HTTP API, discovery and the intelligence layer all run. **Bid wor
   buyer-specific pairs), `competitor-prices` per tender, expected competition, buyer and supplier
   profiles, and an AI price recommendation. Competitor prices and win rates are the features that
   need **no CPV**, which is why they work across the whole corpus.
+- **Bid pipeline (phase 4a/4b) is built:** `tracked_tenders` and `bids` have writers.
+  `/tracked-tenders` serves the board, the pursuit state machine, the draft bid and the
+  submit lock; `/organization/supplier-identity` claims the party this org bids AS.
+  `bids.reconcile` (half-hourly, on the ALERTS queue) resolves submitted bids against the
+  public ledger into `won` / `lost` / `not_found`, storing `winning_price` at resolution time.
+  Deadline reminders now run **two** sweeps: the matched safety net (72h/24h) plus a tighter
+  pipeline countdown (48h/12h/3h) on `considering`/`preparing` pursuits only.
+- **`organizations.supplier_party_id` is the join that makes win/loss possible.** Awards and
+  the public bid ledger identify a bidder by `parties.id`; without this column there is no way
+  to ask "did we win". It is claimed explicitly by a human from a search — **never auto-matched
+  on name**. Party names are scraped Armenian legal names with inconsistent quoting, and a
+  fuzzy link would attach one company's win record to another account invisibly.
+- **`not_found` is a real bid outcome, not an error.** The org says they bid, the ledger does
+  not list them: either it was never submitted, or the ledger is not published yet. Recording
+  `lost` there would fabricate a defeat. It stays unresolved on a non-cancelled tender so the
+  next sweep retries.
+- **A win comes from `awards`, never from `rank = 1`** — the same rule the ingestion layer
+  learned the hard way. The source ranks rejected submissions too.
 - **`sample_size` is not sample independence.** Awards are per lot, so one multi-lot procurement
   can clear `MIN_COMPARABLES` alone — 47 of the 55 categories that pass draw from fewer than five
   distinct tenders. `price_benchmarks.distinct_tenders` carries the real figure; anything that
   states a confidence must read it, not `sample_size`.
-- `aiExtractor.js` is still an empty file, but the Anthropic adapter it needs now exists at
-  `src/libs/adapters/ai/anthropic.js` — the only file permitted to import the SDK.
-- **Schema changes against the live database go in an additive script**, not `create_table.js`:
-  `npm run migrate:intelligence` is the pattern — `IF NOT EXISTS` throughout, safe to re-run,
-  with the same change mirrored into `create_table.js` so a fresh database matches.
+- **AI bid checklist (phase 4c) is built** — `aiExtractor.js` was the last empty file and no
+  longer is. `checklist.extract` reads the stored invitation text into `checklist_items` with a
+  category, a confidence and a **verbatim evidence span**; `/tracked-tenders/:id/checklist`
+  serves it and `POST .../generate` enqueues (202, polled — a model call over a full invitation
+  is far past an HTTP budget).
+- **Every extracted item must quote the document, and the quote is verified in code.** An item
+  whose `evidence` is not actually present in the source text is dropped by
+  `ChecklistExtractionService.verifyEvidence`, not merely discouraged in the prompt. This is the
+  checklist's equivalent of `insufficient_data`: a plausible invented requirement is the worst
+  thing the feature could ship, and a prompt rule is guidance while a containment check is an
+  invariant. Comparison is whitespace-normalised, because run-together spacing is a .docx
+  extraction artifact rather than a property of the document.
+- **Below `AI.CHECKLIST_MIN_CONFIDENCE` (0.75) an item is flagged for human review**, and the
+  flag is **stored, not recomputed on read** — otherwise raising the threshold would silently
+  re-open items a human had already cleared.
+- **No invitation document means `status: 'unavailable'` with a reason, never an empty
+  checklist.** An empty list reads as "nothing is required for this tender", which is the most
+  dangerous thing this feature could say. Only 329 of 2,590 tenders currently have an archive,
+  so this is the common path, not the edge case.
+- **An oversized document is refused, never truncated.** Requirements cluster at the END of an
+  invitation (annexes, submission instructions), so truncation would drop exactly what the
+  feature exists to find while still looking complete.
+- **Manual items survive a regenerate.** `replaceItems` deletes only `source = 'ai'` rows. A
+  human who adds a requirement the model missed must not lose it, or they stop correcting it —
+  and a manual item carries `confidence: null` / `evidence: null` rather than a fabricated 1.0,
+  so a person's assertion stays distinguishable from an extraction.
+- **The document vault (phase 4d) is built.** `/vault-documents` serves the certificate
+  library; `vault.expiry` sweeps daily at 06:11 UTC for lapsing documents, lapsed ones and
+  abandoned uploads.
+- **Uploads never pass through the API.** `POST /vault-documents` registers what the client is
+  about to send and returns a presigned PUT; the client uploads straight to object storage;
+  `POST /:id/confirm` asks storage whether the object arrived. A 20 MB scan streamed through an
+  express handler is memory pressure on the process serving every other request, which is why
+  `express.json` stays at 1 MB. **The key is minted server-side** from the organisation id and
+  the content hash — a presigned PUT is a write capability, so a client-supplied key would let
+  one tenant write into another's prefix. The content type, content length and SSE header are
+  named in `signableHeaders` so they are actually binding; by default the presigner signs only
+  `host`, and an "enforced" content type that is merely advisory lets an executable be stored
+  under a key the vault reports as a PDF.
+- **A row without `status: 'ready'` has no file behind it.** The three-step handshake means a
+  row exists before its bytes do, so `pending` is what separates a real document from an
+  abandoned upload; listings hide it, download and attach refuse it, and the daily sweep prunes
+  it — a stale pending row holds the `(organization_id, hash)` slot and would block a later
+  genuine upload of the same file.
+- **Expiry is derived, never stored** — the exact opposite call from `checklist_items.needs_review`,
+  and for the reason that decides it: a review flag is cleared by a human, so recomputing it
+  would re-open cleared items, while expiry is a pure function of `valid_until` and the clock,
+  so a stored copy could only go stale. `valid_until` NULL means "does not expire" and never alerts.
+- **Deleting a vault document deletes the file**, object first and row second — the ordering
+  that leaves a failed erasure retryable rather than reporting success while the certificate
+  survives in the bucket. Checklist items pointing at it are detached, not deleted: the
+  requirement still exists, it is simply unmet again.
+- **A vault alert has no tender**, which broke BR-9 dedupe — `(org, type, tender_id)` collapses
+  every expiring document in an org into one notification. `notifications.subject_id` is the
+  dedupe key for non-tender alerts and stays NULL for everything else.
+- **An ASCENDING cursor must truncate timestamps to milliseconds on both sides.** Postgres
+  stores `timestamptz` to the microsecond; node-postgres hands JavaScript a `Date`, which holds
+  milliseconds. A cursor built from a fetched row therefore encodes a value slightly EARLIER
+  than the row it came from, so an ascending keyset returns that row again on the next page —
+  observed on a real list, not theorised. Every cursor in the codebase today
+  (`trackedTender.repo.js`, `vaultDocument.repo.js`) is DESCENDING, where the same truncation
+  is harmless: it excludes the cursor row correctly and can only drop a row created inside the
+  same millisecond. The next ascending one needs `date_trunc('milliseconds', …)` in the keyset
+  AND the ORDER BY, which must agree.
+- **Schema changes against the live database go in a throwaway additive script**, never in
+  `create_table.js` directly — that file builds the whole schema in one transaction and cannot
+  be re-run against a database that already holds data. The workflow is four steps, and the
+  last one is the part that surprises people:
+
+  1. Write `migrations/add_<thing>.js`: `IF NOT EXISTS` throughout, and `ADD CONSTRAINT`
+     guarded by a `pg_constraint` lookup, since constraints have no `IF NOT EXISTS` of their
+     own. It must be safe to run twice.
+  2. Run it against every live database.
+  3. **Mirror the identical change into `create_table.js`** so a fresh database comes out the
+     same shape. This is the durable record — the additive script is not.
+  4. **Delete the script.** Once applied everywhere it is dead weight, and a directory of
+     historical one-shots invites someone to re-run one or to read it as current schema.
+
+  So `migrations/` holds only `create_table.js` and `drop_table.js` at rest. If you find an
+  `add_*.js` there, it is in flight — step 2 or 3 has not finished. Past migrations are
+  recoverable from git history if ever needed; they are not kept on disk.
 
 Read [PROJECT_STATUS.md](PROJECT_STATUS.md) for the file-by-file gap analysis in blocking
 order before starting anything non-trivial; it is kept current and states the recommended next step.
@@ -320,6 +446,7 @@ order before starting anything non-trivial; it is kept current and states the re
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, boundaries, layering, target folder tree, data model, queue topology, domain events |
 | [PROJECT_STATUS.md](PROJECT_STATUS.md) | gap analysis against the reference spec, ordered by what blocks what |
 | [docs/SCRAPER_WORKFLOW.md](docs/SCRAPER_WORKFLOW.md) | ingestion pipeline stage by stage, idempotency and failure model |
+| [docs/AI_COST_MODEL.md](docs/AI_COST_MODEL.md) | what each AI feature costs, measured vs estimated, cost levers, quota design |
 
 ### Reference specification (outside this repo)
 

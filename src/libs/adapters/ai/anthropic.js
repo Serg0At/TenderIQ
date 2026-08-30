@@ -26,7 +26,15 @@ const getClient = () => {
     });
   }
   if (!client) {
-    client = new Anthropic({ apiKey: AI.API_KEY, timeout: AI.TIMEOUT_MS });
+    client = new Anthropic({
+      apiKey: AI.API_KEY,
+      timeout: AI.TIMEOUT_MS,
+      // Undefined leaves the SDK on Anthropic direct; set, it routes through a
+      // Messages-API-compatible gateway. See AI.BASE_URL in variables.config.js
+      // for what a gateway has to support before this is safe.
+      ...(AI.BASE_URL ? { baseURL: AI.BASE_URL } : {}),
+    });
+    logger.info(`[ai] client ready — model=${AI.MODEL}${AI.BASE_URL ? ` via ${AI.BASE_URL}` : ''}`);
   }
   return client;
 };
@@ -84,25 +92,44 @@ export const completeStructured = async ({ system, userContent, schema, model = 
       output_config: { format: { type: 'json_schema', schema } },
     });
   } catch (error) {
-    // Typed SDK classes, not string matching on the message.
-    if (error instanceof Anthropic.RateLimitError) {
-      throw new ApiError('RATE_LIMITED', { message: 'The AI service is rate limited.' });
-    }
-    if (error instanceof Anthropic.AuthenticationError) {
-      logger.error('[ai] authentication rejected — check ANTHROPIC_API_KEY');
-      throw new ApiError('DEPENDENCY_UNAVAILABLE', {
-        message: 'AI features are not configured.',
-      });
-    }
-    if (error instanceof Anthropic.APIError) {
-      logger.error(`[ai] api error ${error.status}: ${error.message}`);
-      throw new ApiError('DEPENDENCY_UNAVAILABLE', {
-        message: 'The AI service is unavailable.',
-      });
-    }
-    throw error;
+    return translateError(error);
   }
 
+  return interpret(response);
+};
+
+/**
+ * SDK exception -> the codebase's error vocabulary.
+ *
+ * Typed SDK classes, never string matching on the message: an error message is
+ * prose that changes between SDK versions, and matching on it is a check that
+ * silently stops working.
+ */
+const translateError = (error) => {
+  if (error instanceof Anthropic.RateLimitError) {
+    throw new ApiError('RATE_LIMITED', { message: 'The AI service is rate limited.' });
+  }
+  if (error instanceof Anthropic.AuthenticationError) {
+    logger.error('[ai] authentication rejected — check ANTHROPIC_API_KEY');
+    throw new ApiError('DEPENDENCY_UNAVAILABLE', { message: 'AI features are not configured.' });
+  }
+  if (error instanceof Anthropic.APIError) {
+    logger.error(`[ai] api error ${error.status}: ${error.message}`);
+    throw new ApiError('DEPENDENCY_UNAVAILABLE', { message: 'The AI service is unavailable.' });
+  }
+  throw error;
+};
+
+/**
+ * One response -> a discriminated result. Shared by the streaming and
+ * non-streaming paths, because these are safety checks and two copies drift.
+ *
+ * Never throws on a model outcome. A refusal, a truncation and an unparseable
+ * reply are all things the model legitimately did, and the caller has to be
+ * able to degrade on each — turning them into exceptions would make "the AI
+ * declined" indistinguishable from "the service is down".
+ */
+const interpret = (response) => {
   // Before content. A refusal returns 200 with a stop_details category and no
   // text block — degrade and flag, never crash.
   if (response.stop_reason === 'refusal') {
@@ -134,4 +161,45 @@ export const completeStructured = async ({ system, userContent, schema, model = 
   return { status: 'ok', data: parsed, usage: response.usage, model: response.model };
 };
 
-export default { isConfigured, completeStructured };
+/**
+ * The same call, streamed.
+ *
+ * Not a style preference — a timeout defence. A checklist extraction sends an
+ * entire tender invitation (tens of thousands of tokens) and asks for a long
+ * structured reply, and a non-streaming request of that shape can sit past the
+ * HTTP timeout and fail after doing all the work. Streaming keeps the
+ * connection alive; `finalMessage()` still yields one assembled response, so
+ * every check below is identical to the non-streaming path.
+ *
+ * The response handling is deliberately shared with `completeStructured` via
+ * `interpret()` rather than copy-pasted: the refusal and truncation checks are
+ * safety behaviour, and two copies would drift.
+ */
+export const completeStructuredStreaming = async ({
+  system,
+  userContent,
+  schema,
+  model = AI.MODEL,
+  maxTokens = AI.MAX_TOKENS,
+}) => {
+  const anthropic = getClient();
+
+  let response;
+  try {
+    const stream = anthropic.messages.stream({
+      model,
+      max_tokens: maxTokens,
+      thinking: { type: 'adaptive' },
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: userContent }],
+      output_config: { format: { type: 'json_schema', schema } },
+    });
+    response = await stream.finalMessage();
+  } catch (error) {
+    return translateError(error);
+  }
+
+  return interpret(response);
+};
+
+export default { isConfigured, completeStructured, completeStructuredStreaming };

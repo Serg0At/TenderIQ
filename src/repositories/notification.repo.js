@@ -11,17 +11,31 @@ import db from '../libs/knex.js';
 export default class NotificationRepository {
   /**
    * Create a notification unless one already exists for this
-   * (organization, tender, type).
+   * (organization, type, tender, subject).
    *
-   * BR: no duplicate alert for the same tender/event to the same user. The
+   * BR-9: no duplicate alert for the same tender/event to the same user. The
    * check is a read-then-insert rather than a constraint because the schema has
    * no unique key here; the matcher is single-consumer per tender, so the race
    * window is narrow, and a rare duplicate is far less costly than dropping a
    * real alert.
+   *
+   * `subjectId` is what the alert is about when it is NOT about a tender — a
+   * vault document, today. Without it every expiring certificate in an
+   * organisation would dedupe against the first one (they all carry
+   * `tender_id: null`) and only one document would ever be reported. Null for
+   * everything tender-shaped, so existing callers are unaffected.
    */
-  static async createIfNew({ organizationId, userId = null, type, tenderId, payload }, trx = db) {
+  static async createIfNew(
+    { organizationId, userId = null, type, tenderId = null, subjectId = null, payload },
+    trx = db
+  ) {
     const existing = await trx('notifications')
-      .where({ organization_id: organizationId, type, tender_id: tenderId })
+      .where({
+        organization_id: organizationId,
+        type,
+        tender_id: tenderId,
+        subject_id: subjectId,
+      })
       .first();
     if (existing) return { created: false, notification: existing };
 
@@ -32,6 +46,7 @@ export default class NotificationRepository {
       user_id: userId,
       type,
       tender_id: tenderId,
+      subject_id: subjectId,
       payload,
     });
     return { created: true, notification: await trx('notifications').where({ id }).first() };

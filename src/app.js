@@ -33,19 +33,11 @@ class App {
         optionsSuccessStatus: 200,
       })
     );
-    // Baseline budget for every caller; individual routes tighten it.
     this.app.use(rateLimit({ requests: 300, perMs: 60_000 }));
   }
 
   _setRequestParser() {
-    // Express 5 defaults to the `simple` parser, which yields a flat key named
-    // "filter[cpv]" rather than a nested object — the bracket syntax the API
-    // standard and every collection schema are written against.
     this.app.set('query parser', 'extended');
-
-    // 1 MB: this API takes JSON, not uploads. Vault documents go to object
-    // storage through presigned URLs, so a large body here is a mistake or an
-    // attack rather than a legitimate request.
     this.app.use(express.json({ limit: '1mb' }));
     this.app.use(express.urlencoded({ extended: false, limit: '1mb' }));
   }

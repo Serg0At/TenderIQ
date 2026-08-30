@@ -29,7 +29,7 @@ through the layers, and where every kind of code belongs on disk.
 | AI | Claude API (spec → checklist extraction, classification) |
 
 > The upstream reference documentation specifies Prisma. **This codebase uses Knex** — schema
-> lives in `db/migrations/`, data access lives in repositories. Everywhere the reference docs say
+> lives in `migrations/`, data access lives in repositories. Everywhere the reference docs say
 > "Prisma client", read "Knex instance"; the layering argument is unchanged.
 
 ---
@@ -255,7 +255,7 @@ TenderIQ/
 | Something two features need | `libs/` or `domain/` — never import another feature's internals |
 | A background job | `workers/<worker>.js`, calling existing services |
 | A queue or job name | `queues/names.js` |
-| A table change | a new file in `db/migrations/` |
+| A table change | a new file in `migrations/` |
 
 The composition root (`container.js`) is the only place that wires repositories into services;
 that is what makes services testable with fakes and keeps the dependency direction one-way.
@@ -264,13 +264,13 @@ that is what makes services testable with fakes and keeps the dependency directi
 
 ## Data model
 
-`db/migrations/create_table.js` creates the full schema in one transaction. Grouped by concern:
+`migrations/create_table.js` creates the full schema in one transaction. Grouped by concern:
 
 | Group | Tables |
 |---|---|
 | Procurement core (OCDS) | `parties`, `tenders`, `awards`, `contracts`, `tender_documents`, `source_payloads` |
 | Tenancy & identity | `users`, `organizations`, `roles`, `memberships` |
-| Bid workflow | `tracked_tenders`, `bids`, `checklists`, `checklist_items`, `tasks`, `vault_documents` |
+| Bid workflow | `tracked_tenders`, `bids`, `checklists`, `checklist_items`, `vault_documents` |
 | Discovery | `saved_searches` |
 | Intelligence | `price_benchmarks`, `buyer_profiles`, `supplier_profiles` |
 | Notifications | `notifications`, `alert_deliveries` |
@@ -283,6 +283,27 @@ Load-bearing details:
 - `tenders.version` + `is_latest` implement amendment history; readers filter on `is_latest`.
 - `source_payloads` maps `(source, ref, hash)` → an object-storage key, enabling replay.
 - IDs are application-generated CUID2 strings, not database sequences.
+- `organizations.supplier_party_id` → `parties.id` is the **only** bridge between a tenant and
+  the public procurement record. Everything else about a tenant is private and joins downward;
+  this one joins outward, and it is what makes a customer's own win/loss resolvable against
+  `awards` and `public_tender_bids`. Nullable, partial-unique, and claimed explicitly by a
+  human — never inferred from a name match.
+- Children of a private table take a **composite FK** on `(parent_id, organization_id)` against
+  the parent's `UNIQUE (id, organization_id)`, so the denormalised org id cannot drift. Two
+  independent foreign keys do not achieve this: Postgres accepted a `bids` row claiming org B
+  whose `tracked_tenders` parent belonged to org A. `bids_parent_org_fk` is the pattern.
+- **Phase 6, decided ahead of time:** `contracts.award_id` is `NOT NULL` today, which asserts
+  every contract has a separately published award. That is false for single-source and direct
+  awards, and inverts OCDS — where a release is keyed by the process (`ocid`, i.e. the tender)
+  and `awardID` is a pointer within it. `contracts` should carry `tender_id` (NOT NULL, FK to
+  `tenders`) with `award_id` nullable, anchored by a composite FK on `(award_id, tender_id)`
+  against `awards UNIQUE (id, tender_id)`. `MATCH SIMPLE` makes the composite inert when
+  `award_id` is NULL, which is exactly right. Rationale in PROJECT_STATUS.md; not built —
+  `contracts` has no writer.
+- `bids` and `public_tender_bids` are two tables on purpose and must stay that way. `bids` is
+  private tenant data that never leaves its tenant; `public_tender_bids` is public record that
+  feeds benchmarks published across the whole corpus. Merging them would put a supplier's
+  unsubmitted price one WHERE clause away from a competitor's benchmark read.
 - Blobs never live in PostgreSQL — only keys and metadata do.
 
 ### Object-storage prefixes
@@ -359,7 +380,7 @@ Things that will bite before the first end-to-end run:
 
 1. [src/configs/knex.config.js](src/configs/knex.config.js) uses `require()` in an ESM package
    (`"type": "module"`) — it will throw on import. Convert to `import`.
-2. Both migration files import `../../configs/knex.config.js` from `db/migrations/`, which
+2. Both migration files import `../../configs/knex.config.js` from `migrations/`, which
    resolves outside the repo. The path should be `../../src/configs/knex.config.js`.
 3. `package.json` scripts point at `src/workers/index.js` and `src/queues/scheduler.js`; neither
    file exists yet.
@@ -374,6 +395,6 @@ Things that will bite before the first end-to-end run:
 ## References
 
 - [SCRAPER_WORKFLOW.md](SCRAPER_WORKFLOW.md) — ingestion pipeline in detail
-- [db/migrations/create_table.js](db/migrations/create_table.js) — schema
+- [migrations/create_table.js](migrations/create_table.js) — schema
 - [src/configs/variables.config.js](src/configs/variables.config.js) — configuration surface
 - [src/libs/storage/index.js](src/libs/storage/index.js) — storage port

@@ -53,9 +53,14 @@ const mapArmepsDetail = (detail, sourceId) => {
     referenceCode: detail.code,
     procedureType: detail.procedureType,
     goodsWorksServices: detail.goodsWorksServices,
-    // Neither is published anywhere in the HTML; both live inside the
-    // invitation archive, which is a later stage.
+    // Neither is published anywhere in the HTML. `cpvCode` arrives later from
+    // the invitation archive via applyInvitationFacts.
     cpvCode: null,
+    // `description` does NOT. It has no writer anywhere and no source to have
+    // one: the docx's contract-subject line is the title verbatim, and the real
+    // per-item text is already stored as tender_lots.name. The column is an
+    // OCDS-shaped leftover — see docs/SCRAPER_WORKFLOW.md § 5. Do not "fix"
+    // this by joining lot names into it.
     description: null,
     estimatedValue: detail.estimatedValue,
     currency: detail.currency,

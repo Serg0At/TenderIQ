@@ -155,8 +155,62 @@ storage — no re-crawl of the source.
 3. Store at `tenderDocKey({ source, sourceId, hash, ext })` → `tender-docs/{source}/{sourceId}/{hash}.{ext}`.
 4. Extract text from PDFs with `pdf-parse`; store alongside at `tenderDocTextKey(...)` (`.txt`).
 5. Upsert `tender_documents` `{ tender_id, url, storage_key, kind, parsed }`.
-6. Extracted text is the input for the later `ai.extract` (spec → checklist) job; it is treated
+6. Extracted text is the input for the `checklist.extract` (spec → checklist) job; it is treated
    strictly as **data, never as instructions**, no matter what the document says.
+
+#### What is inside the invitation archive — and what is not read
+
+Only `hraver.docx` is opened. That is deliberate, but the reason is worth writing down, because
+the archive looks like it holds much more than the stage takes from it. One measured example
+(tid 47009, a 15.2 MB archive):
+
+```
+    180,247  hraver.docx                      ← the only entry parsed
+    140,609  hraver_ru.docx                   ← Russian translation of the same
+  2,987,022  lot_1_i_texnikakan_bnutagir.zip  ┐
+  2,987,022  lot_2_i_texnikakan_bnutagir.zip  │ "per-lot technical specification"
+  2,987,022  lot_3_i_texnikakan_bnutagir.zip  ├ all five are BYTE-IDENTICAL —
+  2,987,022  lot_4_i_texnikakan_bnutagir.zip  │ one sha256 across all of them
+  2,987,022  lot_5_i_texnikakan_bnutagir.zip  ┘
+```
+
+Three findings that would change how anyone approaches these:
+
+- **"Per-lot" is not per-lot.** All five spec archives had one content hash. Parsing them
+  per lot would decode the same bytes five times and attribute one document to five different
+  lots. Dedupe by content hash first; the lot in the filename is not evidence of lot-specific
+  content.
+- **98% of the payload is boilerplate.** Inside each: `ՏԲ.docx` at 23 KB — the actual technical
+  specification — and `Հուշաթերթ_Памятка_merged.pdf` at 3.1 MB, a generic bilingual memo
+  repeated across tenders. The useful content is the small file.
+- **The formats vary wildly and include `.rar`.** Across 43 sampled entries: 18 `.xls`,
+  11 `.rar`, 11 `.docx`, 3 `.xlsx` (see the header comment in
+  `libs/adapters/source/armeps/invitation.parser.js`). `adm-zip` cannot read `.rar`, so roughly
+  a quarter of them need a decoder that is not currently a dependency. That, not the parsing,
+  is the real cost of this work.
+
+**Status: not built, and nothing reads them.** The parser's header comment says these entries
+"feed the later AI checklist" — that is the intent, not the current behaviour. The checklist
+stage reads only the `.txt` derived from `hraver.docx`. Wiring the technical specifications in
+would sharpen it, and the natural destination is a **lot-level** field, not `tenders.description`.
+
+#### `tenders.description` has no source and is never written
+
+`normalize.tender` sets it to `null` unconditionally, and `applyInvitationFacts` — the only
+other writer — has no parameter for it. The comment beside it in `workers/normalizer.js` pairs
+it with `cpvCode` and promises both arrive at "a later stage"; that promise is kept for CPV and
+never kept for `description`.
+
+There is no tender-level description to keep it with. Measured on tid 47009: the docx's contract
+subject line reads «...կնքել **Անվադողեր** մատակարարման պայմանագիր», and `tenders.title`
+(`Վերնագիր` on the detail page) is already `Անվադողեր` — the same string. The detail page has
+**11 labels total** and none of them is descriptive. The genuinely descriptive content is per
+lot and is already stored in `tender_lots.name` (`"185/65 R15 ձմեռային։"`, `"8.25/R20,
+համասեզոնային անվախցիկով (լրակազմ)։"`, ...).
+
+So the column is an OCDS-shaped leftover: everything it could hold is either a duplicate of
+`title` or belongs on `tender_lots`. **Open decision — drop it, or leave it null.** Do not fill
+it by joining lot names; that is a derived copy of data `tender_lots` already owns.
 
 ### 6. Normalization — `normalize.tender` / `normalize.award`
 
@@ -336,4 +390,4 @@ importer → detail enrichment.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components, layering, folder structure
 - [src/configs/sources.config.js](src/configs/sources.config.js) — per-source adapter config
 - [src/libs/storage/index.js](src/libs/storage/index.js) — storage port and key scheme
-- [db/migrations/create_table.js](db/migrations/create_table.js) — OCDS-aligned schema
+- [migrations/create_table.js](migrations/create_table.js) — OCDS-aligned schema

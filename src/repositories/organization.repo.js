@@ -133,6 +133,35 @@ export default class OrganizationRepository {
     return trx('organizations').where({ id }).first();
   }
 
+  /**
+   * Claim the supplier party this organisation bids as.
+   *
+   * Deliberately a deliberate, explicit act rather than something inferred
+   * from a name match. Party names in the corpus are scraped Armenian legal
+   * names with inconsistent punctuation and quoting; a fuzzy auto-link would
+   * eventually attach one company's win record to another company's account,
+   * and the failure would be invisible — the numbers would just be wrong.
+   *
+   * The partial unique index refuses a party already claimed elsewhere, so the
+   * conflict surfaces here as a driver error the service turns into a 409
+   * rather than as two orgs quietly sharing one identity.
+   */
+  static async setSupplierParty(organizationId, supplierPartyId, trx = db) {
+    const updated = await trx('organizations')
+      .where({ id: organizationId })
+      .update({ supplier_party_id: supplierPartyId });
+    return updated ? trx('organizations').where({ id: organizationId }).first() : null;
+  }
+
+  static async supplierPartyFor(organizationId, trx = db) {
+    const row = await trx('organizations as o')
+      .leftJoin('parties as p', 'p.id', 'o.supplier_party_id')
+      .where('o.id', organizationId)
+      .select('o.supplier_party_id', 'p.name as supplier_name', 'p.tax_id as supplier_tax_id')
+      .first();
+    return row ?? null;
+  }
+
   static async planFor(organizationId, trx = db) {
     const row = await trx('subscriptions as s')
       .join('plans as p', 'p.id', 's.plan_id')

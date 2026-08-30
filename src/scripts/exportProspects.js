@@ -62,7 +62,7 @@ const run = async () => {
   if (candidates.length === 0) {
     const message =
       'insufficient_data: 0 rows in public_tender_bids. The table ships in ' +
-      'db/migrations/create_table.js and is filled by the bids-table parser, but only for ' +
+      'migrations/create_table.js and is filled by the bids-table parser, but only for ' +
       'tenders that have reached status `awarded` — an ingest that has so far seen only ' +
       'active tenders yields nothing here. This is not a query bug.';
     console.log(message);

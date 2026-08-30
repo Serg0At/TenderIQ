@@ -23,6 +23,50 @@ const int = (key, fallback) => {
   return parsed;
 };
 
+/**
+ * A ratio in [0,1]. Range-checked here rather than at the use site: a
+ * confidence threshold of 75 instead of 0.75 would flag nothing for review and
+ * fail completely silently, which is the worst way for a safety gate to break.
+ */
+const float = (key, fallback, { min = 0, max = 1 } = {}) => {
+  const raw = optional(key, undefined);
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseFloat(raw);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`[config] ${key} must be a number, received "${raw}"`);
+  }
+  if (parsed < min || parsed > max) {
+    throw new Error(`[config] ${key} must be between ${min} and ${max}, received ${parsed}`);
+  }
+  return parsed;
+};
+
+/**
+ * A comma-separated list of integers, sorted descending.
+ *
+ * Sorted here rather than at the use site because the expiry sweep walks
+ * thresholds widest-first and relies on that order to fire the 30-day warning
+ * before the 7-day one; a config written "1,7,30" would otherwise silently
+ * invert the sequence.
+ */
+const intList = (key, fallback) => {
+  const raw = optional(key, undefined);
+  if (raw === undefined) return fallback;
+  const parsed = String(raw)
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const value = Number.parseInt(part, 10);
+      if (Number.isNaN(value) || value < 0) {
+        throw new Error(`[config] ${key} must be a comma-separated list of non-negative integers, received "${raw}"`);
+      }
+      return value;
+    });
+  if (!parsed.length) throw new Error(`[config] ${key} must not be empty`);
+  return [...new Set(parsed)].sort((a, b) => b - a);
+};
+
 const bool = (key, fallback) => {
   const raw = optional(key, undefined);
   if (raw === undefined) return fallback;
@@ -191,8 +235,61 @@ const config = {
     BASE_URL: optional('APP_BASE_URL', undefined),
   },
 
+  /**
+   * The document vault — an organisation's reusable certificates and licences.
+   *
+   * Uploads never pass through this process: the API mints a presigned PUT and
+   * the client sends the bytes straight to object storage, which is why
+   * `express.json` stays at 1 MB while a scanned certificate may be 20.
+   */
+  VAULT: {
+    /**
+     * Upper bound on one document, enforced at registration against the size the
+     * client declares AND on confirm against the size storage actually reports —
+     * a declared size is a hint, and the second check is the one that holds.
+     */
+    MAX_UPLOAD_BYTES: int('VAULT_MAX_UPLOAD_BYTES', 20 * 1024 * 1024),
+    /** How long a presigned PUT stays valid. Long enough for a slow upload, short enough that a leaked URL expires. */
+    UPLOAD_URL_TTL_SECONDS: int('VAULT_UPLOAD_URL_TTL_SECONDS', 900),
+    /** Download links are shorter-lived: they are handed out on every list view, not once per upload. */
+    DOWNLOAD_URL_TTL_SECONDS: int('VAULT_DOWNLOAD_URL_TTL_SECONDS', 300),
+    /**
+     * Days before expiry at which a document earns an alert.
+     *
+     * Three thresholds, not one: 30 days is "start the renewal", 7 is "chase
+     * it", 1 is "you are about to be disqualified". Each is its own notification
+     * type, so the existing dedupe fires each exactly once without a per-document
+     * state column — the same trick the deadline reminders use.
+     */
+    EXPIRY_WARN_DAYS: intList('VAULT_EXPIRY_WARN_DAYS', [30, 7, 1]),
+    /**
+     * How long a registered-but-unconfirmed upload survives before the sweep
+     * prunes it. Comfortably longer than the presigned URL's own life, so a slow
+     * client is never cleaned up mid-upload.
+     */
+    PENDING_TTL_HOURS: int('VAULT_PENDING_TTL_HOURS', 24),
+  },
+
   AI: {
     API_KEY: optional('ANTHROPIC_API_KEY', undefined),
+    /**
+     * Override the API host.
+     *
+     * Unset means Anthropic direct. Set, it points the SDK at a gateway that
+     * speaks the Messages API — OpenRouter (`https://openrouter.ai/api/v1`) is
+     * the tested one. This is a base-URL swap, NOT a protocol change: the
+     * gateway must accept `POST {BASE_URL}/messages` in native Anthropic shape,
+     * including `output_config.format` json_schema, or the extractor loses the
+     * schema-constrained output its safety design rests on.
+     *
+     * Verified against OpenRouter on 2026-08-26: `/v1/messages` returns a
+     * native Anthropic response, `output_config.format` is honoured, and
+     * `thinking: {type:'adaptive'}` and `cache_control` are accepted.
+     *
+     * A gateway also renames models — set AI_MODEL to match (OpenRouter wants
+     * `anthropic/claude-opus-5`, not `claude-opus-5`).
+     */
+    BASE_URL: optional('ANTHROPIC_BASE_URL', undefined),
     /**
      * Current generation. The reference spec's `ai/Model Selection.md` names an
      * older one; its ROUTING logic still applies (cheap model for bulk
@@ -210,6 +307,30 @@ const config = {
     CACHE_TTL_SECONDS: int('AI_CACHE_TTL_SECONDS', 24 * 60 * 60),
     /** Wall-clock ceiling for one call, so a hung request cannot pin a worker. */
     TIMEOUT_MS: int('AI_TIMEOUT_MS', 120000),
+    /**
+     * Below this, an extracted checklist item is flagged for human review
+     * rather than presented as fact.
+     *
+     * The threshold is a product decision, not a model detail: everything the
+     * extractor produces is advisory, and this is the line between "we found
+     * this" and "check this yourself". Set it high — a false confident item is
+     * worse than a flagged one, because a supplier acts on the first and reads
+     * the second.
+     */
+    CHECKLIST_MIN_CONFIDENCE: float('AI_CHECKLIST_MIN_CONFIDENCE', 0.75),
+    /**
+     * Refuse a document larger than this rather than truncating it.
+     *
+     * Truncation is the tempting failure here and the wrong one: bid
+     * requirements cluster at the END of an invitation, so a cut-off document
+     * silently drops exactly what the checklist exists to find, and the result
+     * looks complete. Opus 5 has a 1M-token context and the largest invitations
+     * are far below it, so hitting this means something is wrong with the
+     * document, not with the budget.
+     */
+    CHECKLIST_MAX_INPUT_CHARS: int('AI_CHECKLIST_MAX_INPUT_CHARS', 600000),
+    /** Output ceiling for an extraction — a long checklist with evidence quotes. */
+    CHECKLIST_MAX_TOKENS: int('AI_CHECKLIST_MAX_TOKENS', 16000),
   },
 
   /**
@@ -227,4 +348,4 @@ const config = {
 };
 
 export default config;
-export { required, optional, int, bool, oneOf };
+export { required, optional, int, intList, bool, oneOf };

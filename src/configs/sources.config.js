@@ -11,7 +11,7 @@ const sources = {
     refreshWindowDays: 30,
     maxRefreshBatch: 200,
     downloadDocuments: true,
-    backfillDocuments: false,
+    backfillDocuments: true,
     listingPaths: [{ slug: 'all-tenders', path: '/hy/public/tender/' }],
     detailBaseUrl:
       process.env.SOURCE_ARMEPS_DETAIL_BASE || 'https://eauction.armeps.am/hy/public/tender_details/tid/',

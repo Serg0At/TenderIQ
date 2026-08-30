@@ -10,8 +10,7 @@ Review the given code or `git diff`. Categorise every finding:
 - N+1 queries, missing indexes
 - Race conditions, missing locks
 - Hardcoded secrets or credentials
-- Dead code or unreachable branches
-- Missing or wrong types (TypeScript)
+- Dead code or unreachable branches 
 
 ### Format each finding
 ```

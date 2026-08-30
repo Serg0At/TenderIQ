@@ -114,6 +114,42 @@ export default class PublicBidRepository {
    * Joining them into a single query would silently drop whichever side is
    * missing.
    */
+  /**
+   * Where one supplier appears in one tender's ledger.
+   *
+   * The join that answers "did WE win this" — `bids` stores a tenant's own
+   * price, this stores who actually won, and `organizations.supplier_party_id`
+   * is the bridge between them.
+   *
+   * Returns every lot the party bid on, because a multi-lot procurement can be
+   * won and lost at the same time and the caller has to decide which lot it
+   * meant. `is_winner` comes from `awards`, not from `rank = 1`: the source
+   * ranks REJECTED submissions too, and awarding on rank alone once recorded
+   * 21% of awards to companies the buyer had thrown out.
+   */
+  static async supplierEntriesForTender(tenderId, supplierPartyId, trx = db) {
+    if (!supplierPartyId) return [];
+    return trx(`${TABLE} as b`)
+      .leftJoin('awards as a', function joinAward() {
+        this.on('a.tender_id', '=', 'b.tender_id')
+          .andOn('a.lot_number', '=', 'b.lot_number')
+          .andOn('a.source', '=', 'b.source');
+      })
+      .where({ 'b.tender_id': tenderId, 'b.supplier_id': supplierPartyId })
+      .select(
+        'b.lot_number',
+        'b.rank',
+        'b.status',
+        'b.final_offer_price',
+        'b.budget_price',
+        'b.currency',
+        'a.supplier_id as award_supplier_id',
+        'a.amount as award_amount',
+        trx.raw('coalesce(a.supplier_id = b.supplier_id, false) as is_winner')
+      )
+      .orderBy('b.lot_number');
+  }
+
   static async awardsForTender(tenderId, trx = db) {
     return trx('awards as a')
       .with('lot_category', lotCategoryCte)

@@ -77,6 +77,40 @@ export const JOB = {
    * durable in Postgres. This sweep re-reads and sends.
    */
   DELIVER_DEFERRED: 'notify.deferred',
+  /**
+   * Resolve submitted customer bids against the public bid ledger.
+   *
+   * Database-driven and scheduled rather than event-driven, for the same
+   * reason TENDER_REFRESH is: a tender settles weeks after the bid was
+   * submitted, and the worker that normalizes the settlement knows nothing
+   * about which tenants were bidding on it. Making normalization aware of
+   * tenants would put private data in the ingestion path.
+   *
+   * Rides the ALERTS queue: its output is a customer-visible result, it is
+   * cheap, and it must not sit behind an ingest backlog on the day a customer
+   * is waiting to hear whether they won.
+   */
+  RECONCILE_BIDS: 'bids.reconcile',
+  /**
+   * Read one tender invitation into a bid checklist.
+   *
+   * User-triggered, never scheduled: it costs a model call per run, so it must
+   * be an explicit action that lands in a queue with retry semantics rather
+   * than something a page load can repeat. Rides ALERTS for the same reason
+   * bid reconciliation does — the output is customer-facing, and it must not
+   * queue behind an ingest backlog.
+   */
+  EXTRACT_CHECKLIST: 'checklist.extract',
+  /**
+   * Daily sweep of the document vault: expiry warnings, lapsed-document alerts
+   * and pruning of uploads that were registered but never completed.
+   *
+   * Rides ALERTS rather than MAINTENANCE for the same reason the reminders do —
+   * what it produces is a customer-facing warning with a deadline attached, not
+   * housekeeping, and it must not queue behind a nightly profile rebuild on the
+   * day a certificate lapses.
+   */
+  VAULT_EXPIRY: 'vault.expiry',
 };
 
 /**

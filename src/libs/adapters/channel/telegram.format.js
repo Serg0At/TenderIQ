@@ -99,12 +99,76 @@ const HEADINGS = {
   'tender-match': '🎯 New matching tender',
   amendment: '✏️ Tender amended',
   reminder: '⏰ Deadline approaching',
+  // Distinct from `reminder` on purpose: a countdown fires only on a tender the
+  // supplier said they are pursuing, so it deserves a heading that reads as
+  // "your bid", not "a tender exists".
+  countdown: '🚨 Bid deadline — you are pursuing this',
   expiry: '⌛ Tender closing',
+  // Checked before `expiry` would ever be reached, and named in full: a vault
+  // alert is about the company's own certificate, not about a tender closing,
+  // and the two must not share a heading.
+  'vault-expiry': '📄 Document expiring',
+  'vault-expired': '⛔ Document expired',
 };
 
+/**
+ * Longest key first, so a prefix match cannot be stolen by a shorter one.
+ * `vault-expiry-30d` must not fall to `expiry`, and `vault-expired` must not
+ * fall to `vault-expiry` — object key order is insertion order, which is a
+ * fragile thing to depend on.
+ */
+const HEADING_KEYS = Object.keys(HEADINGS).sort((a, b) => b.length - a.length);
+
 const headingFor = (type) => {
-  const key = Object.keys(HEADINGS).find((k) => type === k || String(type ?? '').startsWith(`${k}-`));
+  const key = HEADING_KEYS.find((k) => type === k || String(type ?? '').startsWith(`${k}-`));
   return key ? HEADINGS[key] : '🔔 Tender alert';
+};
+
+/**
+ * A vault expiry alert.
+ *
+ * Says what to do, not just what happened: an expired tax clearance is only
+ * actionable if the message names the document. The `kind` is the slug the
+ * customer chose, printed as-is rather than mapped through a display table that
+ * would have nothing to say about a kind they invented.
+ */
+const formatVaultNotification = (notification, payload, lines, now) => {
+  const label = payload.filename || payload.kind;
+  if (label) lines.push(escapeHtml(label));
+
+  const facts = [];
+  if (payload.kind && payload.filename) facts.push(`🏷 ${escapeHtml(payload.kind)}`);
+
+  if (payload.validUntil) {
+    const at = new Date(payload.validUntil);
+    if (!Number.isNaN(at.getTime())) {
+      const iso = at.toISOString().slice(0, 10);
+      const days = Math.ceil((at.getTime() - now.getTime()) / 86_400_000);
+      facts.push(days <= 0 ? `⛔ Expired ${escapeHtml(iso)}` : `🗓 Valid until ${escapeHtml(iso)}`);
+    }
+  }
+
+  if (payload.daysRemaining > 0) {
+    facts.push(`⏳ ${escapeHtml(`${payload.daysRemaining} day(s) left`)}`);
+  }
+
+  if (facts.length) lines.push('', ...facts);
+
+  lines.push(
+    '',
+    notification.type === 'vault-expired'
+      ? '<i>This document can no longer be attached to a bid.</i>'
+      : '<i>Renew it before it lapses — an expired document cannot be attached to a bid.</i>'
+  );
+
+  // Only when the product exists to link to. There is no source page to fall
+  // back on here: this is the customer's own file, not a scraped one.
+  if (APP.BASE_URL && payload.documentId) {
+    const url = `${APP.BASE_URL.replace(/\/+$/, '')}/vault-documents/${payload.documentId}`;
+    lines.push('', `<a href="${escapeHtml(url)}">Open document</a>`);
+  }
+
+  return lines.join('\n');
 };
 
 /**
@@ -118,6 +182,16 @@ const headingFor = (type) => {
 export const formatNotification = (notification, { now = new Date() } = {}) => {
   const payload = notification.payload ?? {};
   const lines = [`<b>${escapeHtml(headingFor(notification.type))}</b>`];
+
+  /**
+   * Vault alerts are about a document, not a tender, and share none of the
+   * tender fields below — no buyer, no reference code, no estimated value. Run
+   * through the tender renderer they would print a heading and nothing else,
+   * since every line drops when its field is missing.
+   */
+  if (String(notification.type ?? '').startsWith('vault-')) {
+    return formatVaultNotification(notification, payload, lines, now);
+  }
 
   if (payload.title) lines.push(escapeHtml(payload.title));
 
@@ -133,6 +207,12 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
   // The reminder worker computes this against the threshold it fired at, which
   // is more precise than re-deriving it from the deadline at send time.
   if (payload.hoursRemaining) facts.push(`⏳ ${escapeHtml(`${payload.hoursRemaining}h remaining`)}`);
+
+  // The pipeline stage, on countdowns only. "still considering" three hours out
+  // is a different message from "preparing", and it is the whole reason this
+  // alert is separate from the matched reminder. Must be pushed BEFORE `facts`
+  // is spread into `lines` — after it, the array is already copied.
+  if (payload.pipelineStatus) facts.push(`📋 ${escapeHtml(payload.pipelineStatus)}`);
 
   if (facts.length) lines.push('', ...facts);
 

@@ -14,11 +14,11 @@
     "normalize:replay": "node src/scripts/replayNormalizer.js",
     "scheduler": "node src/queues/scheduler.js",
     "seed": "node src/scripts/seed.js",
-    "migrate:up": "node db/migrations/create_table.js",
-    "migrate:down": "node db/migrations/drop_table.js",
+    "migrate:up": "node migrations/create_table.js",
+    "migrate:down": "node migrations/drop_table.js",
     "documents:backfill": "node src/scripts/backfillDocuments.js",
-    "telegram:webhook": "node src/scripts/telegramWebhook.js",
-    "migrate:channels": "node db/migrations/add_channel_subscriptions.js"
+    "checklist:try": "node src/scripts/tryChecklist.js",
+    "telegram:webhook": "node src/scripts/telegramWebhook.js"
   },
   "scriptsDescriptions": {
     "worker": "Run the BullMQ worker process that consumes the fetch, normalize and document queues.",
@@ -30,7 +30,7 @@
     "scheduler": "Upsert the repeatable sweep and refresh schedules into Redis and exit — a deploy step, not a daemon.",
     "documents:backfill": "Fetch the invitation archive for tenders that never got one, filling in CPV codes and buyer tax IDs.",
     "telegram:webhook": "Register or clear the Telegram webhook URL with the Bot API (--set <url> | --delete | --info).",
-    "migrate:channels": "Create channel_subscriptions and the alert_deliveries defer columns. Additive and idempotent — safe to re-run against a live database, unlike migrate:up."
+    "checklist:try": "Run the AI checklist extractor against one invitation archive and print the result. No database, storage or queue — for prompt iteration."
   },
   "author": "At",
   "license": "ISC",

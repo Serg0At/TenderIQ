@@ -68,6 +68,39 @@ const register = async () => {
   );
   logger.info('[scheduler] deferred alert sweep scheduled "*/10 * * * *"');
 
+  /**
+   * Bid outcome reconciliation, half-hourly and offset off the hour.
+   *
+   * Paced to the source, not to the customer: a tender settles when the board
+   * publishes its bid ledger, which `tender.refresh` re-checks hourly, so
+   * checking more often than that can only re-read rows that have not moved.
+   * The offset keeps it clear of the :00 sweep and the :07 reminder — three
+   * jobs sharing one queue at concurrency 4 is fine, but three jobs landing on
+   * the same tick makes a slow one look like a backlog.
+   */
+  await alertsQueue.upsertJobScheduler(
+    'bid-reconcile',
+    { pattern: '19,49 * * * *' },
+    { name: JOB.RECONCILE_BIDS, data: {} }
+  );
+  logger.info('[scheduler] bid outcome reconcile scheduled "19,49 * * * *"');
+
+  /**
+   * The vault sweep, daily and early.
+   *
+   * Expiry moves in days, not hours, so an hourly cadence would re-scan the same
+   * rows 23 times for nothing. 06:11 UTC is before the Armenian working day, so
+   * a certificate that lapses today is flagged before anyone tries to attach it
+   * — and it is clear of the 03:23 and 04:41 nightly recomputes, which run on a
+   * different queue but share the database.
+   */
+  await alertsQueue.upsertJobScheduler(
+    'vault-expiry',
+    { pattern: '11 6 * * *' },
+    { name: JOB.VAULT_EXPIRY, data: {} }
+  );
+  logger.info('[scheduler] vault expiry sweep scheduled "11 6 * * *"');
+
   // Nightly full recompute. Repairs anything the targeted path missed, and
   // promotes categories that only now cleared the comparables threshold
   // because the seed advanced.

@@ -33,6 +33,16 @@ export const create = () => {
       }
     },
 
+    /** Erase an object. Missing is success, matching the S3 driver's idempotence. */
+    async remove(key) {
+      try {
+        await fs.unlink(resolve(key));
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      return { key, deleted: true };
+    },
+
     /**
      * Every key under a prefix, with the timestamp the object was written.
      *
@@ -69,6 +79,24 @@ export const create = () => {
 
     async signedUrl(key) {
       return `file://${resolve(key)}`;
+    },
+
+    /**
+     * Not supported, and deliberately not faked.
+     *
+     * A presigned PUT is an HTTP endpoint the client uploads to; the filesystem
+     * has no such thing, and returning a `file://` URL would hand back an
+     * address the browser cannot write to — an upload that appears to be
+     * offered and silently never arrives. Refusing names the problem instead.
+     *
+     * This driver exists so the scraping pipeline can run without MinIO, and
+     * scraping only ever writes through put(). `docker compose up -d` brings up
+     * MinIO by default, which is where vault uploads are exercised locally.
+     */
+    async signedUploadUrl() {
+      throw new Error(
+        'The local storage driver cannot presign uploads. Set STORAGE_DRIVER=s3 (MinIO is in docker-compose).'
+      );
     },
   };
 };

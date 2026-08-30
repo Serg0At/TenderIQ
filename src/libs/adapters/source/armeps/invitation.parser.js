@@ -7,10 +7,17 @@ import * as cheerio from 'cheerio';
  * Verified across 5 live archives on 2026-08-17. Every one contains exactly
  * `hraver.docx` (Armenian) and `hraver_ru.docx` (Russian); the remaining
  * entries are per-lot technical specifications whose format varies wildly —
- * across 43 sampled entries: 18 .xls, 11 .rar, 11 .docx, 3 .xlsx. Those feed
- * the later AI checklist, not this stage, so only hraver.docx is opened. That
- * is also why RAR support is not needed: nothing this stage reads is ever a
- * RAR.
+ * across 43 sampled entries: 18 .xls, 11 .rar, 11 .docx, 3 .xlsx. Only
+ * hraver.docx is opened here. That is also why RAR support is not needed:
+ * nothing this stage reads is ever a RAR.
+ *
+ * Those spec entries are currently read by NOTHING — the AI checklist stage
+ * consumes the .txt derived from hraver.docx, not them. Wiring them in is an
+ * open piece of work, and two measured facts should shape it: the "per-lot"
+ * archives can be byte-identical to each other (tid 47009: one sha256 across
+ * all five), and ~98% of each is a generic bilingual memo PDF wrapping a ~23 KB
+ * ՏԲ.docx that holds the actual specification. Dedupe by content hash before
+ * attributing anything to a lot. See docs/SCRAPER_WORKFLOW.md § 5.
  *
  * A .docx is itself a ZIP whose `word/document.xml` holds the content.
  *
