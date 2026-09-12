@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import authRoutes from './auth/auth.routes.js';
-import organizationRoutes from './organizations/organization.routes.js';
+import organizationRoutes, {
+  currentOrganizationRoutes,
+} from './organizations/organization.routes.js';
 import tenderRoutes from './tenders/tender.routes.js';
 import savedSearchRoutes from './savedSearches/savedSearch.routes.js';
 import trackedTenderRoutes from './trackedTenders/trackedTender.routes.js';
@@ -47,6 +49,7 @@ router.use('/tracked-tenders', trackedTenderRoutes);
 // pipeline: it is an org-level fact that bid outcomes happen to be the first
 // consumer of, and it will outlive this feature folder.
 router.use('/organization', supplierIdentityRoutes);
+router.use('/organization', currentOrganizationRoutes);
 router.use('/vault-documents', vaultRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/integrations', integrationRoutes);

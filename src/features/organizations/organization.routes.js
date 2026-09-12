@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import OrganizationController from './organization.controller.js';
-import { authenticateOrgless } from '../../middlewares/auth.js';
+import { authenticate, authenticateOrgless } from '../../middlewares/auth.js';
+import { authorize } from '../../middlewares/authorize.js';
 import { validate } from '../../middlewares/validate.js';
 import { rateLimit } from '../../middlewares/rateLimit.js';
-import { createOrganizationSchema } from '../../validations/schemas/organization.schema.js';
+import {
+  createOrganizationSchema,
+  rosterQuerySchema,
+} from '../../validations/schemas/organization.schema.js';
 
 const router = Router();
 
@@ -22,5 +26,22 @@ router.use(authenticateOrgless);
 const createLimit = rateLimit({ requests: 10, perMs: 3_600_000, bucket: 'org-create' });
 
 router.post('/', createLimit, validate(createOrganizationSchema), OrganizationController.create);
+
+/**
+ * `/organization`, singular: the organization this session is acting in. No id
+ * in the path, because the token already names exactly one — an id there could
+ * only ever be redundant or a cross-tenant probe.
+ */
+export const currentOrganizationRoutes = Router();
+
+currentOrganizationRoutes.use(authenticate);
+
+// Every member reads the roster, a viewer included: `tender:read`, not `user:manage`.
+currentOrganizationRoutes.get(
+  '/members',
+  authorize('tender:read'),
+  validate(rosterQuerySchema, 'query'),
+  OrganizationController.listMembers
+);
 
 export default router;

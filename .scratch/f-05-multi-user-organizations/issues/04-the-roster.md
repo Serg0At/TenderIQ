@@ -6,10 +6,10 @@ ordinary member level, not behind user management.
 
 **Blocked by:** 01 — the roster shows names.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Every member can read the roster, including a viewer.
-- [ ] Each entry carries the member's name, email address, role and when they joined.
-- [ ] Ordering is stable and carries a tiebreaker, so paging cannot repeat or drop an entry.
-- [ ] A member of another organization cannot read this one's roster; the isolation is enforced in
+- [x] Every member can read the roster, including a viewer.
+- [x] Each entry carries the member's name, email address, role and when they joined.
+- [x] Ordering is stable and carries a tiebreaker, so paging cannot repeat or drop an entry.
+- [x] A member of another organization cannot read this one's roster; the isolation is enforced in
       the repository by scoping on the organization, not by the caller.

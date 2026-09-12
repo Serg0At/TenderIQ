@@ -3,6 +3,31 @@ import db from '../libs/knex.js';
 import { PERMISSIONS } from '../libs/permissions.js';
 
 /**
+ * Roster cursor: the join time and membership id of the last row served.
+ *
+ * The roster pages ASCENDING, which is the direction where millisecond
+ * truncation bites: Postgres keeps microseconds and a JS Date keeps
+ * milliseconds, so a cursor built from a fetched row names an instant slightly
+ * EARLIER than the row itself and `>` would serve that row again. The keyset
+ * therefore compares `date_trunc('milliseconds', created_at)`, and the ORDER BY
+ * uses the same expression so the two agree about what "after" means.
+ */
+const encodeRosterCursor = (row) =>
+  Buffer.from(`${new Date(row.joined_at).toISOString()}|${row.membership_id}`).toString('base64url');
+
+const decodeRosterCursor = (cursor) => {
+  if (!cursor) return null;
+  try {
+    const [at, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+    return at && id && !Number.isNaN(Date.parse(at)) ? { joinedAt: at, id } : null;
+  } catch {
+    return null;
+  }
+};
+
+const JOINED_AT_MS = "date_trunc('milliseconds', m.created_at)";
+
+/**
  * Organizations, the roles that can be held in them, and who holds what.
  *
  * The organization is the tenant boundary: every private table hangs off it,
@@ -113,8 +138,10 @@ export default class OrganizationRepository {
    *
    * With no organization named, the choice has to be deterministic — a login
    * that lands a consultant in a different client on every sign-in is a
-   * session that moves tenants under them — so it is ordered rather than
-   * "whichever row Postgres returns first".
+   * session that moves tenants under them — so it is the membership joined
+   * first, not "whichever row Postgres returns first". Joined order rather than
+   * name, so founding or joining another organization never changes where the
+   * next login lands.
    */
   static async findMembership(userId, organizationId = null, trx = db) {
     // No join to `roles`: the role's name is the foreign key itself, so the join
@@ -123,7 +150,7 @@ export default class OrganizationRepository {
       .join('organizations as o', 'o.id', 'm.organization_id')
       .where('m.user_id', userId)
       .select('m.organization_id', 'o.name as organization_name', 'm.role_id as role')
-      .orderBy([{ column: 'o.name' }, { column: 'm.organization_id' }]);
+      .orderBy([{ column: 'm.created_at' }, { column: 'm.organization_id' }]);
 
     if (organizationId) query.andWhere('m.organization_id', organizationId);
     return query.first();
@@ -141,7 +168,49 @@ export default class OrganizationRepository {
       .join('organizations as o', 'o.id', 'm.organization_id')
       .where('m.user_id', userId)
       .select('o.id', 'o.name', 'm.role_id as role')
-      .orderBy([{ column: 'o.name' }, { column: 'o.id' }]);
+      .orderBy([{ column: 'm.created_at' }, { column: 'o.id' }]);
+  }
+
+  /**
+   * One page of an organization's roster: who is on the team now.
+   *
+   * Scoped on `organization_id` here, never by the caller — this is the query a
+   * member of another tenant would need to get wrong to see this team. Removed
+   * members simply are not here: removal deletes the membership, so there is no
+   * status to forget to filter on (ADR 0001).
+   *
+   * Ordered by when each person joined, oldest first, with the membership id as
+   * the tiebreaker, so a page boundary can neither repeat nor drop a member.
+   */
+  static async listMembers(organizationId, { limit = 20, cursor = null } = {}, trx = db) {
+    const query = trx('memberships as m')
+      .join('users as u', 'u.id', 'm.user_id')
+      .where('m.organization_id', organizationId)
+      .select(
+        'm.id as membership_id',
+        'm.user_id',
+        'u.display_name',
+        'u.email',
+        'm.role_id as role',
+        'm.created_at as joined_at'
+      );
+
+    const after = decodeRosterCursor(cursor);
+    if (after) {
+      query.whereRaw(`(${JOINED_AT_MS}, m.id) > (?::timestamptz, ?)`, [after.joinedAt, after.id]);
+    }
+
+    // One extra row answers "is there a next page?" without a second COUNT.
+    const rows = await query
+      .orderByRaw(`${JOINED_AT_MS} asc, m.id asc`)
+      .limit(limit + 1);
+
+    const page = rows.slice(0, limit);
+    return {
+      rows: page,
+      hasMore: rows.length > limit,
+      cursor: page.length ? encodeRosterCursor(page[page.length - 1]) : null,
+    };
   }
 
   /**

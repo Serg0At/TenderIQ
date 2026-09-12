@@ -239,6 +239,9 @@ function up(pg) {
       table.string('user_id').notNullable().references('id').inTable('users').onDelete('CASCADE');
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
       table.string('role_id').notNullable().references('id').inTable('roles').onDelete('RESTRICT');
+      // When this person joined — the roster's "joined" column and its sort key. A re-joined
+      // member gets a fresh row and a fresh date: removal is a DELETE, not a status (ADR 0001).
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
       table.unique(['user_id', 'organization_id']);
     })
 

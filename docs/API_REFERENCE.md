@@ -73,6 +73,7 @@ All paths are relative to the base path **`/api/v1`**.
 
 ### Organization
 - [Create organization](#create-organization) — `POST /organizations`
+- [List members](#list-members) — `GET /organization/members`
 - [Get supplier identity](#get-supplier-identity) — `GET /organization/supplier-identity`
 - [Set supplier identity](#set-supplier-identity) — `PUT /organization/supplier-identity`
 - [Search supplier candidates](#search-supplier-candidates) — `GET /organization/supplier-identity/candidates`
@@ -436,8 +437,8 @@ error, so the endpoint cannot be used to discover who holds an account.
 ```
 
 `expiresIn` is the access token's lifetime in seconds. `organizations` is every membership the
-user holds, ordered by name then id; the session is minted for the first one, and the ids are
-what [Switch organization](#switch-organization) takes.
+user holds, in the order they were joined (oldest first); the session is minted for the first
+one, and the ids are what [Switch organization](#switch-organization) takes.
 
 A user with **no membership** still signs in successfully, into the
 [orgless state](#the-orgless-state):
@@ -2128,6 +2129,67 @@ the create would found a second one.
 - `422 VALIDATION_FAILED`: missing or short `name`.
 - `429 QUOTA_EXCEEDED`: "An account can create at most 3 organizations." `details: { limit, created }`.
 - `429 RATE_LIMITED`: more than 10 creations/hour for this user.
+
+---
+
+## List members
+
+The roster: who is on this organization's team now, and at what role. Every member reads it, a
+`viewer` included — a tenant is a company, and its own staff list is not a secret from its staff.
+Removed members are simply absent; removal deletes the membership rather than marking it.
+
+Ordered by when each person joined, oldest first (so the founder leads), with an id tiebreaker so
+paging can neither repeat nor drop an entry.
+
+**API:**
+`GET /api/v1/organization/members`
+
+**Authentication:** required (Bearer). Permission: `tender:read`.
+
+**Request data:**
+
+Query parameters:
+
+- `page[size]` (optional): 1–100, default 20.
+- `page[cursor]` (optional): `meta.cursor` from the previous page, verbatim. An unreadable cursor
+  is treated as absent and returns the first page.
+
+**Response data:**
+
+```json
+{
+  "data": [
+    {
+      "kind": "member",
+      "userId": "cm9zx4k1p0000qw8f3h2l7d5t",
+      "displayName": "Gevorg Sargsyan",
+      "email": "procurement@shinarar.am",
+      "role": "owner",
+      "joinedAt": "2026-09-13T08:14:02.311Z"
+    },
+    {
+      "kind": "member",
+      "userId": "cm9zx4k1p0400qw8f1r6d9s3m",
+      "displayName": "Lilit Hakobyan",
+      "email": "lilit@shinarar.am",
+      "role": "coordinator",
+      "joinedAt": "2026-09-14T11:40:57.020Z"
+    }
+  ],
+  "meta": {
+    "cursor": "MjAyNi0wOS0xNFQxMTo0MDo1Ny4wMjBafGNtOXo...",
+    "hasMore": false
+  }
+}
+```
+
+`kind` distinguishes a member from other kinds of roster entry.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`: the session is in no organization.
+- `422 VALIDATION_FAILED`: `page[size]` out of range.
 
 ---
 
@@ -4142,6 +4204,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | PATCH | `/api/v1/tracked-tenders/checklist/items/:itemId/document` | Attach or detach a vault document | Yes (`bid:write`) |
 | DELETE | `/api/v1/tracked-tenders/checklist/items/:itemId` | Delete a checklist item | Yes (`bid:write`) |
 | POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
+| GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
 | GET | `/api/v1/organization/supplier-identity` | The party this org bids as | Yes (`tender:read`) |
 | PUT | `/api/v1/organization/supplier-identity` | Claim or unclaim that party | Yes (`org:manage`) |
 | GET | `/api/v1/organization/supplier-identity/candidates` | Search parties for the claim | Yes (`tender:read`) |

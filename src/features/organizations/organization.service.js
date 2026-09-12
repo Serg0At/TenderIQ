@@ -18,6 +18,22 @@ import { logger } from '../../utils/logger.js';
  */
 const MAX_CREATED_ORGANIZATIONS = 3;
 
+/**
+ * A roster entry as a client sees it.
+ *
+ * `kind` is there from the first entry because the roster is not only members:
+ * pending invitations join the same list for people who manage users, and a
+ * client has to tell the two apart without guessing from which fields are null.
+ */
+const presentMember = (row) => ({
+  kind: 'member',
+  userId: row.user_id,
+  displayName: row.display_name,
+  email: row.email,
+  role: row.role,
+  joinedAt: row.joined_at,
+});
+
 export default class OrganizationService {
   /**
    * Found an organization and start working inside it.
@@ -61,5 +77,19 @@ export default class OrganizationService {
 
     logger.info(`[organizations] ${organizationId} created by user ${user.id}`);
     return AuthService.sessionFor(user, organizationId);
+  }
+
+  /**
+   * Who is on this team, for any member of it.
+   *
+   * A tenant is a company, and its own staff list is not a secret from its
+   * staff — so this reads at `tender:read`, not `user:manage`.
+   */
+  static async listMembers(organizationId, { page = {} } = {}) {
+    const { rows, cursor, hasMore } = await organizations.listMembers(organizationId, {
+      limit: page.size ?? 20,
+      cursor: page.cursor ?? null,
+    });
+    return { rows: rows.map(presentMember), cursor, hasMore };
   }
 }
