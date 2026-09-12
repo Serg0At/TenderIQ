@@ -4,6 +4,7 @@ import redis from '../libs/redis.js';
 import { closeQueues } from '../queues/index.js';
 import { closeDb } from '../libs/knex.js';
 import { QUEUE } from '../queues/names.js';
+import mailer from '../libs/adapters/email/index.js';
 import { processIngestFetch } from './scraper.js';
 import { processIngestNormalize } from './normalizer.js';
 import { processMaintenance } from './health.js';
@@ -17,6 +18,24 @@ import { logger } from '../utils/logger.js';
  * redesigned page cannot affect request handling, and so the two scale
  * independently.
  */
+
+/**
+ * The same boot check `server.js` runs, because this is the process that
+ * actually sends alert mail.
+ *
+ * It used to live only in the API, from when mail was purely a registration and
+ * reset concern. Alerts moved that job here, and the guard did not follow: a
+ * production worker on `EMAIL_DRIVER=log` would have written every tender alert
+ * to a log file and recorded it in `alert_deliveries` as delivered. The API
+ * refusing to boot is not cover for it — the two are separate deployables and
+ * can be given separate environments.
+ *
+ * Top-level await on purpose: a throw here fails module evaluation and the
+ * process exits non-zero before a single worker is constructed, which is what
+ * "refuses to boot" has to mean if it is to mean anything.
+ */
+await mailer.assertUsable();
+
 const workers = [
   new Worker(QUEUE.INGEST_FETCH, processIngestFetch, {
     connection: redis.connectionOptions,

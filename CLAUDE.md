@@ -193,10 +193,12 @@ Implemented — see `src/features/*/`. Follow the existing shape rather than inv
   `code` is a stable machine-readable enum; the `message` is safe for clients (no stack traces, no
   internal detail). Full context is logged server-side with a correlation ID.
 - **Error codes:** `VALIDATION_FAILED` (400/422) · `UNAUTHENTICATED` / `TOKEN_EXPIRED` (401) ·
-  `PLAN_UPGRADE_REQUIRED` (402) · `ROLE_FORBIDDEN` / `TENANT_FORBIDDEN` (403) · `NOT_FOUND` (404) ·
-  `CONFLICT` (409) · `RATE_LIMITED` / `QUOTA_EXCEEDED` (429) · `INTERNAL_ERROR` (500, with
-  `details.ref`) · `DEPENDENCY_UNAVAILABLE` (503). Keep them in one enum; a DB unique-violation on
-  ingestion maps to 409 or idempotent-upsert, never a 500.
+  `PLAN_UPGRADE_REQUIRED` (402) · `EMAIL_UNVERIFIED` / `ROLE_FORBIDDEN` / `TENANT_FORBIDDEN` (403) ·
+  `NOT_FOUND` (404) · `CONFLICT` (409) · `RATE_LIMITED` / `QUOTA_EXCEEDED` (429) · `INTERNAL_ERROR`
+  (500, with `details.ref`) · `DEPENDENCY_UNAVAILABLE` (503). Keep them in one enum; a DB
+  unique-violation on ingestion maps to 409 or idempotent-upsert, never a 500. `EMAIL_UNVERIFIED` is
+  its own 403 rather than a `ROLE_FORBIDDEN` because the client has to tell "you cannot do this"
+  apart from "confirm your address and you can" — different screens, and only one has a button.
 - **Pagination is cursor-based by default** (`?page[size]=20&page[cursor]=…` → `meta: { cursor,
   hasMore }`), page-based only where totals matter. Ordering always carries an `id` tiebreaker, or
   cursors break. Cap `page[size]`.
@@ -208,6 +210,110 @@ Implemented — see `src/features/*/`. Follow the existing shape rather than inv
 - **Validation happens at every boundary**, not just HTTP: request DTOs, job payloads on dequeue,
   scraped source data after normalization, and AI output against a strict schema. Whitelist and strip
   unknown properties. The reference says Zod; **this codebase uses Joi** — the layering is unchanged.
+
+## Account and organization model
+
+**Decided 2026-09-06, NOT built.** Today `POST /auth/register` takes an `organizationName` and
+creates the user, the organization and the owner membership in one transaction. This design **keeps
+that transaction** — what changes is everything around it. Do not implement half of it; the pieces
+are load-bearing on each other.
+
+```
+POST /auth/register     { email, password, displayName, organizationName }  ->  201, no tokens
+POST /auth/verify-email { token }
+POST /auth/login        { email, password }  ->  full session + organizations[] for the switcher
+```
+
+**There is no orgless state.** Registration always creates an organization, and a user cannot leave
+their last one, so zero memberships is unreachable. That deletes the onboarding token
+(`scope: 'onboarding'`), its separate middleware, `POST /organizations`, `POST /organizations/join`
+and the two-shaped login response — the entire create-or-join fork. The fork existed so an invited
+user could join instead of create; invitations are in-app and land on an account that already exists,
+so it only ever had one live branch. `sessionFor`'s `ROLE_FORBIDDEN` on a missing membership stays as
+an invariant that should never fire, not as a branch point.
+
+- **`organizations.tax_id` is the ՀՎՀՀ: unique, NULLABLE, collected only when the customer chooses to
+  pay by invoice.** It is unverifiable — no source this project has carries a *supplier's* tax number
+  — so it was never evidence, only a consistently-claimed identifier. Its one hard requirement is the
+  Armenian VAT invoice, which is a property of the payment method rather than of the sale, so a card
+  payer is never asked for it. This wants a plain `UNIQUE`, whose default `NULLS DISTINCT` lets any
+  number of orgs hold NULL — the exact opposite of `notifications_dedupe_uq`, and getting it backwards
+  means the second TIN-less organization fails to insert.
+- **De-duplication is therefore best-effort, and that is a knowing trade.** The constraint still turns
+  a collision into "Shinarar LLC already uses TenderIQ — ask an admin there to invite you", but it
+  only fires between two orgs that both reached invoice payment, so two tenants for one company can
+  exist. What makes that survivable is that the expensive case is two *teams*, and invoice payment is
+  the dominant B2B method here, so teams mostly do collide. Merging two tenants by hand is not an
+  `UPDATE organization_id`: children carry composite `(parent_id, organization_id)` keys, and
+  `vault_documents` have objects in a bucket.
+- **The ՀՎՀՀ does NOT link an org to its supplier party, and cannot.** `parties.tax_id` is populated
+  **only for buyers** — `invitation.parser.js` scrapes it out of the invitation ZIP, which is the
+  procuring agency's number, and `tender.repo.js:applyInvitationFacts` writes it to `tender.buyer_id`.
+  Supplier parties come from the bid ledger, which carries names, ranks and prices and no tax number.
+  So `organizations.supplier_party_id` stays a deliberate human claim from a search, and expecting the
+  TIN to automate it is the obvious wrong guess. Storing it is still right: the 2027 OCDS platform
+  identifies parties by `identifier.id`, which for Armenia is the ՀՎՀՀ.
+- **Invitations are in-app; no email is sent.** The owner types an address and always gets the same
+  answer — *"if that person is registered, they will get the invitation"* — as a **module constant**,
+  not a string in two branches, for the same reason `/auth/forgot-password` has one: any difference in
+  wording, status or shape makes the endpoint an account-existence oracle. Nothing is ever looked up,
+  so there is nothing to enumerate. A user search would be strictly worse — a global directory of
+  paying customers, readable by any free account. If search is ever wanted, invert it: an opt-in
+  `discoverable` flag lists only people who asked to be listed.
+- **The invitation row survives an address with no account.** It is keyed on email and matched when
+  that address registers and verifies. Dropping it instead loses every invitation sent in the seconds
+  before the invitee finishes signing up, and the deliberately uninformative response guarantees the
+  sender never finds out.
+- **`invitations` never expires, and re-inviting updates the role in place.** No credential travels in
+  an email, so there is nothing to age out — the row is a standing offer, and an offer does not rot.
+  `UNIQUE (organization_id, email)` makes a repeat invite idempotent, the database arbitrating rather
+  than application logic, the same rule ingestion already follows — and re-inviting a `declined`
+  address returns it to `pending`, since a decline is an answer to one offer, not a permanent refusal. The owner can **cancel**: a typo'd
+  address is a live offer to a stranger until someone withdraws it.
+- **An invitation raises a notification, not a message.** `tender_id` NULL and `subject_id` = the
+  invitation id — exactly the non-tender shape `notifications_dedupe_uq` was built for — so Telegram
+  delivers it with no new channel work. `GET /invitations` is the invitee's list; the owner sees every
+  invitation for their own organization at `pending`, `accepted` or `declined`, which is better
+  confirmation than a search hit ever was: an acceptance proves the right person received it, and a
+  decline is an answer rather than silence.
+- **Accepting an invitation adds a membership; it never moves one.** `memberships` is
+  `UNIQUE (user_id, organization_id)` on purpose, and multi-org is the consultant case the
+  `enterprise` plan already sells. Leaving is a separate deliberate act, refused on the last
+  membership, and never bundled into accepting — someone joining a new company is not thinking about
+  their old data.
+- **Switching organizations needs no permission**, and `client:switch` is dropped from `consultant`. A
+  permission gates what may be done *inside* a tenant; choosing which of your own memberships to act
+  under is which tenant the question is even about, so gating it only lets a user hold a membership
+  they cannot use. `POST /auth/switch-org` re-mints against a different membership and starts a **new
+  refresh family** rather than rotating the old one — the previous org's token must keep working,
+  since the user has not left that tenant.
+- **`user:manage` is plan-gated at `pro` and up.** It is the only thing enforcing `multi-user`, which
+  is sold on `business` and appears in exactly one place in this codebase: a string in `seed.js` that
+  nothing reads. Gating at `business` puts a $115 → $250 cliff in front of adding one colleague, which
+  is where people share a login instead — costing the seat and corrupting the audit trail phase 5
+  needs.
+- **A subscription belongs to an organization, and there is only one kind.** Gate 4 reads the plan of
+  the session's organization (`sessionFor` → `planFor(membership.organization_id)`), so a user-level
+  subscription would be invisible in the only place a consultant works — inside a client's tenant. A
+  consultancy is itself an organization: it registers, buys a plan and works in its own tenant, which
+  is all the intelligence layer needs, since benchmarks and competitor prices are computed over public
+  award data and never touch a client's tenant. A membership in a client organization is required only
+  for that client's *private* data — their vault, their draft bids — and there the client's plan
+  governs, which is correct, because the client is who that value is delivered to.
+- **`consultant` is a label, not a distinct permission set.** With `client:switch` dropped it is
+  byte-identical to `coordinator`, and that is deliberate: it records that a member is external, which
+  a member list and phase-5 `audit_logs` both want. Do not "fix" the duplication, and do not assume a
+  capability difference exists — if the two ever diverge it must be for a stated reason. This also
+  means `enterprise`'s seeded `consultant-mode` feature entitles nothing; its only real difference
+  from `business` is `sla`.
+- **Organizations are never deleted.** Nine tables CASCADE off `organizations`, and `vault_documents`
+  among them have files in object storage that Postgres cannot reach — a cascade orphans every
+  certificate in the bucket, against the object-first-row-second rule the vault already follows. An
+  abandoned organization sits inert on `free`.
+
+Still to design: whether an unattached user can *discover* that their company already has an account —
+an approval queue that leaks that a company is a customer, so it is deliberately not part of this
+slice.
 
 ## Domain rules
 
@@ -222,8 +328,8 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
   Benchmarks use only public award data and retain provenance.
 - **Non-competitive / "wired-spec" flags are signals with evidence, never accusations.** This framing
   is mandatory — it is a legal and reputational constraint, not a wording preference.
-- **No duplicate alert** for the same tender/event to the same user; respect channel preferences and
-  quiet hours.
+- **No duplicate alert** for the same tender/event to the same organization — enforced by
+  `notifications_dedupe_uq`, not by convention.
 - **Expired certificates cannot be attached to a bid package** — enforced by
   `VaultDocumentService.assertAttachable`, whose one caller today is checklist attachment and
   whose second will be the bid package; **a bid in
@@ -239,9 +345,11 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
 
 Enum values are constrained at the DB level: `tender.procedure_type ∈ {open, quotation,
 single_source, e_auction, restricted}`; `tender.status ∈ {planned, active, amended, closed, awarded,
-cancelled}`; `tracked_tender.status ∈ {considering, preparing, submitted, won, lost, dropped}`.
+cancelled}`; `tracked_tender.status ∈ {considering, preparing, submitted, won, lost, dropped}`;
+`invitation.status ∈ {pending, accepted, declined}`.
 Nullable on purpose: `tenders.deadline_at` (some notices lack it), `awards.supplier_id` (void or
-undisclosed), `vault_documents.valid_until` (non-expiring docs) — features degrade rather than break.
+undisclosed), `vault_documents.valid_until` (non-expiring docs), `organizations.tax_id` (no ՀՎՀՀ
+until invoice payment) — features degrade rather than break.
 
 ## AI layer
 
@@ -319,15 +427,153 @@ decision that has already been made.
 - **Empty on purpose:** `contracts` (post-award, phase 6) and `cpv_code` / `parties.tax_id` (both
   live only inside the invitation ZIP — see the document stage).
 - **Still no writer:** `contracts`, `subscriptions`, `invoices`, `audit_logs` — all phase 5/6.
-- **Telegram is the one live delivery channel.** A bot cannot open a conversation, so a chat is
-  linked by the user opening a `t.me/<bot>?start=<token>` deep link; the token is single-use and
-  short-lived, and the chat id lands in `channel_subscriptions`. Quiet hours defer an alert to a
-  `deferred` row that `notify.deferred` sweeps, never drop it. **A channel records its own
-  `alert_deliveries` rows and callers must not** — Telegram fans one alert out to every linked
-  chat, so one row per destination is the honest record.
+- **Telegram and email are the two live delivery channels**, driven by one policy engine.
+  `services/notifier.service.js` owns recipient resolution, outcome mapping and delivery
+  recording for both; `TRANSPORTS` in that file holds the only per-channel differences, and it
+  refuses to load if its keys disagree with `DELIVERABLE_CHANNELS`. Copying the engine per channel
+  would have produced two subtly different answers to "is this deferred or failed", which is the
+  question every log line and metric is built on.
+- **Only a private Telegram chat can be linked.** `handleStart` refuses a group or supergroup, so
+  every row is one person's DM by construction — there is no shared room, and therefore no way for
+  one member's action to silence a channel their colleagues rely on. The check **fails closed**:
+  anything not explicitly `private` is refused, and `chat.type` is declared in
+  `telegramUpdateSchema` for that reason — the polling worker passes the raw update but the webhook
+  passes a `stripUnknown` copy, so an undeclared field would reject every link in production while
+  working perfectly in development. The token is **not** consumed on refusal: opening the connect
+  link in a group is an ordinary mistake, and burning the token would make the fix fail too.
+  This is also why `channel_subscriptions.user_id` is `ON DELETE CASCADE` and not `SET NULL` — the
+  SET NULL existed so an org kept a shared room when its creator left, and with no shared rooms it
+  would only leave an orphan chat receiving alerts that nobody can revoke.
+- **A Telegram chat is linked; an email address is not.** A bot cannot open a conversation, so a
+  chat arrives through a `t.me/<bot>?start=<token>` deep link with a single-use, short-lived token.
+  Email needs no such dance for a member's **own** address: `users.email_verified_at` was set
+  before they could log in, so a second confirmation mail is theatre — and theatre that fails
+  silently when it lands in a spam folder. A *shared* address (`alerts@company.am`) has no verified
+  owner and would still need the token flow.
+- **Alert mail goes through the same port as auth mail** (`libs/adapters/email/`), so there is no
+  second SMTP client to get STARTTLS wrong. There is deliberately no `channel/email.js` beside
+  `channel/telegram.js`: the email channel is a formatter plus a policy, and the transport is
+  borrowed.
+- **Delivery has four outcomes, not three: `sent`, `deferred`, `skipped`, `failed`.** A throttled
+  provider (429) defers an alert to a `deferred` row that `notify.deferred` sweeps — never drop it,
+  and never burn an attempt on being rate-limited — and the sweep walks every deliverable channel
+  rather than the hardcoded `'telegram'` it once named twice. `skipped` means the org has not
+  switched that channel on. Folding either into `failed` makes a working configuration look like a
+  broken channel in every metric, which is how a real outage stops being visible. **A channel records its own `alert_deliveries` rows and callers must not** —
+  one alert fans out to every linked destination, so one row per destination is the honest record.
+- **A live `channel_subscriptions` row IS the switch, and it is the only one.** Decided
+  2026-09-10: there is no per-user preference layer and no quiet window. A channel delivers for an
+  organization exactly when that organization has a verified, unrevoked row for it; turning a
+  channel off is revoking its rows, turning it on is linking again. `notification_preferences`,
+  `muted_types`, `TRANSPORTS[].personal` and the `quiet_hours_*` / `timezone` columns were built
+  and then **removed** — do not rebuild them from this file's history or from the reference spec's
+  BR-10 without asking. The reason is that a second store of "should this be delivered" is a second
+  answer that can disagree with the first, and the subscription row already answers it.
+- **Switching a channel on and off lives under `/integrations`, for both channels.**
+  `GET/POST /integrations/email` and `DELETE /integrations/email/:id` mirror the Telegram routes;
+  this is where `PATCH /notifications/preferences` went. `POST /integrations/email` takes **no
+  body** — the address is always the authenticated user's own verified account address, which is
+  what stops the endpoint from aiming an org's alerts at a mailbox nobody consented to. A shared
+  `alerts@company.am` has no verified owner and would still need the Telegram-style token flow.
+- **Switching a channel off never deletes anything, and switching it back on never re-links.**
+  `revoke` sets `revoked_at` and erases nothing — the address and the `verified_at` that proves
+  someone owns it both survive, which is precisely what makes
+  `POST /integrations/{telegram,email}/:id/enable` able to clear that timestamp instead of running
+  the deep-link dance again. For Telegram that is the point: the chat id exists only because the
+  user messaged the bot once, and charging them a second `/start` to undo their own click is a tax
+  on changing their mind. The only rows ever deleted are pending links nobody redeemed
+  (`purgeExpiredTokens`), which have no address and were never a destination.
+- **`listForOrg` includes revoked rows, and that is load-bearing.** It used to filter them out,
+  which made switching a channel off *look* like deletion: the row survived but the API stopped
+  mentioning it, so a client had no off state to render and no id to switch back on. The listing
+  reports `linked`/`active`, `pending` and `off`, active first.
+- **Turning a channel ON is scoped to the caller; turning it OFF is scoped to the organization.**
+  The asymmetry is deliberate, and it is the same rule the unsubscribe token follows. Switching a
+  colleague's alerts off is configuration; switching them on starts sending messages to their
+  private chat or personal inbox, and whoever turned it off may have been the recipient saying stop
+  — through `/stop`, or the link in a message. `savedsearch:write` must not overrule that. Every
+  row is one person's own destination now that only private chats can be linked, so "your own" is
+  well defined. Enabling also resets `failure_count` and `last_error`: a destination auto-revoked
+  after repeated failures is getting a real second chance, and an inherited count would revoke it
+  again on the first hiccup.
+- **Alert mail carries an unsubscribe link, and it is the only unauthenticated write path besides
+  the Telegram webhook.** `GET /api/v1/unsubscribe` previews, `POST` acts — and that split is not
+  REST pedantry: corporate mail security scanners open every URL in every message before the
+  recipient sees it, so a GET that unsubscribed on sight would silently switch alerts off for the
+  customers whose employers scan hardest. RFC 8058 one-click wants the POST anyway, so the safe
+  design and the standard one coincide. The token is an **HMAC over the subscription id**, domain-
+  separated with an `unsubscribe:` prefix because the same secret signs access tokens and
+  reset-code digests — there is no column to migrate or leak. It switches a channel **off only**:
+  the link travels through relays, archives and forwarded threads, so the worst a finder can do
+  must be the effect the link is for. Turning a channel back on means signing in to
+  `/integrations`. Revoking is idempotent — a mail client may retry one-click and an archived
+  message works forever, so a second click must not report failure at the moment it already
+  worked. Both `List-Unsubscribe` headers are emitted together or not at all, and not at all when
+  `APP.API_BASE_URL` is unset: a dead unsubscribe button earns a spam report, which is the thing
+  the link exists to prevent. The reason to care is self-interested — providers score a sending
+  domain on spam complaints, and enough of them put password-reset mail in junk too.
+  Telegram alerts carry no such link because `/stop` already does it in the chat the person is
+  already reading.
+- **`APP.API_BASE_URL` is where this API answers publicly; `APP.BASE_URL` is where the product
+  lives.** Two settings because they are two machines and, today, two states of existence — there
+  is no frontend, but the API is deployed. An unsubscribe link has to survive that gap, so it
+  points at the API.
+- **No subscription is `skipped`, never `failed`.** An org that deliberately uses one channel must
+  not look like a broken installation of the other in every metric built on `alert_deliveries`.
+  The row is still written, with its reason — "alerts do not work" is a support question and that
+  row is the honest answer.
+- **`saved_searches.channels` defaults to `[]`, not `['email']`.** The old default named a channel
+  that was a not-implemented stub, so every saved search created through the API recorded a failed
+  delivery per match and reached nobody — the org's linked chat was never consulted, because the
+  `channelsForOrg` fallback only fires when the array is empty. The valid set is now
+  `DELIVERABLE_CHANNELS`, so a channel with no transport cannot be selected at all.
 - **API:** `/api/v1` serves auth, tenders, saved searches, notifications, intelligence and
   integrations behind the four authorization gates. `middlewares/{auth,authorize,rateLimit,validate,error}.js` are all
   implemented.
+- **Email verification is mandatory, and the gate lives in `sessionFor`** — not in `login`. Login is
+  not the only thing that will ever mint a session: `switch-org` is designed to, and one choke point
+  is the only way a path added later cannot forget the check. `POST /auth/register` returns
+  **201 with no tokens**; handing back a session there would mint credentials the very next request
+  rejects. `users.email_verified_at` is the durable fact and only the one-time token lives in Redis.
+- **Registration creates the organization, and that is deliberate** — see *Account and organization
+  model* above, which keeps that transaction and rewrites everything around it. Not yet built: the
+  `displayName` field, the `invitations` table, and the plan gate on `user:manage`.
+- **Reset codes have an attempt ceiling, and that is the actual lock.** Six digits is a million
+  possibilities — roughly a minute of scripted guessing — so a code that merely waits out its TTL
+  under unlimited tries is a delay, not a factor. `authStore.js` burns the code on the fifth failure;
+  the route's rate limit is the outer wall. `verify-reset-code` deliberately does **not** spend the
+  code (`reset-password` re-checks it), or a user who pauses over their new password would find it
+  dead — but a wrong guess still costs an attempt, or the check-only endpoint becomes the unlimited
+  oracle the ceiling exists to prevent.
+- **A password reset revokes every session** — `refresh:user:<id>` indexes a user's token families
+  precisely so it can. A reset that leaves old refresh tokens alive does not lock out whoever
+  prompted it. It also marks the address verified: reading a code out of that inbox is stronger proof
+  than the confirmation link would have been.
+- **Redis never holds a usable auth secret.** The verification token is stored under a
+  SHA-256 of itself; the reset code under an HMAC keyed on the app secret and bound to the
+  address. A dump of that database yields nothing presentable back to the API.
+- **Email verification is read → write → delete, in that order.** A `GETDEL` would hand back the only
+  copy of the token and lose it if the database write then failed, stranding a user whose link now
+  works for nobody. A credential that must be spent exactly once is the opposite case and wants
+  `GETDEL`; this one must survive a failed write.
+- **Mail goes through the email port**, `libs/adapters/email/`, which picks `smtp` or `log` from
+  `EMAIL_DRIVER` the way the storage port picks its driver. `log` prints the message body — reset
+  code and all — to the logger; that combination looks like working auth right up until a real user
+  needs their password back. A send failure is logged, never thrown: the account is already
+  committed, and a 500 would tell the user their registration failed when the address is now taken.
+- **The `log` driver is refused in three places, and all three are needed.** `server.js` and
+  `workers/index.js` both **refuse to boot production with it** — they are separate deployables and
+  can be given separate environments, and the worker is the one that sends alert mail, so the API's
+  check was never cover for it. Then `applyOutcome` refuses to record a `logged` result as `sent`
+  outside development at all: an alert marked delivered in `alert_deliveries` when nothing left the
+  building is precisely the silent failure that table exists to prevent. That third check is
+  deliberately stricter than the boot checks — it trusts no NODE_ENV but the one where printing to a
+  log is the intent — and it returns before the failure counter, because a misconfiguration must not
+  revoke subscriptions whose addresses are fine.
+- **`/auth/forgot-password` and `/auth/verify-email/resend` answer identically for every input.** Both
+  take a bare address and send mail, so any difference in wording, status or shape makes them an
+  account-existence oracle needing no credentials. The response objects are module constants for
+  exactly that reason — two branches cannot drift apart if there is only one object.
 - **Intelligence (phase 3) is built:** price benchmarks (tiered, materialised, including
   buyer-specific pairs), `competitor-prices` per tender, expected competition, buyer and supplier
   profiles, and an AI price recommendation. Competitor prices and win rates are the features that
@@ -408,7 +654,14 @@ decision that has already been made.
   requirement still exists, it is simply unmet again.
 - **A vault alert has no tender**, which broke BR-9 dedupe — `(org, type, tender_id)` collapses
   every expiring document in an org into one notification. `notifications.subject_id` is the
-  dedupe key for non-tender alerts and stays NULL for everything else.
+  dedupe key for non-tender alerts and stays NULL for everything else. BR-9 is now a
+  constraint rather than a convention: `notifications_dedupe_uq` on `(organization_id, type,
+  tender_id, subject_id)` **`NULLS NOT DISTINCT`** — every row has a NULL in that key by
+  design, so under the default NULLS DISTINCT the index would accept every duplicate it
+  exists to stop while looking correct in `\d notifications`. `createIfNew` reads first and
+  inserts `ON CONFLICT DO NOTHING`, so the loser of a concurrent raise reads back the
+  winner's row instead of throwing — a unique violation here is the constraint working, the
+  same rule as on ingestion.
 - **An ASCENDING cursor must truncate timestamps to milliseconds on both sides.** Postgres
   stores `timestamptz` to the microsecond; node-postgres hands JavaScript a `Date`, which holds
   milliseconds. A cursor built from a fetched row therefore encodes a value slightly EARLIER

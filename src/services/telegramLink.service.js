@@ -25,6 +25,14 @@ const CHANNEL = 'telegram';
  * The token is the security boundary: anyone holding it can point an
  * organization's alerts at their own chat. It is 32 random bytes, single-use,
  * short-lived, and never logged.
+ *
+ * **Only a private chat can be linked.** A group or supergroup is refused, so
+ * every row is one person's DM by construction. That is what makes a
+ * subscription governable at all: `channel_subscriptions.user_id` can be read
+ * as the owner rather than merely as whoever set it up, and no member's action
+ * can silence a room shared with colleagues, because there is no shared room.
+ * The invariant is global rather than a per-row flag, which is why no `personal`
+ * column exists to be got wrong.
  */
 
 /**
@@ -58,39 +66,52 @@ export const createLink = async ({ organizationId, userId }) => {
 };
 
 /** What the org has linked. Pending rows included so a half-finished link is visible. */
+/**
+ * Three states, not two.
+ *
+ * `off` is the one that used to be missing: a revoked row was filtered out of
+ * the listing entirely, so switching Telegram off was indistinguishable from
+ * never having linked it, and the only way back was a fresh deep link. A client
+ * rendering an on/off toggle needs to see the off position.
+ */
+const present = (row) => ({
+  id: row.id,
+  channel: row.channel,
+  // The chat id is the destination, not a secret, but it identifies a person's
+  // account — so it is reported as a state rather than echoed back.
+  status: row.revoked_at ? 'off' : row.verified_at ? 'linked' : 'pending',
+  active: Boolean(row.verified_at && !row.revoked_at),
+  // Set, and kept, through a revoke: it is what says this chat was once proved,
+  // and therefore what makes switching it back on possible without re-linking.
+  linkedAt: row.verified_at,
+  revokedAt: row.revoked_at,
+  failureCount: row.failure_count,
+  lastError: row.last_error,
+});
+
 export const listLinks = async (organizationId) => {
   const rows = await subscriptions.listForOrg({ organizationId, channel: CHANNEL });
-  return rows.map((row) => ({
-    id: row.id,
-    channel: row.channel,
-    // The chat id is the destination, not a secret, but it identifies a person's
-    // account — so it is reported as linked/pending rather than echoed back.
-    status: row.verified_at ? 'linked' : 'pending',
-    linkedAt: row.verified_at,
-    quietHours:
-      row.quiet_hours_start === null || row.quiet_hours_start === undefined
-        ? null
-        : { start: row.quiet_hours_start, end: row.quiet_hours_end, timezone: row.timezone },
-    failureCount: row.failure_count,
-    lastError: row.last_error,
-  }));
+  return rows.map(present);
 };
 
 /**
- * Set or clear a subscription's quiet window (BR-10).
+ * Switch a previously linked chat back on — no new deep link, no second
+ * `/start`.
  *
- * Here rather than in the controller because it is a tenant-scoped write with a
- * not-found rule — CLAUDE.md puts business logic in a service and forbids
- * controllers from touching the database. The repository scopes the update by
- * organization, so another tenant's id updates zero rows and reads as absent.
+ * The `userId` is the caller's own and comes from the token; see the repository
+ * for why turning ON is self-scoped while turning OFF is organization-scoped.
  */
-export const setQuietHours = async ({ organizationId, id, start, end, timezone }) => {
-  const updated = await subscriptions.setQuietHours({ id, organizationId, start, end, timezone });
-  if (!updated) throw ApiError.notFound('Subscription');
-  return {
-    id,
-    quietHours: start === null ? null : { start, end, timezone },
-  };
+export const enable = async ({ organizationId, userId, id }) => {
+  const { row, reason } = await subscriptions.reactivate({ id, organizationId, userId });
+
+  if (reason === 'not_found') throw ApiError.notFound('Telegram link');
+  if (reason === 'never_confirmed') {
+    throw ApiError.conflict(
+      'This chat was never linked. Generate a connect link and open it in your chat with the bot.'
+    );
+  }
+
+  return present(row);
 };
 
 export const unlink = async ({ organizationId, id }) => {
@@ -106,7 +127,29 @@ export const unlink = async ({ organizationId, id }) => {
  * possible outcome: the user has done their part, sees nothing, and has no way
  * to tell a typo'd link from a broken integration.
  */
-const handleStart = async ({ chatId, token }) => {
+const handleStart = async ({ chatId, chatType, token }) => {
+  /**
+   * Fails CLOSED: anything that is not explicitly `private` is refused, so a
+   * missing or unrecognised type can never admit a group. `chat.type` is
+   * declared in `telegramUpdateSchema` precisely so the webhook's `stripUnknown`
+   * copy still carries it — without that, this branch would reject every link
+   * in production while working perfectly under the polling worker.
+   *
+   * The token is deliberately NOT consumed here. Opening the connect link in a
+   * group is an ordinary mistake, and burning the token would make the fix
+   * ("open it in your own chat with the bot") fail too, with a second
+   * misleading message.
+   */
+  if (chatType !== 'private') {
+    await telegram.sendMessage({
+      chatId,
+      text: linkRejected(
+        'Alerts are delivered to personal chats only. Open the connect link in your own chat with this bot — your link is still valid.'
+      ),
+    });
+    return { action: 'start', result: 'not_private' };
+  }
+
   if (!token) {
     await telegram.sendMessage({
       chatId,
@@ -187,13 +230,18 @@ export const handleUpdate = async (update) => {
 
   const message = update?.message;
   const chatId = message?.chat?.id;
+  const chatType = message?.chat?.type;
   const text = typeof message?.text === 'string' ? message.text.trim() : '';
   if (!chatId || !text) return { action: 'ignored' };
 
   if (text === '/start' || text.startsWith('/start ')) {
     // Exactly one payload argument; Telegram's start parameter cannot contain
     // whitespace, so anything after the first is not ours.
-    return handleStart({ chatId, token: text.slice('/start'.length).trim().split(/\s+/)[0] || null });
+    return handleStart({
+      chatId,
+      chatType,
+      token: text.slice('/start'.length).trim().split(/\s+/)[0] || null,
+    });
   }
 
   if (text === '/stop' || text.startsWith('/stop ')) return handleStop({ chatId });
@@ -218,4 +266,4 @@ export const handleUpdate = async (update) => {
   return { action: 'ignored' };
 };
 
-export default { createLink, listLinks, unlink, setQuietHours, handleUpdate };
+export default { createLink, listLinks, unlink, enable, handleUpdate };

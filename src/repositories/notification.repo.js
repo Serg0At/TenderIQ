@@ -13,11 +13,16 @@ export default class NotificationRepository {
    * Create a notification unless one already exists for this
    * (organization, type, tender, subject).
    *
-   * BR-9: no duplicate alert for the same tender/event to the same user. The
-   * check is a read-then-insert rather than a constraint because the schema has
-   * no unique key here; the matcher is single-consumer per tender, so the race
-   * window is narrow, and a rare duplicate is far less costly than dropping a
-   * real alert.
+   * BR-9: no duplicate alert for the same tender/event to the same user. The read
+   * is the fast path, but the arbiter is `notifications_dedupe_uq` — the read alone
+   * was a check against nothing, and two sweeps raising the same alert in the same
+   * tick both saw "no existing row" and both inserted. `ON CONFLICT DO NOTHING`
+   * makes the loser of that race read back the winner's row instead of throwing:
+   * a unique violation here is the constraint doing its job, the same way it is on
+   * ingestion, and a worker must not die mid-sweep over one.
+   *
+   * The index is NULLS NOT DISTINCT because every row has a NULL in the key — see
+   * the note in `migrations/create_table.js`.
    *
    * `subjectId` is what the alert is about when it is NOT about a tender — a
    * vault document, today. Without it every expiring certificate in an
@@ -29,27 +34,42 @@ export default class NotificationRepository {
     { organizationId, userId = null, type, tenderId = null, subjectId = null, payload },
     trx = db
   ) {
-    const existing = await trx('notifications')
-      .where({
-        organization_id: organizationId,
-        type,
-        tender_id: tenderId,
-        subject_id: subjectId,
-      })
-      .first();
-    if (existing) return { created: false, notification: existing };
-
-    const id = createId();
-    await trx('notifications').insert({
-      id,
+    const key = {
       organization_id: organizationId,
-      user_id: userId,
       type,
       tender_id: tenderId,
       subject_id: subjectId,
-      payload,
-    });
-    return { created: true, notification: await trx('notifications').where({ id }).first() };
+    };
+
+    const existing = await trx('notifications').where(key).first();
+    if (existing) return { created: false, notification: existing };
+
+    const [notification] = await trx('notifications')
+      .insert({ id: createId(), ...key, user_id: userId, payload })
+      .onConflict(['organization_id', 'type', 'tender_id', 'subject_id'])
+      .ignore()
+      .returning('*');
+
+    if (notification) return { created: true, notification };
+
+    // Nothing came back: another worker inserted between the read and the write.
+    // Its row is the notification, and this caller must be told `created: false`
+    // so it does not deliver a second copy of an alert already being sent.
+    const winner = await trx('notifications').where(key).first();
+    if (winner) return { created: false, notification: winner };
+
+    /**
+     * Conflicted against a row that is not there. Nothing deletes notifications, so
+     * this means the index and this query disagree about what the dedupe key IS —
+     * add a column to one and not the other and every alert of that shape lands
+     * here. Returning `created: false` would be the worst possible answer: every
+     * caller reads that as "already told them" and drops the alert with no error
+     * and no log. Throw, so the sweep retries and a real drift is loud.
+     */
+    throw new Error(
+      `notifications_dedupe_uq rejected an insert whose dedupe key ${JSON.stringify(key)} matches no row — ` +
+        'the unique index and createIfNew disagree on the key'
+    );
   }
 
   /**

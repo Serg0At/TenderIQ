@@ -10,6 +10,11 @@ import { ok, created } from '../../utils/respond.js';
  * and a try/catch here would only produce a second, drifting one.
  */
 export default class AuthController {
+  /**
+   * 201 with no tokens. The account exists — which is what 201 asserts — but it
+   * cannot sign in until the address is confirmed, so there is nothing to hand
+   * back but the next step.
+   */
   static async register(req, res) {
     return created(res, await AuthService.register(req.body));
   }
@@ -24,6 +29,26 @@ export default class AuthController {
 
   static async logout(req, res) {
     return ok(res, await AuthService.logout(req.body));
+  }
+
+  static async verifyEmail(req, res) {
+    return ok(res, await AuthService.verifyEmail(req.body));
+  }
+
+  static async resendVerification(req, res) {
+    return ok(res, await AuthService.resendVerification(req.body));
+  }
+
+  static async forgotPassword(req, res) {
+    return ok(res, await AuthService.forgotPassword(req.body));
+  }
+
+  static async verifyResetCode(req, res) {
+    return ok(res, await AuthService.verifyResetCode(req.body));
+  }
+
+  static async resetPassword(req, res) {
+    return ok(res, await AuthService.resetPassword(req.body));
   }
 
   /** Whoever the token says you are — useful for a client booting up. */

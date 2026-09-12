@@ -1,6 +1,6 @@
 import notifications from '../repositories/notification.repo.js';
 import subscriptions from '../repositories/channelSubscription.repo.js';
-import { deliverTelegram } from './notifier.service.js';
+import { deliver, deliverableChannels } from './notifier.service.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -11,10 +11,16 @@ import { logger } from '../utils/logger.js';
  * Router → Middleware → Controller → Service → Repository → Knex — so an
  * adapter must not import a service or write to a table. `libs/adapters/`
  * keeps only what genuinely wraps the third party: the Bot API client
- * (`telegram.js`) and the message formatter (`telegram.format.js`).
+ * (`telegram.js`), the mail port (`email/`), and the formatters.
  *
- * A channel returns 'sent', 'deferred' or 'failed' and never throws, so one
- * dead provider cannot abort delivery to the others.
+ * A channel returns 'sent', 'deferred', 'skipped' or 'failed' and never throws,
+ * so one dead provider cannot abort delivery to the others.
+ *
+ * **'skipped' is not a failure.** It means the organization has not switched
+ * that channel on — it has no live `channel_subscriptions` row for it, which is
+ * the only switch there is. Folding it into 'failed' would make every customer
+ * who deliberately uses one channel look like a broken installation of the
+ * other, in every metric built on this table.
  *
  * **A channel records its own `alert_deliveries` rows, and callers must not.**
  * Telegram fans one notification out to every chat an org has linked, so the
@@ -39,41 +45,29 @@ const logChannel = {
   },
 };
 
-const telegramChannel = {
-  name: 'telegram',
+/**
+ * Every real channel is the same object with a different name — the policy
+ * engine in `notifier.service.js` is channel-generic, so there is nothing left
+ * here to specialise.
+ */
+const transportChannel = (name) => ({
+  name,
   async send(notification) {
     try {
-      return await deliverTelegram(notification);
+      return await deliver(name, notification);
     } catch (error) {
       // The contract is that a channel never throws. An unexpected fault must
       // not take down the fan-out to other channels or fail the job — the
       // notification is already durable in Postgres.
-      logger.error(`[telegram] delivery raised: ${error.message}`);
+      logger.error(`[${name}] delivery raised: ${error.message}`);
       return 'failed';
     }
-  },
-};
-
-const unimplemented = (name) => ({
-  name,
-  async send(notification) {
-    // Recorded as a real failed delivery rather than silently skipped, so the
-    // gap shows up in alert_deliveries instead of looking like success.
-    await notifications.recordDelivery({
-      notificationId: notification.id,
-      channel: name,
-      status: 'failed',
-      detail: `${name} channel is not implemented`,
-    });
-    return 'failed';
   },
 });
 
 const CHANNELS = {
   log: logChannel,
-  telegram: telegramChannel,
-  email: unimplemented('email'),
-  viber: unimplemented('viber'),
+  ...Object.fromEntries(deliverableChannels().map((name) => [name, transportChannel(name)])),
 };
 
 export const getChannel = (name) => CHANNELS[name] ?? CHANNELS.log;
@@ -84,16 +78,23 @@ export const availableChannels = () => Object.keys(CHANNELS);
  *
  * Used by producers that have no per-profile channel list of their own —
  * deadline reminders are raised per (org, tender), not per saved search, so
- * they have nothing to read a preference from.
+ * they have no channel list to read. It is also what an empty
+ * `saved_searches.channels` resolves to, which is the honest default: naming a
+ * channel the org has not configured only manufactures failed deliveries.
  *
  * `log` is always included: it is the operator's record that the alert was
- * raised at all, and it is what keeps a reminder visible when an org has
- * linked nothing. Telegram is added only when a chat is actually linked, so an
- * org without one does not accrue a failed row on every reminder.
+ * raised at all, and it is what keeps a reminder visible when an org has linked
+ * nothing. A real channel is added only when a destination is actually
+ * verified, so an org without one does not accrue a failed row on every sweep.
  */
 export const channelsForOrg = async (organizationId) => {
-  const linked = await subscriptions.listDeliverable({ organizationId, channel: 'telegram' });
-  return linked.length ? ['telegram', 'log'] : ['log'];
+  const reachable = await Promise.all(
+    deliverableChannels().map(async (channel) => {
+      const linked = await subscriptions.listDeliverable({ organizationId, channel });
+      return linked.length ? channel : null;
+    })
+  );
+  return [...reachable.filter(Boolean), 'log'];
 };
 
 export default { getChannel, availableChannels, channelsForOrg };

@@ -167,12 +167,62 @@ const config = {
     JWT_REFRESH_SECRET: optional('JWT_REFRESH_SECRET', undefined),
     REFRESH_TOKEN_ACTIVE_TIME: optional('REFRESH_TOKEN_ACTIVE_TIME', '20d'),
     ACCESS_TOKEN_ACTIVE_TIME: optional('ACCESS_TOKEN_ACTIVE_TIME', '15m'),
+
+    /**
+     * How long an email-verification link stays good. Generous, because the
+     * cost of expiry is a support ticket from someone who read their mail the
+     * next morning, and the token grants only "this address is real".
+     */
+    EMAIL_VERIFY_TTL_HOURS: int('AUTH_EMAIL_VERIFY_TTL_HOURS', 24),
+    /**
+     * A password-reset code is a different weight entirely: it grants the
+     * account. Short-lived, and paired with an attempt ceiling — six digits is
+     * a million guesses, which is nothing at machine speed if the code simply
+     * sits there until it expires.
+     */
+    RESET_CODE_TTL_MINUTES: int('AUTH_RESET_CODE_TTL_MINUTES', 15),
+    RESET_CODE_MAX_ATTEMPTS: int('AUTH_RESET_CODE_MAX_ATTEMPTS', 5),
   },
 
-  GOOGLE_OAUTH: {
-    CLIENT_ID: optional('GOOGLE_CLIENT_ID', undefined),
-    CLIENT_SECRET: optional('GOOGLE_CLIENT_SECRET', undefined),
-    CALLBACK_URL: optional('CALLBACK_URL', undefined),
+  /**
+   * Outbound email — verification links and password-reset codes.
+   *
+   * DRIVER follows the STORAGE.DRIVER pattern, and defaults to `log` for the
+   * same reason TELEGRAM defaults to polling: the API has to boot and the flows
+   * have to be exercisable on a machine with no mail credentials. The `log`
+   * driver writes the message, code and all, to the logger — which makes it
+   * strictly a development setting, and why production must set `smtp`.
+   */
+  EMAIL: {
+    DRIVER: oneOf('EMAIL_DRIVER', ['smtp', 'log'], 'log'),
+    /** RFC 5322 From. A display name matters here: bare no-reply@ addresses score badly with spam filters. */
+    FROM: optional('EMAIL_FROM', 'TenderIQ <no-reply@tenderiq.am>'),
+    /** Where a reply actually goes, if anywhere. Unset means the From address. */
+    REPLY_TO: optional('EMAIL_REPLY_TO', undefined),
+    SMTP: {
+      HOST: optional('SMTP_HOST', undefined),
+      PORT: int('SMTP_PORT', 587),
+      /**
+       * True only for implicit TLS on 465. On 587 this must stay false and the
+       * connection is upgraded with STARTTLS, which the driver *requires* rather
+       * than merely offers — an opportunistic upgrade silently sends the
+       * credentials in clear if the server declines it.
+       */
+      SECURE: bool('SMTP_SECURE', false),
+      USER: optional('SMTP_USER', undefined),
+      PASSWORD: optional('SMTP_PASSWORD', undefined),
+    },
+    /**
+     * Consecutive send failures before an email destination is auto-revoked.
+     *
+     * Higher than Telegram's, and deliberately so: Telegram reports a blocked
+     * bot as an unambiguous 403 and that revokes on the first try, so this
+     * counter only ever sees genuine trouble. Email has no such signal — a dead
+     * mailbox and a misconfigured relay both arrive as a 5xx — so the counter is
+     * the only thing separating them, and it needs enough attempts that a short
+     * provider outage does not unsubscribe a customer.
+     */
+    MAX_FAILURES: int('EMAIL_MAX_FAILURES', 10),
   },
 
   STORAGE: {
@@ -272,6 +322,21 @@ const config = {
    */
   APP: {
     BASE_URL: optional('APP_BASE_URL', undefined),
+    /**
+     * Where THIS API answers from, on the public internet — the origin only,
+     * no path.
+     *
+     * Separate from `BASE_URL` because they are different machines and, right
+     * now, different states of existence: there is no frontend, but the API is
+     * deployed and reachable. The unsubscribe link in an alert email has to
+     * survive that gap, so it points here rather than at a product page that
+     * does not exist yet. A mail client's "Unsubscribe" button is worthless if
+     * it opens a dead host.
+     *
+     * Unset means alert mail carries no unsubscribe link at all — the honest
+     * degradation, and the same rule `BASE_URL` follows.
+     */
+    API_BASE_URL: optional('API_BASE_URL', undefined),
   },
 
   /**

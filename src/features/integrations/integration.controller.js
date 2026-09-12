@@ -1,4 +1,5 @@
 import TelegramLinkService from '../../services/telegramLink.service.js';
+import EmailAlertsService from '../../services/emailAlerts.service.js';
 import { ok, created, noContent } from '../../utils/respond.js';
 
 export default class IntegrationController {
@@ -29,16 +30,63 @@ export default class IntegrationController {
     return noContent(res);
   }
 
-  static async setQuietHours(req, res) {
-    const { start, end, timezone } = req.body;
+  /**
+   * Switch a chat that was turned off back on.
+   *
+   * `userId` is passed where the unlink handler passes none, and that is the
+   * whole difference between the two: turning alerts off for someone is safe,
+   * turning them on is sending messages to their private chat, so only the
+   * owner can. See `channelSubscription.repo.js:reactivate`.
+   */
+  static async enableTelegram(req, res) {
     return ok(
       res,
-      await TelegramLinkService.setQuietHours({
+      await TelegramLinkService.enable({
         organizationId: req.user.organizationId,
+        userId: req.user.id,
         id: req.params.id,
-        start,
-        end,
-        timezone,
+      })
+    );
+  }
+
+  /**
+   * Email alerts for the organization.
+   *
+   * The mirror of the Telegram handlers, and the replacement for what used to
+   * live in `PATCH /notifications/preferences`. A subscription row is the only
+   * switch, so switching email on and linking a chat are the same kind of act
+   * and sit behind the same permission.
+   */
+  static async listEmailAlerts(req, res) {
+    return ok(res, await EmailAlertsService.list(req.user.organizationId));
+  }
+
+  static async subscribeEmail(req, res) {
+    return created(
+      res,
+      await EmailAlertsService.subscribe({
+        organizationId: req.user.organizationId,
+        userId: req.user.id,
+      })
+    );
+  }
+
+  static async unsubscribeEmail(req, res) {
+    await EmailAlertsService.unsubscribe({
+      organizationId: req.user.organizationId,
+      id: req.params.id,
+    });
+    return noContent(res);
+  }
+
+  /** The email mirror of `enableTelegram`, and self-scoped for the same reason. */
+  static async enableEmail(req, res) {
+    return ok(
+      res,
+      await EmailAlertsService.enable({
+        organizationId: req.user.organizationId,
+        userId: req.user.id,
+        id: req.params.id,
       })
     );
   }

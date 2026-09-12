@@ -1,127 +1,34 @@
-import config from '../../../configs/variables.config.js';
-
-const { APP } = config;
+import { escapeHtml } from '../../../utils/html.js';
+import {
+  money,
+  deadline,
+  tenderLink,
+  appLink,
+  headingFor,
+  isVaultType,
+} from './notification.present.js';
 
 /**
  * Alert text for Telegram. Pure — no I/O, no clock, no database.
  *
  * Kept apart from the transport so the wording can be read and changed without
- * touching the API client, and so the escaping rule lives in exactly one place.
+ * touching the API client. What a notification *says* — the heading, the money,
+ * the deadline, the link — is shared with the email channel in
+ * `notification.present.js`; what is left here is the part that is genuinely
+ * Telegram's: its markup, and the shape of a chat message.
+ *
+ * The transport uses `parse_mode: HTML` rather than MarkdownV2, and that is why
+ * `escapeHtml` is enough. MarkdownV2 requires escaping eighteen characters
+ * wherever they appear, including `.`, `-`, `(` and `!`. Armenian procurement
+ * titles are full of parentheses, hyphens and decimal numbers, so a MarkdownV2
+ * alert is a 400 waiting to happen — and a dropped alert is the one failure
+ * this product cannot have.
  */
 
-/**
- * Escape for `parse_mode: HTML`.
- *
- * Telegram's HTML mode needs exactly three characters escaped, and `&` must go
- * first or it would double-escape the entities produced by the other two.
- *
- * This is the whole reason the transport uses HTML rather than MarkdownV2:
- * MarkdownV2 requires escaping eighteen characters wherever they appear,
- * including `.`, `-`, `(` and `!`. Armenian procurement titles are full of
- * parentheses, hyphens and decimal numbers, so a MarkdownV2 alert is a 400
- * waiting to happen — and a dropped alert is the one failure this product
- * cannot have.
- *
- * Scraped source text reaches this function directly, so treating it as data
- * rather than markup is a safety property, not a formatting preference.
- */
-export const escapeHtml = (value) =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    // Telegram's text mode does not require this one, but the same helper is
-    // used inside href="…" where an unescaped quote closes the attribute early
-    // and lets scraped text inject its own. Escaping it always is cheaper than
-    // remembering which call site is an attribute.
-    .replace(/"/g, '&quot;');
-
-/** AMD with thousands separators. Armenian procurement values run to billions. */
-const money = (amount, currency = 'AMD') => {
-  const n = Number(amount);
-  if (!Number.isFinite(n)) return null;
-  return `${n.toLocaleString('en-US', { maximumFractionDigits: 0 })} ${currency}`;
-};
-
-/** Absolute date plus a relative hint, because "in 3 days" is what gets acted on. */
-const deadline = (value, now = new Date()) => {
-  if (!value) return null;
-  const at = new Date(value);
-  if (Number.isNaN(at.getTime())) return null;
-
-  const iso = at.toISOString().slice(0, 16).replace('T', ' ');
-  const hours = Math.round((at.getTime() - now.getTime()) / 3_600_000);
-
-  if (hours < 0) return `${iso} UTC (passed)`;
-  if (hours < 48) return `${iso} UTC (in ${hours}h)`;
-  return `${iso} UTC (in ${Math.round(hours / 24)}d)`;
-};
-
-/**
- * Where the alert points.
- *
- * Prefers the product, falls back to the source's own page. While there is no
- * frontend, `APP_BASE_URL` is unset and the link goes to the procurement site —
- * which is where the supplier has to end up anyway to bid. A link into an app
- * that does not exist would be worse than none.
- */
-export const tenderLink = (payload = {}, tenderId = null) => {
-  if (APP.BASE_URL && tenderId) return `${APP.BASE_URL.replace(/\/+$/, '')}/tenders/${tenderId}`;
-
-  const candidate = payload.sourceUrl ?? payload.invitationUrl ?? null;
-  if (!candidate) return null;
-
-  /**
-   * Scheme allow-list. The URL originates in scraped HTML, so it is untrusted:
-   * a `javascript:` or `data:` href has no business in an outbound alert.
-   * Telegram sanitises links its own way, but the boundary that knows this
-   * value came from a crawled page is this one.
-   */
-  try {
-    const { protocol } = new URL(candidate);
-    return protocol === 'https:' || protocol === 'http:' ? candidate : null;
-  } catch {
-    // Not a URL at all — a relative path or parser noise. Drop the link rather
-    // than emit an anchor that cannot resolve.
-    return null;
-  }
-};
-
-/**
- * Heading per notification type.
- *
- * Matched by prefix, not by exact key: the reminder worker emits `reminder-72h`
- * and `reminder-24h`, one type per threshold, so an exact lookup on `reminder`
- * silently fell through to the generic heading for every deadline reminder —
- * the alerts most likely to be acted on.
- */
-const HEADINGS = {
-  'tender-match': '🎯 New matching tender',
-  amendment: '✏️ Tender amended',
-  reminder: '⏰ Deadline approaching',
-  // Distinct from `reminder` on purpose: a countdown fires only on a tender the
-  // supplier said they are pursuing, so it deserves a heading that reads as
-  // "your bid", not "a tender exists".
-  countdown: '🚨 Bid deadline — you are pursuing this',
-  expiry: '⌛ Tender closing',
-  // Checked before `expiry` would ever be reached, and named in full: a vault
-  // alert is about the company's own certificate, not about a tender closing,
-  // and the two must not share a heading.
-  'vault-expiry': '📄 Document expiring',
-  'vault-expired': '⛔ Document expired',
-};
-
-/**
- * Longest key first, so a prefix match cannot be stolen by a shorter one.
- * `vault-expiry-30d` must not fall to `expiry`, and `vault-expired` must not
- * fall to `vault-expiry` — object key order is insertion order, which is a
- * fragile thing to depend on.
- */
-const HEADING_KEYS = Object.keys(HEADINGS).sort((a, b) => b.length - a.length);
-
-const headingFor = (type) => {
-  const key = HEADING_KEYS.find((k) => type === k || String(type ?? '').startsWith(`${k}-`));
-  return key ? HEADINGS[key] : '🔔 Tender alert';
+/** `🎯 New matching tender` — Telegram renders both halves; a chat message is skimmed by its emoji. */
+const heading = (type) => {
+  const { emoji, label } = headingFor(type);
+  return `${emoji} ${label}`;
 };
 
 /**
@@ -163,10 +70,8 @@ const formatVaultNotification = (notification, payload, lines, now) => {
 
   // Only when the product exists to link to. There is no source page to fall
   // back on here: this is the customer's own file, not a scraped one.
-  if (APP.BASE_URL && payload.documentId) {
-    const url = `${APP.BASE_URL.replace(/\/+$/, '')}/vault-documents/${payload.documentId}`;
-    lines.push('', `<a href="${escapeHtml(url)}">Open document</a>`);
-  }
+  const url = payload.documentId ? appLink(`/vault-documents/${payload.documentId}`) : null;
+  if (url) lines.push('', `<a href="${escapeHtml(url)}">Open document</a>`);
 
   return lines.join('\n');
 };
@@ -181,7 +86,7 @@ const formatVaultNotification = (notification, payload, lines, now) => {
  */
 export const formatNotification = (notification, { now = new Date() } = {}) => {
   const payload = notification.payload ?? {};
-  const lines = [`<b>${escapeHtml(headingFor(notification.type))}</b>`];
+  const lines = [`<b>${escapeHtml(heading(notification.type))}</b>`];
 
   /**
    * Vault alerts are about a document, not a tender, and share none of the
@@ -189,7 +94,7 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
    * through the tender renderer they would print a heading and nothing else,
    * since every line drops when its field is missing.
    */
-  if (String(notification.type ?? '').startsWith('vault-')) {
+  if (isVaultType(notification.type)) {
     return formatVaultNotification(notification, payload, lines, now);
   }
 
@@ -256,10 +161,11 @@ export const stopConfirmation = () =>
     'Use the connect link in TenderIQ to reconnect.',
   ].join('\n');
 
+// `escapeHtml` and `tenderLink` are deliberately not re-exported: they moved to
+// `utils/html.js` and `notification.present.js`, and a second name for them here
+// is how the email channel would end up importing Telegram's copy.
 export default {
-  escapeHtml,
   formatNotification,
-  tenderLink,
   linkConfirmation,
   linkRejected,
   stopConfirmation,

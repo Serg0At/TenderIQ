@@ -14,6 +14,7 @@ import {
   buyerRoutes,
 } from './intelligence/intelligence.routes.js';
 import integrationRoutes from './integrations/integration.routes.js';
+import unsubscribeRoutes from './unsubscribe/unsubscribe.routes.js';
 import { checkHealth, publicReport } from '../workers/health.js';
 import { ok } from '../utils/respond.js';
 
@@ -47,6 +48,13 @@ router.use('/organization', supplierIdentityRoutes);
 router.use('/vault-documents', vaultRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/integrations', integrationRoutes);
+
+/**
+ * Top-level and short, because this URL is printed inside an email and read by
+ * a human: `/api/v1/unsubscribe` beside `/api/v1/integrations/email/:id`. It is
+ * the unauthenticated half of the same switch the integrations routes own.
+ */
+router.use('/unsubscribe', unsubscribeRoutes);
 
 // Intelligence spans five prefixes rather than one namespace, so it is mounted
 // once per prefix. It must NOT be mounted at '/': a router there matches every

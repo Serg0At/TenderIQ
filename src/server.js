@@ -3,6 +3,7 @@ import 'dotenv/config';
 
 import App from './app.js';
 import config from './configs/variables.config.js';
+import mailer from './libs/adapters/email/index.js';
 import { closeDb } from './libs/knex.js';
 import redis from './libs/redis.js';
 import { logger } from './utils/logger.js';
@@ -10,6 +11,12 @@ import { logger } from './utils/logger.js';
 const { PORT } = config;
 
 const init = async () => {
+  // Refuses to boot production with the log-only mail driver, which sends
+  // nothing and prints every password-reset code to the log. Checked here
+  // rather than at first use, because the first use is a real user who has
+  // already lost their password.
+  await mailer.assertUsable();
+
   // Middleware is registered before the server exists, so the very first
   // request cannot slip past a not-yet-mounted error handler.
   const server = http.createServer(App.init());

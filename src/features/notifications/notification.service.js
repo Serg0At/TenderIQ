@@ -10,6 +10,14 @@ const present = (row) => ({
   createdAt: row.created_at,
 });
 
+/**
+ * The alert feed.
+ *
+ * There is no preference layer here any more. Where an organization can be
+ * reached is decided by the rows in `channel_subscriptions`, managed under
+ * `/integrations`, so this feature reads notifications and nothing else — one
+ * question, one place to answer it.
+ */
 export default class NotificationService {
   static async list(organizationId, { limit = 50 } = {}) {
     return (await notifications.listForOrg(organizationId, { limit })).map(present);

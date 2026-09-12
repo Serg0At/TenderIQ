@@ -1,4 +1,5 @@
 import Joi from 'joi';
+import { DELIVERABLE_CHANNELS } from '../../libs/adapters/channel/notification.present.js';
 
 const codes = Joi.array().items(Joi.string().trim().max(20)).max(100);
 const words = Joi.array().items(Joi.string().trim().min(2).max(100)).max(50);
@@ -16,7 +17,29 @@ export const createSavedSearchSchema = Joi.object({
   regions: Joi.array().items(Joi.string().trim().max(100)).max(20).default([]),
   minValue: Joi.number().min(0).allow(null),
   maxValue: Joi.number().min(0).allow(null),
-  channels: Joi.array().items(Joi.string().valid('email', 'telegram', 'viber')).max(3).default(['email']),
+  /**
+   * Empty by default, and that default is the fix for a real outage.
+   *
+   * It used to be `['email']`, chosen when email was a stub that answered every
+   * send with "not implemented" — so every saved search created through the API
+   * named a channel the dispatcher could not deliver on, recorded a failed
+   * `alert_deliveries` row per match, and reached nobody. The org's linked
+   * Telegram chat was never consulted, because the fallback only fires when this
+   * array is empty.
+   *
+   * `[]` means "however this organization can actually be reached", resolved at
+   * send time by `channelsForOrg`. That is the honest default: it names no
+   * channel the customer has not configured, and it starts working the moment
+   * they link one instead of needing this row edited too.
+   *
+   * The valid set is `DELIVERABLE_CHANNELS`, so it is impossible to select a
+   * channel that has no transport — which is the shape of the bug above.
+   */
+  channels: Joi.array()
+    .items(Joi.string().valid(...DELIVERABLE_CHANNELS))
+    .max(DELIVERABLE_CHANNELS.length)
+    .unique()
+    .default([]),
 })
   .or('cpvCodes', 'keywords')
   .custom((value, helpers) => {
@@ -36,7 +59,10 @@ export const updateSavedSearchSchema = Joi.object({
   regions: Joi.array().items(Joi.string().trim().max(100)).max(20),
   minValue: Joi.number().min(0).allow(null),
   maxValue: Joi.number().min(0).allow(null),
-  channels: Joi.array().items(Joi.string().valid('email', 'telegram', 'viber')).max(3),
+  channels: Joi.array()
+    .items(Joi.string().valid(...DELIVERABLE_CHANNELS))
+    .max(DELIVERABLE_CHANNELS.length)
+    .unique(),
 })
   .min(1)
   .required();

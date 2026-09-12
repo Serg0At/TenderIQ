@@ -23,11 +23,11 @@ one file is the highest-leverage work in the repo.
 
 | Phase | State |
 |---|---|
-| 0 — Foundation | partial |
-| 1 — Ingestion | partial |
-| 2 — Discovery | not started |
-| 3 — Intelligence | not started |
-| 4 — Bid workflow | not started |
+| 0 — Foundation | done |
+| 1 — Ingestion | done |
+| 2 — Discovery | partial |
+| 3 — Intelligence | partial |
+| 4 — Bid workflow | partial |
 | 5 — Accounts & billing | not started |
 | 6 — Post-award & polish | not started |
 

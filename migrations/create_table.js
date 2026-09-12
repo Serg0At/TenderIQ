@@ -183,6 +183,9 @@ function up(pg) {
       table.string('email').notNullable().unique();
       table.string('password_hash').notNullable();
       table.string('locale').notNullable().defaultTo('hy');
+      // Verification is a durable fact, so it lives here; only the one-time token lives
+      // in Redis. Login refuses a NULL, so a fresh account is unusable until confirmed.
+      table.timestamp('email_verified_at');
     })
 
     // organizations — A supplier company using TenderIQ, and the tenant boundary that every
@@ -440,18 +443,26 @@ function up(pg) {
       table.index(['organization_id', 'created_at'], 'notifications_org_created_idx');
     })
 
-    // channel_subscriptions — Where an org's alerts actually go. A Telegram bot
-    // cannot open a conversation, so a chat has to be linked by the user messaging
-    // the bot first; that gives a subscription a lifecycle (pending → verified →
-    // revoked) which a column on `organizations` has nowhere to hold. Per-recipient
-    // quiet hours (BR-10) live here for the same reason. 
+    // channel_subscriptions — Where an org's alerts actually go, and the ONLY
+    // switch that decides whether a channel is on for an organization at all: a
+    // channel with no live row here simply is not delivered to, which is why
+    // there is no `alert_channels` column anywhere. A Telegram bot cannot open a
+    // conversation, so a chat has to be linked by the user messaging the bot
+    // first; that gives a subscription a lifecycle (pending → verified →
+    // revoked) which a column on `organizations` has nowhere to hold.
     .createTable('channel_subscriptions', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
-      // SET NULL, not CASCADE: the org keeps its alerts when the person who set
-      // the chat up leaves.
-      table.string('user_id').references('id').inTable('users').onDelete('SET NULL');
-      table.string('channel').notNullable(); // telegram | email | viber
+      /**
+       * CASCADE, not SET NULL. The SET NULL this replaced existed so an
+       * organization kept a shared Telegram room when the person who set it up
+       * left — but only a PRIVATE chat can be linked now, so there are no
+       * shared rooms and every row is one person's own destination. Nulling the
+       * owner would leave an orphan chat still receiving the org's alerts with
+       * nobody it can be governed by and no one to revoke it.
+       */
+      table.string('user_id').references('id').inTable('users').onDelete('CASCADE');
+      table.string('channel').notNullable(); // telegram | email 
       // Null until confirmed — for Telegram the chat id is not knowable until
       // the user messages the bot.
       table.string('address');
@@ -460,10 +471,6 @@ function up(pg) {
       table.timestamp('verified_at');
       // Kept rather than deleted, so re-linking is an update and the trail survives.
       table.timestamp('revoked_at');
-      // Local wall-clock hours; a window that wraps midnight (22 → 8) is normal.
-      table.smallint('quiet_hours_start');
-      table.smallint('quiet_hours_end');
-      table.string('timezone').notNullable().defaultTo('Asia/Yerevan');
       table.integer('failure_count').notNullable().defaultTo(0);
       table.text('last_error');
       table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
@@ -676,6 +683,42 @@ async function indexes(pg) {
 
   await pg.raw(`CREATE INDEX IF NOT EXISTS notifications_subject_idx
      ON notifications (organization_id, type, subject_id) WHERE subject_id IS NOT NULL`);
+
+  /**
+   * BR-9 — no duplicate alert for the same event — as a constraint rather than a
+   * convention. It was a read-then-insert against nothing: two sweeps raising the same
+   * alert in the same tick both read "no existing row" and both inserted.
+   *
+   * NULLS NOT DISTINCT (Postgres 15+) is the part that makes the key work at all. Every
+   * notification has a NULL in it by design — a tender alert carries no `subject_id`, a
+   * vault alert carries no `tender_id` — and under the default NULLS DISTINCT two NULLs
+   * never collide, so the index would accept every duplicate it exists to stop while
+   * looking correct in `\d notifications`. Verified by insert, not by reading the manual.
+   *
+   * The insert side is `ON CONFLICT DO NOTHING` in `notification.repo.js`: a conflict here
+   * is the constraint arbitrating a race, which is success, not an error to surface.
+   */
+  /**
+   * The deferred sweep's own query: channel equality plus a range on
+   * `deferred_until`, run once per deliverable channel every ten minutes.
+   * Partial on `status = 'deferred'` because that is a handful of rows in a
+   * table that grows one row per destination per alert — the index stays small
+   * forever rather than tracking the whole table.
+   */
+  await pg.raw(`CREATE INDEX IF NOT EXISTS alert_deliveries_deferred_idx
+     ON alert_deliveries (channel, deferred_until)
+     WHERE status = 'deferred'`);
+
+  /**
+   * Two jobs. It serves the NOT EXISTS that stops the sweep re-sending an alert
+   * already delivered on this channel, and it covers the foreign key — without
+   * it, deleting a notification seq-scans this table to enforce the CASCADE.
+   */
+  await pg.raw(`CREATE INDEX IF NOT EXISTS alert_deliveries_notification_idx
+     ON alert_deliveries (notification_id, channel)`);
+
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_uq
+     ON notifications (organization_id, type, tender_id, subject_id) NULLS NOT DISTINCT`);
 
 }
 

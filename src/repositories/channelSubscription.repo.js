@@ -86,6 +86,62 @@ export default class ChannelSubscriptionRepository {
   }
 
   /**
+   * Subscribe an address whose ownership is already proven, with no token round trip.
+   *
+   * The link-token dance exists because a Telegram bot cannot open a
+   * conversation: the only way to learn a chat id is for the user to message
+   * first. Email has no such problem, and for the member's *own* account address
+   * there is nothing left to prove — `users.email_verified_at` was set by the
+   * verification link before they could log in at all. Mailing a second
+   * confirmation to an address the system already verified is theatre, and it
+   * is theatre with a failure mode: an alert channel that silently never
+   * activates because the confirmation landed in a spam folder.
+   *
+   * This is emphatically NOT for an arbitrary address someone types in. A shared
+   * `alerts@company.am` has no verified owner and must go through
+   * `createLinkToken` + `confirm`, or the endpoint becomes a way to point an
+   * organization's alerts at a mailbox nobody consented to.
+   *
+   * Re-subscribing revives the existing row rather than inserting a second one:
+   * `channel_subscriptions_live_uq` covers only live rows, so an insert after a
+   * revoke would succeed and leave two histories for one destination.
+   */
+  static async createVerified({ organizationId, userId, channel, address }, trx = db) {
+    const existing = await trx(TABLE)
+      .where({ organization_id: organizationId, channel, address: String(address) })
+      .first();
+
+    if (existing) {
+      const [row] = await trx(TABLE)
+        .where({ id: existing.id })
+        .update({
+          user_id: userId,
+          verified_at: existing.verified_at ?? new Date(),
+          revoked_at: null,
+          link_token: null,
+          token_expires_at: null,
+          failure_count: 0,
+          last_error: null,
+          updated_at: new Date(),
+        })
+        .returning('*');
+      return row;
+    }
+
+    const [row] = await trx(TABLE)
+      .insert({
+        id: createId(),
+        organization_id: organizationId,
+        user_id: userId,
+        channel,
+        address: String(address),
+        verified_at: new Date(),
+      })
+      .returning('*');
+    return row;
+  }
+
+  /**
    * Every destination that should receive this org's alerts on this channel.
    *
    * Verified and not revoked — a pending link has no address to send to, and a
@@ -100,11 +156,52 @@ export default class ChannelSubscriptionRepository {
       .select('*');
   }
 
-  /** Tenant-scoped listing for the API, pending rows included so a user can see one is waiting. */
+  /**
+   * Tenant-scoped listing for the API. Pending AND revoked rows included.
+   *
+   * Revoked rows used to be filtered out here, which quietly made switching a
+   * channel off look like deleting it: the row survived in the table, but the
+   * API stopped mentioning it, so a client had no way to render "off" and no
+   * way to learn the id needed to switch it back on. Turning Telegram on again
+   * meant generating a fresh deep link and re-opening it in the chat — repeating
+   * a proof of ownership that the surviving row already held.
+   *
+   * So the list reports the whole history of destinations for this org, and the
+   * caller says which are live. Active first: an off row is a footnote, not the
+   * headline.
+   */
   static async listForOrg({ organizationId, channel = null }, trx = db) {
-    const query = trx(TABLE).where({ organization_id: organizationId }).whereNull('revoked_at');
+    const query = trx(TABLE).where({ organization_id: organizationId });
     if (channel) query.andWhere({ channel });
-    return query.orderBy([{ column: 'created_at', order: 'desc' }, { column: 'id', order: 'desc' }]);
+    return query.orderBy([
+      // NULLs (live rows) sort first under Postgres's default for DESC... which
+      // is NULLS FIRST, so this is stated explicitly rather than relied upon.
+      { column: 'revoked_at', order: 'asc', nulls: 'first' },
+      { column: 'created_at', order: 'desc' },
+      { column: 'id', order: 'desc' },
+    ]);
+  }
+
+  /**
+   * One subscription by id, revoked ones included.
+   *
+   * Deliberately NOT organization-scoped, and one of only two reads here that
+   * are not. The caller is the unsubscribe link in a delivered message: whoever
+   * holds it has no session and no organization to scope by — they have a token
+   * that names exactly one row, and proving they may act on that row is the
+   * token's job, done before this is ever called. Scoping by an org id the
+   * caller supplied would be worse than no scoping, since the caller would be
+   * asserting their own tenant.
+   *
+   * Revoked rows are returned so an unsubscribe can be idempotent: clicking the
+   * link twice must report the same success, not "not found".
+   *
+   * The row this returns is never handed to a client as-is. It carries a chat
+   * id or an address, and the unsubscribe surface masks both.
+   */
+  static async findById(id, trx = db) {
+    if (!id) return null;
+    return trx(TABLE).where({ id }).first();
   }
 
   /**
@@ -120,6 +217,53 @@ export default class ChannelSubscriptionRepository {
       .where({ channel, address: String(address) })
       .whereNull('revoked_at')
       .first();
+  }
+
+  /**
+   * Switch a destination that was turned off back on, without re-proving it.
+   *
+   * The row still holds everything that made it deliverable — the address, and
+   * the `verified_at` that says someone once proved they own it. Revoking never
+   * erased any of that; it set one timestamp. So turning it back on is clearing
+   * that timestamp, not repeating the link dance. For Telegram that is the whole
+   * point: the chat id is only knowable because the user messaged the bot once,
+   * and making them do it again to undo their own click is a tax on changing
+   * their mind.
+   *
+   * **Scoped to the caller's OWN subscription, unlike revoking.** That asymmetry
+   * is deliberate. Switching someone's alerts off is safe; switching them ON
+   * starts sending messages to a private chat or a personal inbox, and the
+   * person who turned it off may have been the recipient saying "stop" — through
+   * `/stop`, or the unsubscribe link in a message. A colleague with
+   * `savedsearch:write` must not be able to overrule that. Every row is one
+   * person's own destination now that only private chats can be linked, so
+   * "your own" is well defined.
+   *
+   * Refuses a row that was never confirmed: a pending link has no address, so
+   * there is nothing to reactivate and the honest answer is to finish linking.
+   * The failure counter is reset because a destination that was auto-revoked
+   * after repeated failures is being given a genuine second chance — carrying
+   * the old count over would revoke it again on the first hiccup.
+   */
+  static async reactivate({ id, organizationId, userId }, trx = db) {
+    const existing = await trx(TABLE)
+      .where({ id, organization_id: organizationId, user_id: userId })
+      .first();
+
+    if (!existing) return { row: null, reason: 'not_found' };
+    if (!existing.address || !existing.verified_at) return { row: null, reason: 'never_confirmed' };
+
+    // Already on: report success rather than an error. A toggle that is pressed
+    // twice, or two tabs saving at once, must not produce a failure for a state
+    // the caller was asking for anyway.
+    if (!existing.revoked_at) return { row: existing, reason: 'already_active' };
+
+    const [row] = await trx(TABLE)
+      .where({ id })
+      .update({ revoked_at: null, failure_count: 0, last_error: null, updated_at: new Date() })
+      .returning('*');
+
+    return { row, reason: 'reactivated' };
   }
 
   static async revoke(id, trx = db) {
@@ -164,17 +308,6 @@ export default class ChannelSubscriptionRepository {
       .where({ id })
       .whereNot({ failure_count: 0 })
       .update({ failure_count: 0, last_error: null, updated_at: new Date() });
-  }
-
-  static async setQuietHours({ id, organizationId, start, end, timezone }, trx = db) {
-    return trx(TABLE)
-      .where({ id, organization_id: organizationId })
-      .update({
-        quiet_hours_start: start,
-        quiet_hours_end: end,
-        ...(timezone ? { timezone } : {}),
-        updated_at: new Date(),
-      });
   }
 
   /** Housekeeping: pending links nobody redeemed. */

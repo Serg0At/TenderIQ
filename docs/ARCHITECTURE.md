@@ -54,7 +54,7 @@ flowchart TB
     REDIS[(Redis<br/>queue · cache · rate limit)] <--> API
     REDIS <--> W
     OBJ <--> API
-    API --> NOTIF[Telegram · Viber · Email · SMS]
+    API --> NOTIF[Telegram · Email · SMS]
     API <--> WEB[Next.js web client]
 ```
 
@@ -197,7 +197,7 @@ TenderIQ/
     │   ├── storage/                 # port + s3/local drivers
     │   └── adapters/                # everything external lives behind a port
     │       ├── ai/                  # Claude client, prompt templates, output schemas
-    │       ├── notify/              # telegram, viber, email, sms
+    │       ├── notify/              # telegram, email, sms
     │       ├── payment/             # bank transfer, card link
     │       └── source/              # one adapter per procurement source
     │           ├── armeps/          # client.js · listing.parser.js · detail.parser.js

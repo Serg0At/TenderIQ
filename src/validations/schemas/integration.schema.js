@@ -1,31 +1,6 @@
 import Joi from 'joi';
 
 /**
- * Quiet hours (BR-10).
- *
- * Hours are local wall-clock, 0–23, treated as [start, end). `end` may be less
- * than `start` — a window that wraps midnight (22 → 8) is the setting most
- * people actually want, so it must not be rejected as backwards.
- *
- * Both null together clears the window. Requiring them to travel as a pair
- * stops a half-set window that would silently never trigger.
- */
-export const quietHoursSchema = Joi.object({
-  start: Joi.number().integer().min(0).max(23).allow(null).required(),
-  end: Joi.number().integer().min(0).max(23).allow(null).required(),
-  timezone: Joi.string().trim().max(64).default('Asia/Yerevan'),
-})
-  .custom((value, helpers) => {
-    const cleared = value.start === null && value.end === null;
-    const set = value.start !== null && value.end !== null;
-    if (!cleared && !set) {
-      return helpers.message('start and end must both be set, or both be null to clear');
-    }
-    return value;
-  })
-  .options({ stripUnknown: true });
-
-/**
  * An inbound Telegram update.
  *
  * CLAUDE.md requires validation at every boundary, not just the authenticated
@@ -45,11 +20,24 @@ export const quietHoursSchema = Joi.object({
  *
  * `chat.id` is a number in the Bot API but is stored and compared as a string,
  * so it is accepted as either and coerced by Joi's `convert`.
+ *
+ * **`chat.type` MUST be declared here**, and its absence would be a silent
+ * production-only bug. Linking is personal-chat-only, and that check fails
+ * closed — anything that is not explicitly `private` is refused. The polling
+ * worker hands `handleUpdate` the raw update, so it sees the field; the webhook
+ * hands it a `stripUnknown` copy, which would drop an undeclared `type` and make
+ * every link attempt fail with "personal chats only". Polling is the dev
+ * default and the webhook is the production path, so the failure would appear
+ * only after deployment.
  */
 export const telegramUpdateSchema = Joi.object({
   update_id: Joi.number().integer(),
   message: Joi.object({
-    chat: Joi.object({ id: Joi.alternatives(Joi.number(), Joi.string()).required() }).required(),
+    chat: Joi.object({
+      id: Joi.alternatives(Joi.number(), Joi.string()).required(),
+      // private | group | supergroup | channel. Only `private` may be linked.
+      type: Joi.string().max(32),
+    }).required(),
     // Length-capped: the handler only ever reads a command prefix and a link
     // token, and an unbounded string is free memory for anyone who finds the URL.
     text: Joi.string().max(4096).allow(''),
@@ -60,4 +48,4 @@ export const telegramUpdateSchema = Joi.object({
   }),
 }).options({ stripUnknown: true, convert: true });
 
-export default { quietHoursSchema, telegramUpdateSchema };
+export default { telegramUpdateSchema };
