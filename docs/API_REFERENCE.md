@@ -185,7 +185,8 @@ Four gates run in order ([src/middlewares/authorize.js](src/middlewares/authoriz
 [src/libs/permissions.js](src/libs/permissions.js)):
 
 1. valid token → else `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`
-2. role holds the permission → else `403 ROLE_FORBIDDEN`
+2. the session is in an organization → else `403 NO_ORGANIZATION`; then the role holds the
+   permission → else `403 ROLE_FORBIDDEN`
 3. resource `organization_id` matches the token's org → enforced in repositories; a
    cross-tenant id answers `404 NOT_FOUND` rather than confirming the row exists
 4. plan entitles the feature → else `402 PLAN_UPGRADE_REQUIRED`
@@ -199,6 +200,19 @@ Four gates run in order ([src/middlewares/authorize.js](src/middlewares/authoriz
 | `consultant` | identical to `coordinator` — a label recording that the member is external, not a distinct permission set |
 
 `intelligence:read` is additionally plan-gated to `pro`, `business`, `enterprise`.
+
+#### The orgless state
+
+A verified user with no membership — someone who has just registered, or who has just been
+removed from their last organization; the API does not distinguish them — holds a real session
+whose claims carry `org`, `role` and `plan` as `null`. Every endpoint behind a permission answers
+`403 NO_ORGANIZATION`, refused at token verification itself. The allowlist is explicit —
+the routes mounted on `authenticateOrgless` ([src/middlewares/auth.js](src/middlewares/auth.js)):
+[Create organization](#create-organization), the invitation endpoints addressed to the caller,
+[Switch organization](#switch-organization) (the way out for a second device still holding an
+orgless session), and [Current user](#current-user). [Refresh](#refresh-session) and
+[Log out](#log-out) take no bearer token. The client's locked screen
+is presentation; the null claims are the enforcement.
 
 ### Pagination
 
@@ -218,6 +232,7 @@ From [src/utils/errors.js](src/utils/errors.js). Any of these may surface on any
 | `PLAN_UPGRADE_REQUIRED` | 402 | Role allows it, plan does not. |
 | `ROLE_FORBIDDEN` | 403 | Role lacks the permission. |
 | `EMAIL_UNVERIFIED` | 403 | Address not confirmed. |
+| `NO_ORGANIZATION` | 403 | The session is in no organization (see [the orgless state](#the-orgless-state)). `details.permission`. |
 | `TENANT_FORBIDDEN` | 403 | Resource belongs to another organization. |
 | `NOT_FOUND` | 404 | No such resource (also returned for cross-tenant ids). |
 | `CONFLICT` | 409 | Conflicts with current state. |
@@ -308,12 +323,11 @@ crosses this boundary.
 
 ## Register
 
-Creates a user, an organization, and an owner membership in one transaction, then emails a
-verification link. Returns **no tokens** — login refuses an unconfirmed address, so a session
-minted here would be rejected by the very next request.
-
-> Per [CLAUDE.md](CLAUDE.md), replacing `organizationName` with a post-login create-or-join
-> flow is a decided-but-unbuilt change. The shape below is what the code does today.
+Creates a user — **and only a user** — then emails a verification link. No organization is
+created: after confirming and signing in, the user is in the [orgless state](#the-orgless-state)
+and either [creates an organization](#create-organization) or accepts an invitation. Returns
+**no tokens** — login refuses an unconfirmed address, so a session minted here would be rejected
+by the very next request.
 
 **API:**
 `POST /api/v1/auth/register`
@@ -327,7 +341,6 @@ minted here would be rejected by the very next request.
   "email": "procurement@shinarar.am",
   "password": "correct horse battery staple",
   "displayName": "Gevorg Sargsyan",
-  "organizationName": "Shinarar LLC",
   "locale": "hy"
 }
 ```
@@ -336,7 +349,6 @@ minted here would be rejected by the very next request.
 - `password` (**required**): 12–200 chars. Length only — no composition rules.
 - `displayName` (**required**): trimmed, 1–120 chars. What this person is called on the member
   roster; without it a team's member list is a list of email addresses.
-- `organizationName` (**required**): trimmed, 2–200 chars.
 - `locale` (optional): `hy` | `ru` | `en`. Default `hy`.
 
 **Response data:**
@@ -366,8 +378,10 @@ minted here would be rejected by the very next request.
 **Errors:**
 
 - `409 CONFLICT`: "That email is already registered."
-- `422 VALIDATION_FAILED`: bad email, short password, missing display name or organization name.
+- `422 VALIDATION_FAILED`: bad email, short password, missing display name.
 - `429 RATE_LIMITED`: more than 10 requests/minute from this IP.
+
+Unknown fields — including the old `organizationName` — are stripped, not stored.
 
 ---
 
@@ -425,11 +439,34 @@ error, so the endpoint cannot be used to discover who holds an account.
 user holds, ordered by name then id; the session is minted for the first one, and the ids are
 what [Switch organization](#switch-organization) takes.
 
+A user with **no membership** still signs in successfully, into the
+[orgless state](#the-orgless-state):
+
+```json
+{
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 900,
+    "user": {
+      "id": "cm9zx4k1p0000qw8f3h2l7d5t",
+      "email": "procurement@shinarar.am",
+      "displayName": "Gevorg Sargsyan",
+      "locale": "hy",
+      "emailVerified": true
+    },
+    "organization": null,
+    "role": null,
+    "plan": null,
+    "organizations": []
+  }
+}
+```
+
 **Errors:**
 
 - `401 UNAUTHENTICATED`: "Email or password is incorrect."
 - `403 EMAIL_UNVERIFIED`: address not confirmed; `details.email` carries the address.
-- `403 ROLE_FORBIDDEN`: user holds no organization membership.
 - `422 VALIDATION_FAILED`: malformed body.
 - `429 RATE_LIMITED`: more than 10 requests/minute from this IP.
 
@@ -473,10 +510,15 @@ the old token, so a downgrade takes effect within one access-token lifetime.
 
 Note this response carries **no** `user` or `organization` block, unlike login.
 
+An orgless refresh token refreshes into another orgless pair (`role` and `plan` both `null`).
+It stays orgless even if the user has gained a membership since — moving into a tenant is
+[Switch organization](#switch-organization), never a side effect of a refresh.
+
 **Errors:**
 
 - `401 UNAUTHENTICATED`: token invalid or expired; token reuse detected (family revoked, sign
-  in again); user or membership no longer exists.
+  in again); user no longer exists; the token names an organization the user is no longer a
+  member of.
 - `422 VALIDATION_FAILED`: missing or short `refreshToken`.
 - `429 RATE_LIMITED`: more than 10 requests/minute from this IP.
 
@@ -830,6 +872,8 @@ No request body
   }
 }
 ```
+
+For an orgless session `organizationId`, `role` and `plan` are all `null`.
 
 **Errors:**
 
@@ -4064,7 +4108,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | Method | Endpoint | Description | Auth Required |
 |---|---|---|---|
 | GET | `/api/v1/health` | Liveness and ingestion-pipeline health | No |
-| POST | `/api/v1/auth/register` | Create user + organization, send verification | No |
+| POST | `/api/v1/auth/register` | Create a user (no organization), send verification | No |
 | POST | `/api/v1/auth/login` | Verify password, mint session | No |
 | POST | `/api/v1/auth/refresh` | Rotate refresh token, re-read role and plan | No (refresh token) |
 | POST | `/api/v1/auth/logout` | Revoke the refresh token family | No (refresh token) |

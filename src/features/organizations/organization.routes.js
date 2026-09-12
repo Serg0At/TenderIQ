@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import OrganizationController from './organization.controller.js';
-import { authenticate } from '../../middlewares/auth.js';
+import { authenticateOrgless } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
 import { rateLimit } from '../../middlewares/rateLimit.js';
 import { createOrganizationSchema } from '../../validations/schemas/organization.schema.js';
 
 const router = Router();
 
-router.use(authenticate);
+// On the orgless allowlist: founding an organization is how a user stops being orgless.
+router.use(authenticateOrgless);
 
 /**
  * The collection of organizations, as opposed to `/organization` — the one the

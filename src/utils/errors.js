@@ -18,6 +18,14 @@ export const ERROR = {
    * are different screens, and only one of them has a button on it.
    */
   EMAIL_UNVERIFIED: { status: 403, message: 'Confirm your email address to continue.' },
+  /**
+   * Its own code for the same reason as EMAIL_UNVERIFIED: a session with no
+   * organization is a legal state (just registered, or just removed), and the
+   * client must tell it apart from "your role cannot do this". A ROLE_FORBIDDEN
+   * with a null role names the wrong problem, and this screen has two buttons
+   * on it — create an organization, or check your invitations.
+   */
+  NO_ORGANIZATION: { status: 403, message: 'You are not a member of any organization yet.' },
   TENANT_FORBIDDEN: { status: 403, message: 'That resource belongs to another organization.' },
   NOT_FOUND: { status: 404, message: 'Not found.' },
   CONFLICT: { status: 409, message: 'That conflicts with the current state.' },

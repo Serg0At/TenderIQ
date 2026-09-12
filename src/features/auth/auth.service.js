@@ -2,7 +2,6 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createId } from '@paralleldrive/cuid2';
 import config from '../../configs/variables.config.js';
-import { withTransaction } from '../../libs/knex.js';
 import users from '../../repositories/user.repo.js';
 import organizations from '../../repositories/organization.repo.js';
 import mailer from '../../libs/adapters/email/index.js';
@@ -52,6 +51,9 @@ const requireSecrets = () => {
   }
 };
 
+/** The tenant claims of a session in no organization — one spelling, used everywhere. */
+const ORGLESS_CLAIMS = Object.freeze({ organizationId: null, role: null, plan: null });
+
 const issueTokens = async ({ userId, organizationId, role, plan, family = createId() }) => {
   requireSecrets();
   const jti = createId();
@@ -76,9 +78,8 @@ const issueTokens = async ({ userId, organizationId, role, plan, family = create
  * Turn a user row into a signed-in session.
  *
  * The email-verification gate lives HERE rather than in `login`, because login
- * is not the only thing that will ever mint a session — the organization
- * onboarding flow is designed to, and a password reset already proves an
- * address. One choke point means a path added later cannot forget the check;
+ * is not the only thing that mints a session — founding an organization and
+ * switching between memberships both do, and accepting an invitation will. One choke point means a path added later cannot forget the check;
  * it would have to route around the only function that issues tokens.
  */
 const sessionFor = async (user, organizationId = null) => {
@@ -91,10 +92,10 @@ const sessionFor = async (user, organizationId = null) => {
 
   const membership = await organizations.findMembership(user.id, organizationId);
   // A NAMED organization the user is not in is not found, full stop. It must
-  // never fall through to whatever a membership-less session becomes: a switch
-  // racing a removal would otherwise quietly mint a session somewhere else.
+  // never fall through to the orgless session below: a switch racing a removal
+  // would otherwise quietly hand back a session in no organization at all.
   if (!membership && organizationId) throw ApiError.notFound('Organization');
-  if (!membership) throw ApiError.forbidden('ROLE_FORBIDDEN', { reason: 'no organization membership' });
+  if (!membership) return orglessSessionFor(user);
 
   const plan = await organizations.planFor(membership.organization_id);
   // No family passed: every session minted here starts a new one. That is what
@@ -118,6 +119,28 @@ const sessionFor = async (user, organizationId = null) => {
 };
 
 /**
+ * A real session in no organization.
+ *
+ * Reached by someone who has just registered and by someone who has just been
+ * removed from their last organization — the API cannot tell them apart and
+ * does not try. Every tenant claim is null, so `authorize` refuses every gated
+ * route with NO_ORGANIZATION; `organizations: []` is the client's signal to
+ * show "create an organization, or check your invitations". ADR 0001.
+ */
+const orglessSessionFor = async (user) => {
+  const tokens = await issueTokens({ userId: user.id, ...ORGLESS_CLAIMS });
+
+  return {
+    ...tokens,
+    user: publicUser(user),
+    organization: null,
+    role: null,
+    plan: null,
+    organizations: [],
+  };
+};
+
+/**
  * Issue and send a verification link.
  *
  * A failed send is logged, not thrown. The account it belongs to has already
@@ -135,34 +158,26 @@ const sendVerification = async (user) => {
 
 export default class AuthService {
   /**
-   * Register a user, their organization, and an owner membership atomically.
+   * Register a user, and only a user.
    *
-   * One transaction because a user with no organization cannot log in — the
-   * token needs a tenant — so a partial write would produce a permanently
-   * broken account that looks successfully created.
+   * No organization is created here. Organizations are born in exactly one
+   * place, `POST /organizations`: a second path that also establishes an owner
+   * membership is the one that rots. The gain is that sign-up is retryable —
+   * there is no organization insert to fail after the address is taken — and a
+   * user with no membership is a legal, servable state anyway, since removal
+   * reaches it regardless. ADR 0001.
    *
    * Returns no tokens. Login refuses an unconfirmed address, so handing back a
    * session here would mint credentials that the very next endpoint rejects —
    * the client would appear signed in and then fail on every call.
    */
-  static async register({ email, password, displayName, organizationName, locale }) {
+  static async register({ email, password, displayName, locale }) {
     const existing = await users.findByEmail(email);
     if (existing) throw ApiError.conflict('That email is already registered.');
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-
-    const user = await withTransaction(async (trx) => {
-      await organizations.ensureRoles(trx);
-      const userId = await users.create({ email, passwordHash, displayName, locale }, trx);
-      const organizationId = await organizations.createWithOwner(
-        { name: organizationName, userId },
-        trx
-      );
-      // The creator is the owner: someone must hold billing:manage, and an org
-      // whose only member cannot manage it is unusable.
-      await organizations.addMember({ userId, organizationId, role: 'owner' }, trx);
-      return users.findById(userId, trx);
-    });
+    const userId = await users.create({ email, passwordHash, displayName, locale });
+    const user = await users.findById(userId);
 
     const delivered = await sendVerification(user);
 
@@ -396,6 +411,20 @@ export default class AuthService {
 
     const user = await users.findById(claims.sub);
     if (!user) throw ApiError.unauthenticated();
+
+    /**
+     * An orgless session refreshes into another orgless session. Treating "no
+     * membership" as theft here — which is right for a token naming an
+     * organization the user has been removed from — would log every orgless
+     * user out each access-token lifetime while they try to create the
+     * organization that would fix it. It stays orgless even if a membership has
+     * appeared since: moving into a tenant is `switch-org`, never a side effect
+     * of a refresh.
+     */
+    if (!claims.org) {
+      const tokens = await issueTokens({ userId: user.id, ...ORGLESS_CLAIMS, family: claims.family });
+      return { ...tokens, role: null, plan: null };
+    }
 
     const membership = await organizations.findMembership(user.id, claims.org);
     if (!membership) throw ApiError.unauthenticated();

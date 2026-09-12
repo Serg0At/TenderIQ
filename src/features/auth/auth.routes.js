@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import AuthController from './auth.controller.js';
-import { authenticate } from '../../middlewares/auth.js';
+import { authenticateOrgless } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
 import { rateLimit } from '../../middlewares/rateLimit.js';
 import {
@@ -73,7 +73,8 @@ router.post(
 );
 router.post('/reset-password', codeLimit, validate(resetPasswordSchema), AuthController.resetPassword);
 
-router.get('/me', authenticate, AuthController.me);
+// Orgless-allowed: a client booting up needs to learn that it is orgless.
+router.get('/me', authenticateOrgless, AuthController.me);
 
 /**
  * Which of your own memberships to act under. Authenticated, and deliberately
@@ -84,7 +85,7 @@ router.get('/me', authenticate, AuthController.me);
 const switchLimit = rateLimit({ requests: 30, perMs: 60_000, bucket: 'auth-switch' });
 router.post(
   '/switch-org',
-  authenticate,
+  authenticateOrgless,
   switchLimit,
   validate(switchOrgSchema),
   AuthController.switchOrganization

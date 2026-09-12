@@ -13,8 +13,6 @@ const email = Joi.string().email().lowercase().max(255).required();
 
 const locale = Joi.string().valid('hy', 'ru', 'en').default('hy');
 
-const organizationName = Joi.string().trim().min(2).max(200).required();
-
 /**
  * What a colleague is called on the roster.
  *
@@ -28,7 +26,6 @@ export const registerSchema = Joi.object({
   email,
   password,
   displayName,
-  organizationName,
   locale,
 }).required();
 

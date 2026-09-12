@@ -11,15 +11,15 @@ organization.
 **Blocked by:** 02 — without a way to create an organization, removing it from registration would
 leave new users permanently stranded.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Registration no longer accepts or creates an organization, and still returns no tokens.
-- [ ] Login for a user with no membership succeeds and reports an empty list of organizations.
-- [ ] The session such a login mints carries no organization, no role and no plan, so every gate
+- [x] Registration no longer accepts or creates an organization, and still returns no tokens.
+- [x] Login for a user with no membership succeeds and reports an empty list of organizations.
+- [x] The session such a login mints carries no organization, no role and no plan, so every gate
       default-denies.
-- [ ] A gated endpoint answers a dedicated no-organization refusal (403), distinct from the role
+- [x] A gated endpoint answers a dedicated no-organization refusal (403), distinct from the role
       and tenant refusals, so a client can show the right screen.
-- [ ] An orgless session refreshes normally instead of being treated as a stolen token.
-- [ ] The only things such a session can reach are: create an organization, read and answer
+- [x] An orgless session refreshes normally instead of being treated as a stolen token.
+- [x] The only things such a session can reach are: create an organization, read and answer
       invitations, and log out.
-- [ ] Creating an organization from this state leaves the user working inside it immediately.
+- [x] Creating an organization from this state leaves the user working inside it immediately.
