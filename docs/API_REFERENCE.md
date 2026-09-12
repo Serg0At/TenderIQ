@@ -323,6 +323,7 @@ minted here would be rejected by the very next request.
 {
   "email": "procurement@shinarar.am",
   "password": "correct horse battery staple",
+  "displayName": "Gevorg Sargsyan",
   "organizationName": "Shinarar LLC",
   "locale": "hy"
 }
@@ -330,6 +331,8 @@ minted here would be rejected by the very next request.
 
 - `email` (**required**): valid email, lowercased, max 255 chars.
 - `password` (**required**): 12–200 chars. Length only — no composition rules.
+- `displayName` (**required**): trimmed, 1–120 chars. What this person is called on the member
+  roster; without it a team's member list is a list of email addresses.
 - `organizationName` (**required**): trimmed, 2–200 chars.
 - `locale` (optional): `hy` | `ru` | `en`. Default `hy`.
 
@@ -343,6 +346,7 @@ minted here would be rejected by the very next request.
     "user": {
       "id": "cm9zx4k1p0000qw8f3h2l7d5t",
       "email": "procurement@shinarar.am",
+      "displayName": "Gevorg Sargsyan",
       "locale": "hy",
       "emailVerified": false
     },
@@ -359,7 +363,7 @@ minted here would be rejected by the very next request.
 **Errors:**
 
 - `409 CONFLICT`: "That email is already registered."
-- `422 VALIDATION_FAILED`: bad email, short password, missing organization name.
+- `422 VALIDATION_FAILED`: bad email, short password, missing display name or organization name.
 - `429 RATE_LIMITED`: more than 10 requests/minute from this IP.
 
 ---
@@ -397,6 +401,7 @@ error, so the endpoint cannot be used to discover who holds an account.
     "user": {
       "id": "cm9zx4k1p0000qw8f3h2l7d5t",
       "email": "procurement@shinarar.am",
+      "displayName": "Gevorg Sargsyan",
       "locale": "hy",
       "emailVerified": true
     },

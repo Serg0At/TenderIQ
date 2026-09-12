@@ -43,15 +43,17 @@ export default class OrganizationRepository {
       ])
     );
 
-    for (const [name, granted] of Object.entries(PERMISSIONS)) {
-      await trx('roles').insert({ id: createId(), name }).onConflict('name').ignore();
-      const role = await trx('roles').where({ name }).first();
+    // The role's id IS its name. The one-owner partial index needs the literal
+    // 'owner' in its predicate and cannot resolve a CUID, so the identifier and
+    // the name are one column. ADR 0002.
+    for (const [role, granted] of Object.entries(PERMISSIONS)) {
+      await trx('roles').insert({ id: role }).onConflict('id').ignore();
 
       const wanted = granted.map((key) => idFor.get(key)).filter(Boolean);
 
       // Revoke first, so the role never holds a superset of the matrix — not
       // even for the width of this transaction.
-      const revoke = trx('role_permissions').where({ role_id: role.id });
+      const revoke = trx('role_permissions').where({ role_id: role });
       if (wanted.length) revoke.whereNotIn('permission_id', wanted);
       await revoke.del();
 
@@ -59,7 +61,7 @@ export default class OrganizationRepository {
         await trx('role_permissions')
           .insert(wanted.map((permissionId) => ({
             id: createId(),
-            role_id: role.id,
+            role_id: role,
             permission_id: permissionId,
           })))
           .onConflict(['role_id', 'permission_id'])
@@ -69,11 +71,10 @@ export default class OrganizationRepository {
   }
 
   /** The role's capabilities, read back from SQL rather than the code matrix. */
-  static async permissionsFor(roleName, trx = db) {
+  static async permissionsFor(role, trx = db) {
     const rows = await trx('role_permissions as rp')
-      .join('roles as r', 'r.id', 'rp.role_id')
       .join('permissions as p', 'p.id', 'rp.permission_id')
-      .where('r.name', roleName)
+      .where('rp.role_id', role)
       .orderBy('p.key')
       .pluck('p.key');
     return rows;
@@ -85,16 +86,24 @@ export default class OrganizationRepository {
     return id;
   }
 
-  static async addMember({ userId, organizationId, roleName }, trx = db) {
-    const role = await trx('roles').where({ name: roleName }).first();
-    if (!role) throw new Error(`[organizations] role "${roleName}" is not seeded`);
+  /**
+   * Put a user in an organization at a role.
+   *
+   * The seeded-role check stays even though `role_id` is now the role name and
+   * the foreign key would catch it: an unseeded database otherwise fails
+   * registration with a driver-level constraint message that names neither the
+   * role nor the fix.
+   */
+  static async addMember({ userId, organizationId, role }, trx = db) {
+    const seeded = await trx('roles').where({ id: role }).first();
+    if (!seeded) throw new Error(`[organizations] role "${role}" is not seeded`);
 
     const id = createId();
     await trx('memberships').insert({
       id,
       user_id: userId,
       organization_id: organizationId,
-      role_id: role.id,
+      role_id: role,
     });
     return id;
   }
@@ -106,11 +115,12 @@ export default class OrganizationRepository {
    * explicit organization argument, which is why this takes one optionally.
    */
   static async findMembership(userId, organizationId = null, trx = db) {
+    // No join to `roles`: the role's name is the foreign key itself, so the join
+    // could only fetch back the column already in hand.
     const query = trx('memberships as m')
-      .join('roles as r', 'r.id', 'm.role_id')
       .join('organizations as o', 'o.id', 'm.organization_id')
       .where('m.user_id', userId)
-      .select('m.organization_id', 'o.name as organization_name', 'r.name as role');
+      .select('m.organization_id', 'o.name as organization_name', 'm.role_id as role');
 
     if (organizationId) query.andWhere('m.organization_id', organizationId);
     return query.first();

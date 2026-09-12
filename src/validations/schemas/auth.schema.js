@@ -15,9 +15,19 @@ const locale = Joi.string().valid('hy', 'ru', 'en').default('hy');
 
 const organizationName = Joi.string().trim().min(2).max(200).required();
 
+/**
+ * What a colleague is called on the roster.
+ *
+ * Required, because the roster's whole point is that a team can see who is on
+ * it; optional here means the member list degrades to email addresses for
+ * whoever skipped the field.
+ */
+const displayName = Joi.string().trim().min(1).max(120).required();
+
 export const registerSchema = Joi.object({
   email,
   password,
+  displayName,
   organizationName,
   locale,
 }).required();

@@ -18,12 +18,13 @@ export default class UserRepository {
    * only `markEmailVerified` ever sets it. Defaulting it to now() here would
    * make the column say "confirmed" about an address nobody has answered.
    */
-  static async create({ email, passwordHash, locale = 'hy' }, trx = db) {
+  static async create({ email, passwordHash, displayName, locale = 'hy' }, trx = db) {
     const id = createId();
     await trx(TABLE).insert({
       id,
       email: String(email).toLowerCase(),
       password_hash: passwordHash,
+      display_name: displayName,
       locale,
     });
     return id;

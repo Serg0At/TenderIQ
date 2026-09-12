@@ -182,6 +182,9 @@ function up(pg) {
       table.string('id').primary();
       table.string('email').notNullable().unique();
       table.string('password_hash').notNullable();
+      // What a colleague is called on the roster. NOT NULL because the alternative is a member
+      // list of email addresses, which is what the roster exists to stop being.
+      table.string('display_name').notNullable();
       table.string('locale').notNullable().defaultTo('hy');
       // Verification is a durable fact, so it lives here; only the one-time token lives
       // in Redis. Login refuses a NULL, so a fresh account is unusable until confirmed.
@@ -203,9 +206,13 @@ function up(pg) {
 
     // roles — Named permission sets (owner, admin, coordinator, viewer, consultant) that
     // memberships assign.
+    //
+    // The id IS the role's name rather than a CUID, because the one-owner index below needs a
+    // literal in its predicate and a partial index cannot look one up. A separate `name` column
+    // would then be the same string twice — a second answer to "which role is this" that can
+    // disagree with the first. ADR 0002.
     .createTable('roles', table => {
       table.string('id').primary();
-      table.string('name').notNullable().unique();
     })
 
     // permissions — One row per fine-grained capability string ('tender:read', 'bid:write').
@@ -546,6 +553,22 @@ async function indexes(pg) {
      WHERE address IS NOT NULL AND revoked_at IS NULL`);
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS channel_subscriptions_token_uq
      ON channel_subscriptions (link_token) WHERE link_token IS NOT NULL`);
+
+  /**
+   * Exactly one owner per organization — not "at least one".
+   *
+   * Counting owners in the service before promoting someone is check-then-act: two concurrent
+   * promotions both count one, both pass, and the organization keeps two owners silently and
+   * permanently. So the database arbitrates the *two* side, the same division of labour as
+   * `source_payloads` and `notifications_dedupe_uq`; the service still guards the *zero* side,
+   * which no constraint can express. ADR 0002.
+   *
+   * The predicate is a literal, which is why `roles.id` is the role's own name. It also means
+   * transfer-of-ownership must demote the caller BEFORE promoting the target — a unique index
+   * cannot be deferred, so the reverse order rejects the hand-off.
+   */
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS memberships_one_owner_uq
+     ON memberships (organization_id) WHERE role_id = 'owner'`);
 
   // Two orgs claiming one supplier party would each resolve an outcome from the same ledger
   // rows, and one of them would be wrong. Partial so the column can stay NULL until claimed.

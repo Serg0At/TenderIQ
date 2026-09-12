@@ -646,9 +646,10 @@ decision that has already been made.
   rejects. `users.email_verified_at` is the durable fact and only the one-time token lives in Redis.
 - **Registration still creates the organization today, and that is now the thing to change** — see
   *Account and organization model* above, which reverses it: registration creates only the user, and
-  orgless is a legal state. Not yet built: `users.display_name`, the `invitations` table, `POST
-  /organizations`, `POST /auth/switch-org`, the member endpoints, the one-owner index, and the
-  invite-only plan gate on `user:manage`.
+  orgless is a legal state. Built so far: `users.display_name` (NOT NULL, collected at
+  registration), `roles.id` keyed by the role's own name, and `memberships_one_owner_uq`. Not yet
+  built: the `invitations` table, `POST /organizations`, `POST /auth/switch-org`, the member
+  endpoints, and the invite-only plan gate on `user:manage`.
 - **Reset codes have an attempt ceiling, and that is the actual lock.** Six digits is a million
   possibilities — roughly a minute of scripted guessing — so a code that merely waits out its TTL
   under unlimited tries is a delay, not a factor. `authStore.js` burns the code on the fifth failure;

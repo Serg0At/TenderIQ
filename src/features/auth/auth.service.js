@@ -29,6 +29,23 @@ const BCRYPT_ROUNDS = 12;
 const NEUTRAL_RESET = { sent: true, message: 'If that address has an account, a reset code is on its way.' };
 const NEUTRAL_RESEND = { sent: true, message: 'If that address needs confirming, a new link is on its way.' };
 
+/**
+ * The user as a client is allowed to see them.
+ *
+ * One projection rather than one per caller. `register` and `sessionFor` return
+ * the same shape at opposite verification states, and a field added to one and
+ * forgotten in the other is a client that renders a name on one screen and an
+ * email address on the next. `emailVerified` is derived from the row rather
+ * than passed, so it cannot disagree with the column it describes.
+ */
+const publicUser = (user) => ({
+  id: user.id,
+  email: user.email,
+  displayName: user.display_name,
+  locale: user.locale,
+  emailVerified: Boolean(user.email_verified_at),
+});
+
 const requireSecrets = () => {
   if (!AUTH.JWT_ACCESS_SECRET || !AUTH.JWT_REFRESH_SECRET) {
     throw new ApiError('INTERNAL_ERROR', { message: 'Auth is not configured.' });
@@ -85,7 +102,7 @@ const sessionFor = async (user, organizationId = null) => {
 
   return {
     ...tokens,
-    user: { id: user.id, email: user.email, locale: user.locale, emailVerified: true },
+    user: publicUser(user),
     organization: { id: membership.organization_id, name: membership.organization_name },
     role: membership.role,
     plan,
@@ -120,7 +137,7 @@ export default class AuthService {
    * session here would mint credentials that the very next endpoint rejects —
    * the client would appear signed in and then fail on every call.
    */
-  static async register({ email, password, organizationName, locale }) {
+  static async register({ email, password, displayName, organizationName, locale }) {
     const existing = await users.findByEmail(email);
     if (existing) throw ApiError.conflict('That email is already registered.');
 
@@ -128,21 +145,21 @@ export default class AuthService {
 
     const user = await withTransaction(async (trx) => {
       await organizations.ensureRoles(trx);
-      const userId = await users.create({ email, passwordHash, locale }, trx);
+      const userId = await users.create({ email, passwordHash, displayName, locale }, trx);
       const organizationId = await organizations.createWithOwner(
         { name: organizationName, userId },
         trx
       );
       // The creator is the owner: someone must hold billing:manage, and an org
       // whose only member cannot manage it is unusable.
-      await organizations.addMember({ userId, organizationId, roleName: 'owner' }, trx);
+      await organizations.addMember({ userId, organizationId, role: 'owner' }, trx);
       return users.findById(userId, trx);
     });
 
     const delivered = await sendVerification(user);
 
     return {
-      user: { id: user.id, email: user.email, locale: user.locale, emailVerified: false },
+      user: publicUser(user),
       verificationRequired: true,
       verificationSent: delivered,
       message: 'Check your email to confirm your address, then sign in.',

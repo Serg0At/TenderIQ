@@ -6,15 +6,15 @@ this is the prefactor the rest of F-05 stands on, and it is free only while `mem
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Registration collects a display name and stores it against the user.
-- [ ] Role rows are keyed by the role's own name instead of a generated identifier, and seeding
+- [x] Registration collects a display name and stores it against the user.
+- [x] Role rows are keyed by the role's own name instead of a generated identifier, and seeding
       them stays idempotent and still reconciles removed permissions.
-- [ ] A unique index over `memberships`, restricted to rows whose role is owner, makes a second
+- [x] A unique index over `memberships`, restricted to rows whose role is owner, makes a second
       owner membership in one organization impossible.
-- [ ] Inserting a second owner membership directly against the database fails with a unique
+- [x] Inserting a second owner membership directly against the database fails with a unique
       violation rather than succeeding.
-- [ ] The full-schema migration produces this shape from scratch; since every table is currently
+- [x] The full-schema migration produces this shape from scratch; since every table is currently
       empty, the change goes into that migration and is applied with a down/up rather than through
       the additive-script workflow.
