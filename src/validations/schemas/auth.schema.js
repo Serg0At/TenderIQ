@@ -37,6 +37,14 @@ export const loginSchema = Joi.object({
   password: Joi.string().max(200).required(),
 }).required();
 
+/**
+ * An organization id is an opaque CUID. Bounded so junk is refused at the
+ * boundary instead of becoming a membership lookup.
+ */
+export const switchOrgSchema = Joi.object({
+  organizationId: Joi.string().trim().min(1).max(64).required(),
+}).required();
+
 export const refreshSchema = Joi.object({
   refreshToken: Joi.string().min(20).required(),
 }).required();
@@ -75,6 +83,7 @@ export default {
   registerSchema,
   loginSchema,
   refreshSchema,
+  switchOrgSchema,
   verifyEmailSchema,
   resendVerificationSchema,
   forgotPasswordSchema,

@@ -10,15 +10,15 @@ way to get one.
 
 **Blocked by:** 01 — the one-owner index must exist before a second path creates owners.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Creating an organization makes the caller its owner, in one transaction.
-- [ ] The response carries a full session for the new organization, so no second call and no
+- [x] Creating an organization makes the caller its owner, in one transaction.
+- [x] The response carries a full session for the new organization, so no second call and no
       re-login is needed to start using it.
-- [ ] A user who already belongs to an organization can create another and move between the two.
-- [ ] Switching organizations requires no permission — holding the membership is the authority.
-- [ ] Switching starts a new refresh family rather than rotating the existing one, so the previous
+- [x] A user who already belongs to an organization can create another and move between the two.
+- [x] Switching organizations requires no permission — holding the membership is the authority.
+- [x] Switching starts a new refresh family rather than rotating the existing one, so the previous
       organization's session continues to work.
-- [ ] A user may create at most three organizations; the fourth attempt is refused, counted from
+- [x] A user may create at most three organizations; the fourth attempt is refused, counted from
       who created them.
-- [ ] The creation route is rate limited.
+- [x] The creation route is rate limited.

@@ -51,6 +51,10 @@ export default class AuthController {
     return ok(res, await AuthService.resetPassword(req.body));
   }
 
+  static async switchOrganization(req, res) {
+    return ok(res, await AuthService.switchOrganization(req.user.id, req.body));
+  }
+
   /** Whoever the token says you are — useful for a client booting up. */
   static async me(req, res) {
     return ok(res, req.user);

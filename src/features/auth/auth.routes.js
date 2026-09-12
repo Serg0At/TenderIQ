@@ -7,6 +7,7 @@ import {
   registerSchema,
   loginSchema,
   refreshSchema,
+  switchOrgSchema,
   verifyEmailSchema,
   resendVerificationSchema,
   forgotPasswordSchema,
@@ -73,5 +74,20 @@ router.post(
 router.post('/reset-password', codeLimit, validate(resetPasswordSchema), AuthController.resetPassword);
 
 router.get('/me', authenticate, AuthController.me);
+
+/**
+ * Which of your own memberships to act under. Authenticated, and deliberately
+ * not behind `authorize`: there is no permission to hold, because choosing a
+ * tenant is not an act inside one. Rate limited per user, since every call
+ * mints a new refresh family in Redis.
+ */
+const switchLimit = rateLimit({ requests: 30, perMs: 60_000, bucket: 'auth-switch' });
+router.post(
+  '/switch-org',
+  authenticate,
+  switchLimit,
+  validate(switchOrgSchema),
+  AuthController.switchOrganization
+);
 
 export default router;

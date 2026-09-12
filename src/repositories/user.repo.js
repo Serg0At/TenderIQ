@@ -14,6 +14,22 @@ export default class UserRepository {
   }
 
   /**
+   * Hold this user's row until the transaction ends.
+   *
+   * For per-user caps counted in SQL. Counting and then inserting is
+   * check-then-act, and two concurrent requests from one account would both
+   * count below the limit; locking the user they share serialises exactly
+   * those two and nobody else.
+   *
+   * `trx` has no `db` default on purpose: outside a transaction the lock is
+   * released as soon as the statement ends, so calling this without one would
+   * look like a guard and be none.
+   */
+  static async lockForUpdate(id, trx) {
+    return trx(TABLE).where({ id }).forUpdate().first();
+  }
+
+  /**
    * A new account is always unverified: `email_verified_at` is left NULL and
    * only `markEmailVerified` ever sets it. Defaulting it to now() here would
    * make the column say "confirmed" about an address nobody has answered.

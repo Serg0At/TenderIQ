@@ -111,8 +111,10 @@ export default class OrganizationRepository {
   /**
    * The membership a token is minted from: which org, and in what role.
    *
-   * Returns the first membership; multi-org (the consultant case) will need an
-   * explicit organization argument, which is why this takes one optionally.
+   * With no organization named, the choice has to be deterministic — a login
+   * that lands a consultant in a different client on every sign-in is a
+   * session that moves tenants under them — so it is ordered rather than
+   * "whichever row Postgres returns first".
    */
   static async findMembership(userId, organizationId = null, trx = db) {
     // No join to `roles`: the role's name is the foreign key itself, so the join
@@ -120,10 +122,38 @@ export default class OrganizationRepository {
     const query = trx('memberships as m')
       .join('organizations as o', 'o.id', 'm.organization_id')
       .where('m.user_id', userId)
-      .select('m.organization_id', 'o.name as organization_name', 'm.role_id as role');
+      .select('m.organization_id', 'o.name as organization_name', 'm.role_id as role')
+      .orderBy([{ column: 'o.name' }, { column: 'm.organization_id' }]);
 
     if (organizationId) query.andWhere('m.organization_id', organizationId);
     return query.first();
+  }
+
+  /**
+   * Every organization this user can act in, for the session response.
+   *
+   * A client cannot offer "switch to…" without it, and the ids are what
+   * `POST /auth/switch-org` takes. Same ordering as `findMembership`, so the
+   * organization a login lands in is the first one in this list.
+   */
+  static async listMembershipsFor(userId, trx = db) {
+    return trx('memberships as m')
+      .join('organizations as o', 'o.id', 'm.organization_id')
+      .where('m.user_id', userId)
+      .select('o.id', 'o.name', 'm.role_id as role')
+      .orderBy([{ column: 'o.name' }, { column: 'o.id' }]);
+  }
+
+  /**
+   * How many organizations this user has founded and that still exist.
+   *
+   * Reads `created_by`, not ownership: a founder who transferred the owner
+   * seat away still spent one of their creations, or the cap is a loop of
+   * create-and-hand-off.
+   */
+  static async countCreatedBy(userId, trx = db) {
+    const row = await trx('organizations').where({ created_by: userId }).count('* as n').first();
+    return Number(row?.n ?? 0);
   }
 
   /**

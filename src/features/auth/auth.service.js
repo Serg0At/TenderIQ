@@ -90,9 +90,16 @@ const sessionFor = async (user, organizationId = null) => {
   }
 
   const membership = await organizations.findMembership(user.id, organizationId);
+  // A NAMED organization the user is not in is not found, full stop. It must
+  // never fall through to whatever a membership-less session becomes: a switch
+  // racing a removal would otherwise quietly mint a session somewhere else.
+  if (!membership && organizationId) throw ApiError.notFound('Organization');
   if (!membership) throw ApiError.forbidden('ROLE_FORBIDDEN', { reason: 'no organization membership' });
 
   const plan = await organizations.planFor(membership.organization_id);
+  // No family passed: every session minted here starts a new one. That is what
+  // lets `switch-org` leave the previous organization's refresh token working —
+  // rotating the old family would have ended it.
   const tokens = await issueTokens({
     userId: user.id,
     organizationId: membership.organization_id,
@@ -106,6 +113,7 @@ const sessionFor = async (user, organizationId = null) => {
     organization: { id: membership.organization_id, name: membership.organization_name },
     role: membership.role,
     plan,
+    organizations: await organizations.listMembershipsFor(user.id),
   };
 };
 
@@ -180,6 +188,37 @@ export default class AuthService {
 
     if (!user || !valid) throw ApiError.unauthenticated('Email or password is incorrect.');
     return sessionFor(user);
+  }
+
+  /**
+   * Mint a session against a membership, for another feature that has just
+   * created or granted one.
+   *
+   * The same choke point `login` uses, exposed rather than copied, so creating
+   * an organization cannot become a second path that forgets the verification
+   * gate.
+   */
+  static async sessionFor(user, organizationId) {
+    return sessionFor(user, organizationId);
+  }
+
+  /**
+   * Act under a different one of your own memberships.
+   *
+   * No permission is checked, deliberately: a permission gates what may be
+   * done inside a tenant, and this chooses which tenant the question is about.
+   * Holding the membership is the authority, and gating it would only let a
+   * user hold a membership they cannot use.
+   *
+   * A miss is NOT_FOUND, decided inside `sessionFor` in the same lookup that
+   * mints the token: asking to switch into an organization you are not in must
+   * not be an oracle for which organization ids exist, and a second lookup
+   * here would only open a window between the check and the mint.
+   */
+  static async switchOrganization(userId, { organizationId }) {
+    const user = await users.findById(userId);
+    if (!user) throw ApiError.unauthenticated();
+    return sessionFor(user, organizationId);
   }
 
   /**
