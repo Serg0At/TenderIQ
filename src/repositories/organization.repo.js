@@ -3,29 +3,37 @@ import db from '../libs/knex.js';
 import { PERMISSIONS } from '../libs/permissions.js';
 
 /**
- * Roster cursor: the join time and membership id of the last row served.
+ * Roster cursor: which group the last row belonged to (members, then pending
+ * invitations), when it happened, and its id.
  *
  * The roster pages ASCENDING, which is the direction where millisecond
  * truncation bites: Postgres keeps microseconds and a JS Date keeps
  * milliseconds, so a cursor built from a fetched row names an instant slightly
  * EARLIER than the row itself and `>` would serve that row again. The keyset
- * therefore compares `date_trunc('milliseconds', created_at)`, and the ORDER BY
- * uses the same expression so the two agree about what "after" means.
+ * therefore compares `date_trunc('milliseconds', at)`, and the ORDER BY uses the
+ * same expression so the two agree about what "after" means.
  */
 const encodeRosterCursor = (row) =>
-  Buffer.from(`${new Date(row.joined_at).toISOString()}|${row.membership_id}`).toString('base64url');
+  Buffer.from(`${row.section}|${new Date(row.at).toISOString()}|${row.entry_id}`).toString('base64url');
 
 const decodeRosterCursor = (cursor) => {
   if (!cursor) return null;
   try {
-    const [at, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
-    return at && id && !Number.isNaN(Date.parse(at)) ? { joinedAt: at, id } : null;
+    const [section, at, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+    const group = Number(section);
+    return (group === ROSTER_MEMBERS || group === ROSTER_INVITATIONS) && id && !Number.isNaN(Date.parse(at))
+      ? { section: group, at, id }
+      : null;
   } catch {
     return null;
   }
 };
 
-const JOINED_AT_MS = "date_trunc('milliseconds', m.created_at)";
+const AT_MS = "date_trunc('milliseconds', r.at)";
+
+/** The roster's two sections, in the order they are listed. */
+export const ROSTER_MEMBERS = 0;
+export const ROSTER_INVITATIONS = 1;
 
 /**
  * Organizations, the roles that can be held in them, and who holds what.
@@ -172,38 +180,68 @@ export default class OrganizationRepository {
   }
 
   /**
-   * One page of an organization's roster: who is on the team now.
+   * One page of an organization's roster: who is on the team now, and — for
+   * callers allowed to manage users — who is about to be.
    *
    * Scoped on `organization_id` here, never by the caller — this is the query a
    * member of another tenant would need to get wrong to see this team. Removed
    * members simply are not here: removal deletes the membership, so there is no
    * status to forget to filter on (ADR 0001).
    *
-   * Ordered by when each person joined, oldest first, with the membership id as
-   * the tiebreaker, so a page boundary can neither repeat nor drop a member.
+   * Members come first in join order, then pending invitations in the order
+   * they were sent. The group, the millisecond-truncated time and the row id
+   * together are the keyset, so a page boundary can neither repeat nor drop an
+   * entry. An invitation row selects NULL for user, name and joined date rather
+   * than anything that could be mistaken for a person.
    */
-  static async listMembers(organizationId, { limit = 20, cursor = null } = {}, trx = db) {
-    const query = trx('memberships as m')
+  static async listRoster(
+    organizationId,
+    { includeInvitations = false, limit = 20, cursor = null } = {},
+    trx = db
+  ) {
+    const members = trx('memberships as m')
       .join('users as u', 'u.id', 'm.user_id')
       .where('m.organization_id', organizationId)
       .select(
-        'm.id as membership_id',
+        trx.raw(`${ROSTER_MEMBERS} as section`),
+        'm.id as entry_id',
         'm.user_id',
         'u.display_name',
         'u.email',
         'm.role_id as role',
-        'm.created_at as joined_at'
+        'm.created_at as at'
       );
+
+    if (includeInvitations) {
+      members.unionAll(function pendingInvitations() {
+        this.from('invitations as i')
+          .where('i.organization_id', organizationId)
+          .andWhere('i.status', 'pending')
+          .select(
+            trx.raw(`${ROSTER_INVITATIONS} as section`),
+            'i.id as entry_id',
+            trx.raw('NULL as user_id'),
+            trx.raw('NULL as display_name'),
+            'i.email',
+            'i.role_id as role',
+            'i.created_at as at'
+          );
+      }, true);
+    }
+
+    const query = trx.from(members.as('r')).select('r.*');
 
     const after = decodeRosterCursor(cursor);
     if (after) {
-      query.whereRaw(`(${JOINED_AT_MS}, m.id) > (?::timestamptz, ?)`, [after.joinedAt, after.id]);
+      query.whereRaw(`(r.section, ${AT_MS}, r.entry_id) > (?, ?::timestamptz, ?)`, [
+        after.section,
+        after.at,
+        after.id,
+      ]);
     }
 
     // One extra row answers "is there a next page?" without a second COUNT.
-    const rows = await query
-      .orderByRaw(`${JOINED_AT_MS} asc, m.id asc`)
-      .limit(limit + 1);
+    const rows = await query.orderByRaw(`r.section asc, ${AT_MS} asc, r.entry_id asc`).limit(limit + 1);
 
     const page = rows.slice(0, limit);
     return {

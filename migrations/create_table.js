@@ -245,6 +245,27 @@ function up(pg) {
       table.unique(['user_id', 'organization_id']);
     })
 
+    // invitations — A standing offer for an email address to join an organisation at a role.
+    //
+    // Keyed on the address, not a user: the row survives an address with no account and is
+    // matched when that address registers and verifies. No expiry column — no credential
+    // travels in an email, so there is nothing to age out. UNIQUE (organization_id, email)
+    // makes a repeat invite an in-place update the database arbitrates, not a second offer.
+    .createTable('invitations', table => {
+      table.string('id').primary();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      // Stored lowercased (see the CHECK below), so matching an address is an equality.
+      table.string('email').notNullable();
+      table.string('role_id').notNullable().references('id').inTable('roles').onDelete('RESTRICT');
+      table.string('status').notNullable().defaultTo('pending');
+      // SET NULL: an offer does not become invalid because whoever sent it left.
+      table.string('invited_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('responded_at');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.timestamp('updated_at').notNullable().defaultTo(pg.fn.now());
+      table.unique(['organization_id', 'email'], { indexName: 'invitations_org_email_uq' });
+    })
+
     // tracked_tenders — A tender an organisation has decided to pursue, and the anchor every
     // bid-workflow table hangs off.
     .createTable('tracked_tenders', table => {
@@ -572,6 +593,22 @@ async function indexes(pg) {
    */
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS memberships_one_owner_uq
      ON memberships (organization_id) WHERE role_id = 'owner'`);
+
+  /**
+   * Invitations: the three rules that must hold whatever the service does.
+   *
+   * Never at `owner` — there is one owner seat and it moves by transfer, so an offer of it is
+   * unrepresentable rather than merely refused (ADR 0002). Lowercased email, so "offers
+   * addressed to me" is an equality and `Gevorg@` and `gevorg@` cannot be two offers. The
+   * email index serves that lookup, which spans every organisation.
+   */
+  await pg.raw(`ALTER TABLE invitations ADD CONSTRAINT invitations_status_chk
+     CHECK (status IN ('pending','accepted','declined'))`);
+  await pg.raw(`ALTER TABLE invitations ADD CONSTRAINT invitations_not_owner_chk
+     CHECK (role_id <> 'owner')`);
+  await pg.raw(`ALTER TABLE invitations ADD CONSTRAINT invitations_email_lower_chk
+     CHECK (email = lower(email))`);
+  await pg.raw(`CREATE INDEX IF NOT EXISTS invitations_email_idx ON invitations (email)`);
 
   // Two orgs claiming one supplier party would each resolve an outcome from the same ledger
   // rows, and one of them would be wrong. Partial so the column can stay NULL until claimed.

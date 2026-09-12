@@ -154,6 +154,17 @@ export default class NotificationRepository {
       .distinct('n.organization_id', 't.id as tender_id', 't.title', 't.reference_code', 't.deadline_at');
   }
 
+  /** Whether any channel has recorded an attempt at this notification, in any outcome. */
+  static async hasDeliveries(notificationId, trx = db) {
+    const row = await trx('alert_deliveries').where({ notification_id: notificationId }).first('id');
+    return Boolean(row);
+  }
+
+  /** One notification by id, for a delivery job that carries only the id. */
+  static async findById(id, trx = db) {
+    return trx('notifications').where({ id }).first();
+  }
+
   static async listForOrg(organizationId, { limit = 50 } = {}, trx = db) {
     return trx('notifications')
       .where({ organization_id: organizationId })

@@ -9,7 +9,7 @@ export default class OrganizationController {
 
   static async listMembers(req, res) {
     const { rows, cursor, hasMore } = await OrganizationService.listMembers(
-      req.user.organizationId,
+      { organizationId: req.user.organizationId, role: req.user.role },
       req.query
     );
     return paginated(res, rows, { cursor, hasMore });

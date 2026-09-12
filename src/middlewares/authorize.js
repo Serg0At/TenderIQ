@@ -16,7 +16,7 @@ import { ApiError } from '../utils/errors.js';
  * plan, so a `viewer` on an Enterprise plan is told their ROLE is the problem
  * rather than being invited to upgrade a plan that would not help.
  */
-export const authorize = (permission) => (req, _res, next) => {
+export const authorize = (permission, { planGate = permission } = {}) => (req, _res, next) => {
   if (!req.user) return next(ApiError.unauthenticated());
 
   // `authenticate` already refuses an orgless session; this is the second line
@@ -29,10 +29,14 @@ export const authorize = (permission) => (req, _res, next) => {
     return next(ApiError.forbidden('ROLE_FORBIDDEN', { permission, role: req.user.role }));
   }
 
-  if (!planAllows(req.user.plan, permission)) {
+  // `planGate` defaults to the permission itself; a route names a feature key
+  // instead when the permission is shared with routes that must stay ungated.
+  if (!planAllows(req.user.plan, planGate)) {
     // 402, not 403: this one is fixable by the customer, and the distinction is
     // what lets the client show an upgrade prompt instead of a dead end.
-    return next(new ApiError('PLAN_UPGRADE_REQUIRED', { details: { permission, plan: req.user.plan } }));
+    return next(
+      new ApiError('PLAN_UPGRADE_REQUIRED', { details: { permission, feature: planGate, plan: req.user.plan } })
+    );
   }
 
   return next();

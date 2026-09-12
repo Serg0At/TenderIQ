@@ -1,6 +1,36 @@
+import Joi from 'joi';
 import notifications from '../repositories/notification.repo.js';
 import { deliver, deliverableChannels } from '../services/notifier.service.js';
+import { getChannel, channelsForOrg } from '../services/delivery.service.js';
 import { logger } from '../utils/logger.js';
+
+/** Job payloads are validated on dequeue: the producer is another process. */
+const deliverJobSchema = Joi.object({ notificationId: Joi.string().max(64).required() }).unknown(false);
+
+/**
+ * Deliver one notification the API recorded.
+ *
+ * Fans out exactly as the worker sweeps do — every channel the organization
+ * can be reached on, plus `log` — and each channel records its own
+ * `alert_deliveries` rows. A missing notification (its organization deleted in
+ * the meantime) is not an error worth retrying; there is nobody left to tell.
+ */
+export const handleDeliverNotification = async (job) => {
+  const { value, error } = deliverJobSchema.validate(job.data);
+  if (error) throw new Error(`[notify.deliver] invalid job payload: ${error.message}`);
+
+  const notification = await notifications.findById(value.notificationId);
+  if (!notification) {
+    logger.info(`[notify.deliver] notification ${value.notificationId} no longer exists`);
+    return { delivered: false };
+  }
+
+  const results = {};
+  for (const channelName of await channelsForOrg(notification.organization_id)) {
+    results[channelName] = await getChannel(channelName).send(notification);
+  }
+  return { delivered: true, results };
+};
 
 /**
  * Send alerts that a throttled provider held back.
@@ -95,4 +125,4 @@ export const handleDeferredDeliveries = async () => {
   return { due, sent };
 };
 
-export default { handleDeferredDeliveries };
+export default { handleDeferredDeliveries, handleDeliverNotification };

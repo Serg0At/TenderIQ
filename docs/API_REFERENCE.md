@@ -74,6 +74,9 @@ All paths are relative to the base path **`/api/v1`**.
 ### Organization
 - [Create organization](#create-organization) — `POST /organizations`
 - [List members](#list-members) — `GET /organization/members`
+- [Invite a member](#invite-a-member) — `POST /organization/invitations`
+- [List sent invitations](#list-sent-invitations) — `GET /organization/invitations`
+- [Cancel an invitation](#cancel-an-invitation) — `DELETE /organization/invitations/:id`
 - [Get supplier identity](#get-supplier-identity) — `GET /organization/supplier-identity`
 - [Set supplier identity](#set-supplier-identity) — `PUT /organization/supplier-identity`
 - [Search supplier candidates](#search-supplier-candidates) — `GET /organization/supplier-identity/candidates`
@@ -200,7 +203,9 @@ Four gates run in order ([src/middlewares/authorize.js](src/middlewares/authoriz
 | `viewer` | `tender:read`, `intelligence:read`, `vault:read` (read-only) |
 | `consultant` | identical to `coordinator` — a label recording that the member is external, not a distinct permission set |
 
-`intelligence:read` is additionally plan-gated to `pro`, `business`, `enterprise`.
+`intelligence:read` is additionally plan-gated to `pro`, `business`, `enterprise`. Sending an
+invitation is plan-gated the same way (feature key `invitations`), but only sending: every other
+`user:manage` action stays role-gated, so a downgraded organization can always shrink.
 
 #### The orgless state
 
@@ -246,7 +251,7 @@ Rate limiting ([src/middlewares/rateLimit.js](src/middlewares/rateLimit.js)) key
 when authenticated, IP otherwise, and sets `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and
 `Retry-After` on a 429. Budgets: global 300/min; `/auth/*` 10/min; `/auth/forgot-password`
 and `/auth/verify-email/resend` 5/hour; `/auth/verify-reset-code` and `/auth/reset-password`
-10/10min; `POST /organizations` 10/hour per user; `POST /auth/switch-org` 30/min per user; the
+10/10min; `POST /organizations` 10/hour per user; `POST /organization/invitations` 60/hour per user; `POST /auth/switch-org` 30/min per user; the
 Telegram webhook 120/min.
 
 ---
@@ -2138,8 +2143,13 @@ The roster: who is on this organization's team now, and at what role. Every memb
 `viewer` included — a tenant is a company, and its own staff list is not a secret from its staff.
 Removed members are simply absent; removal deletes the membership rather than marking it.
 
-Ordered by when each person joined, oldest first (so the founder leads), with an id tiebreaker so
-paging can neither repeat nor drop an entry.
+For callers holding `user:manage` (owner, admin), **pending invitations are merged into the same
+list**, after the members, as `kind: "invitation"` entries. Everyone else — a `viewer` included —
+gets members only, so an invited address is never shown to them.
+
+Members are ordered by when each person joined, oldest first (so the founder leads); invitations
+follow in the order they were sent. An id tiebreaker means paging can neither repeat nor drop an
+entry.
 
 **API:**
 `GET /api/v1/organization/members`
@@ -2183,13 +2193,164 @@ Query parameters:
 }
 ```
 
-`kind` distinguishes a member from other kinds of roster entry.
+An invitation entry, as an owner or admin sees it:
+
+```json
+{
+  "kind": "invitation",
+  "invitationId": "cm9zx4k1p0500qw8f7t2x6c1n",
+  "userId": null,
+  "displayName": null,
+  "email": "armen@example.am",
+  "role": "coordinator",
+  "joinedAt": null,
+  "invitedAt": "2026-09-15T09:02:11.845Z"
+}
+```
+
+`userId`, `displayName` and `joinedAt` are explicitly `null` rather than faked — nobody has
+joined, and there may be no account behind the address.
 
 **Errors:**
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 NO_ORGANIZATION`: the session is in no organization.
 - `422 VALIDATION_FAILED`: `page[size]` out of range.
+
+---
+
+## Invite a member
+
+Offers an email address a role in the caller's organization. The answer is **the same object for
+every address** — registered or not — and nothing about the invitee is looked up, so the endpoint
+cannot be used to learn who is a TenderIQ customer. The offer is recorded either way and is matched
+when that address registers and verifies.
+
+- Re-inviting an address updates the role on the existing offer instead of creating a second one,
+  and returns a `declined` offer to `pending` — a decline answers one offer, not all of them. An
+  `accepted` offer is left untouched: that person has joined, and their role moves by role change.
+  (The response is still the same constant.)
+- Invitations never expire; no credential travels with them, and no email is sent.
+- Sending raises an organization-wide announcement (`team-invitation`) through the organization's
+  linked Telegram and email destinations. It names the role and the sender, never the address.
+
+**API:**
+`POST /api/v1/organization/invitations`
+
+**Authentication:** required (Bearer). Permission: `user:manage`. **Plan:** `pro`, `business` or
+`enterprise` — until a subscription writer exists, every organization reads as `free` and this
+answers `402`.
+
+**Request data:**
+
+```json
+{
+  "email": "armen@example.am",
+  "role": "coordinator"
+}
+```
+
+- `email` (**required**): valid email, lowercased, max 255 chars.
+- `role` (**required**): `admin` | `coordinator` | `viewer` | `consultant`. `owner` is refused —
+  there is one owner seat and it moves only by transfer.
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "sent": true,
+    "message": "If that person is registered, they will get the invitation."
+  }
+}
+```
+
+Always exactly this. Use [List sent invitations](#list-sent-invitations) to see the offer.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `402 PLAN_UPGRADE_REQUIRED`: `details: { permission: "user:manage", feature: "invitations", plan }`.
+- `403 NO_ORGANIZATION` / `403 ROLE_FORBIDDEN`.
+- `422 VALIDATION_FAILED`: bad email; unknown role; `owner`, with a message naming
+  `POST /organization/transfer-ownership`.
+- `429 RATE_LIMITED`: more than 60 invitations/hour for this user.
+
+---
+
+## List sent invitations
+
+Every offer this organization has sent, at `pending`, `accepted` or `declined` — so an owner can
+tell "they have not answered" from "they said no". Newest first.
+
+**API:**
+`GET /api/v1/organization/invitations`
+
+**Authentication:** required (Bearer). Permission: `user:manage`. Not plan-gated.
+
+**Request data:**
+
+Query parameters:
+
+- `filter[status]` (optional): `pending` | `accepted` | `declined`.
+- `page[size]` (optional): 1–100, default 20.
+- `page[cursor]` (optional): `meta.cursor` from the previous page.
+
+**Response data:**
+
+```json
+{
+  "data": [
+    {
+      "id": "cm9zx4k1p0500qw8f7t2x6c1n",
+      "email": "armen@example.am",
+      "role": "coordinator",
+      "status": "declined",
+      "invitedBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+      "createdAt": "2026-09-15T09:02:11.845Z",
+      "updatedAt": "2026-09-15T09:02:11.845Z",
+      "respondedAt": "2026-09-16T14:30:00.000Z"
+    }
+  ],
+  "meta": { "cursor": "MjAyNi0wOS0xNVQwOTowMjoxMS44NDVafGNtOXo...", "hasMore": false }
+}
+```
+
+`invitedBy` is `null` once the sender's account no longer exists.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION` / `403 ROLE_FORBIDDEN`.
+- `422 VALIDATION_FAILED`: unknown status or bad page size.
+
+---
+
+## Cancel an invitation
+
+Withdraws an offer — a mistyped address is otherwise a standing offer to a stranger. Pending and
+declined offers can be cancelled; an accepted one cannot, because the person has joined and
+cancelling the record would not remove them.
+
+**API:**
+`DELETE /api/v1/organization/invitations/:id`
+
+**Authentication:** required (Bearer). Permission: `user:manage`. Not plan-gated.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+`204 No Content`
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION` / `403 ROLE_FORBIDDEN`.
+- `404 NOT_FOUND`: no such invitation in this organization (including another organization's id).
+- `409 CONFLICT`: "That invitation has already been accepted. Remove the member instead."
 
 ---
 
@@ -4205,6 +4366,9 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | DELETE | `/api/v1/tracked-tenders/checklist/items/:itemId` | Delete a checklist item | Yes (`bid:write`) |
 | POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
+| POST | `/api/v1/organization/invitations` | Offer an address a role (neutral response) | Yes (`user:manage`, Pro+) |
+| GET | `/api/v1/organization/invitations` | Offers this organization has sent, any status | Yes (`user:manage`) |
+| DELETE | `/api/v1/organization/invitations/:id` | Withdraw a pending or declined offer | Yes (`user:manage`) |
 | GET | `/api/v1/organization/supplier-identity` | The party this org bids as | Yes (`tender:read`) |
 | PUT | `/api/v1/organization/supplier-identity` | Claim or unclaim that party | Yes (`org:manage`) |
 | GET | `/api/v1/organization/supplier-identity/candidates` | Search parties for the claim | Yes (`tender:read`) |

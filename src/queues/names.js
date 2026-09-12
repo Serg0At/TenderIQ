@@ -111,6 +111,17 @@ export const JOB = {
    * day a certificate lapses.
    */
   VAULT_EXPIRY: 'vault.expiry',
+  /**
+   * Deliver one already-recorded notification to every destination its
+   * organization has.
+   *
+   * For alerts raised by the API rather than a worker sweep — team
+   * announcements today. The request records the notification and returns;
+   * the Telegram and SMTP round trips happen here, where a slow provider cannot
+   * hold an HTTP response open and a throttle has retry semantics. Rides ALERTS
+   * like every other customer-facing message.
+   */
+  DELIVER_NOTIFICATION: 'notify.deliver',
 };
 
 /**

@@ -110,6 +110,12 @@ export const HEADINGS = {
   // and the two must not share a heading.
   'vault-expiry': { emoji: '📄', label: 'Document expiring' },
   'vault-expired': { emoji: '⛔', label: 'Document expired' },
+  // Team announcements. Organization-wide by construction — delivery has no
+  // per-recipient targeting — so each is worded as news about the company,
+  // never as a message to one person.
+  'team-invitation': { emoji: '✉️', label: 'Team invitation sent' },
+  'team-role-changed': { emoji: '👥', label: 'Team role changed' },
+  'team-member-removed': { emoji: '🚪', label: 'Team member removed' },
 };
 
 const FALLBACK_HEADING = { emoji: '🔔', label: 'Tender alert' };
@@ -149,6 +155,40 @@ export const headingFor = (type) => {
 /** True for the alerts that are about the org's own document rather than a tender. */
 export const isVaultType = (type) => String(type ?? '').startsWith('vault-');
 
+/** True for organization-wide announcements about who is on the team. */
+export const isTeamType = (type) => String(type ?? '').startsWith('team-');
+
+/**
+ * The one sentence a team announcement says, shared by every channel.
+ *
+ * Third person and named, never "you": the notification reaches every linked
+ * destination in the organization, so a message worded to one person would be
+ * read by all of them. It also uses the member's name rather than a pronoun —
+ * nothing here knows anyone's pronouns, and a wrong guess in a company-wide
+ * message is worse than repeating a name.
+ *
+ * An invitation names the role and who sent it, never the address: a viewer's
+ * linked chat receives this, and a viewer must never see an invited address.
+ */
+export const teamAnnouncement = (type, payload = {}) => {
+  const org = payload.organizationName || 'the organization';
+  const name = payload.memberName || 'A member';
+  const role = payload.role || 'member';
+
+  switch (type) {
+    case 'team-invitation':
+      return payload.invitedByName
+        ? `${payload.invitedByName} invited a new ${role} to join ${org}.`
+        : `A new ${role} has been invited to join ${org}.`;
+    case 'team-role-changed':
+      return `${name}'s role in ${org} has been changed to ${role}.`;
+    case 'team-member-removed':
+      return `${name} has been removed from ${org}.`;
+    default:
+      return `The team at ${org} has changed.`;
+  }
+};
+
 export default {
   DELIVERABLE_CHANNELS,
   money,
@@ -157,5 +197,7 @@ export default {
   appLink,
   headingFor,
   isVaultType,
+  isTeamType,
+  teamAnnouncement,
   HEADINGS,
 };

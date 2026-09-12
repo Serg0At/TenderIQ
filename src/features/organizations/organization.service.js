@@ -1,7 +1,8 @@
 import { withTransaction } from '../../libs/knex.js';
 import users from '../../repositories/user.repo.js';
-import organizations from '../../repositories/organization.repo.js';
+import organizations, { ROSTER_MEMBERS } from '../../repositories/organization.repo.js';
 import AuthService from '../auth/auth.service.js';
+import { roleHas } from '../../libs/permissions.js';
 import { ApiError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 
@@ -21,18 +22,32 @@ const MAX_CREATED_ORGANIZATIONS = 3;
 /**
  * A roster entry as a client sees it.
  *
- * `kind` is there from the first entry because the roster is not only members:
- * pending invitations join the same list for people who manage users, and a
- * client has to tell the two apart without guessing from which fields are null.
+ * The roster is not only members: pending invitations join the same list for
+ * people who manage users, and `kind` is how a client tells the two apart
+ * without guessing from which fields are null. An invitation's `userId`,
+ * `displayName` and `joinedAt` are explicitly null rather than faked — nobody
+ * has joined, and there may not even be an account behind the address.
  */
-const presentMember = (row) => ({
-  kind: 'member',
-  userId: row.user_id,
-  displayName: row.display_name,
-  email: row.email,
-  role: row.role,
-  joinedAt: row.joined_at,
-});
+const presentRosterEntry = (row) =>
+  row.section === ROSTER_MEMBERS
+    ? {
+        kind: 'member',
+        userId: row.user_id,
+        displayName: row.display_name,
+        email: row.email,
+        role: row.role,
+        joinedAt: row.at,
+      }
+    : {
+        kind: 'invitation',
+        invitationId: row.entry_id,
+        userId: null,
+        displayName: null,
+        email: row.email,
+        role: row.role,
+        joinedAt: null,
+        invitedAt: row.at,
+      };
 
 export default class OrganizationService {
   /**
@@ -83,13 +98,17 @@ export default class OrganizationService {
    * Who is on this team, for any member of it.
    *
    * A tenant is a company, and its own staff list is not a secret from its
-   * staff — so this reads at `tender:read`, not `user:manage`.
+   * staff — so this reads at `tender:read`, not `user:manage`. Pending
+   * invitations are merged in only for `user:manage` holders: an invited
+   * address belongs to someone who has not joined, and a viewer must never see
+   * it. The decision is made here from the role, not left to the client.
    */
-  static async listMembers(organizationId, { page = {} } = {}) {
-    const { rows, cursor, hasMore } = await organizations.listMembers(organizationId, {
+  static async listMembers({ organizationId, role }, { page = {} } = {}) {
+    const { rows, cursor, hasMore } = await organizations.listRoster(organizationId, {
+      includeInvitations: roleHas(role, 'user:manage'),
       limit: page.size ?? 20,
       cursor: page.cursor ?? null,
     });
-    return { rows: rows.map(presentMember), cursor, hasMore };
+    return { rows: rows.map(presentRosterEntry), cursor, hasMore };
   }
 }

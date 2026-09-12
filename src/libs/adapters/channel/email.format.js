@@ -1,6 +1,15 @@
 import { escapeHtml } from '../../../utils/html.js';
 import { layout, paragraph } from '../email/email.format.js';
-import { money, deadline, tenderLink, appLink, headingFor, isVaultType } from './notification.present.js';
+import {
+  money,
+  deadline,
+  tenderLink,
+  appLink,
+  headingFor,
+  isVaultType,
+  isTeamType,
+  teamAnnouncement,
+} from './notification.present.js';
 
 /**
  * One alert as an email. Pure — no I/O, no clock, no database.
@@ -31,7 +40,8 @@ const SUBJECT_MAX = 140;
 
 const subjectFor = (notification, payload) => {
   const { label } = headingFor(notification.type);
-  const subject = payload.title || payload.filename || payload.kind || null;
+  const subject =
+    payload.title || payload.filename || payload.kind || payload.organizationName || null;
   if (!subject) return label;
 
   const full = `${label}: ${subject}`;
@@ -134,6 +144,16 @@ const vaultBody = (notification, payload, now) => {
   };
 };
 
+/** A team announcement: one third-person sentence, and the roster to open. */
+const teamBody = (notification, payload) => {
+  const sentence = teamAnnouncement(notification.type, payload);
+  const url = appLink('/organization/members');
+  return {
+    text: url ? `${sentence}\n\n${url}` : sentence,
+    html: [paragraph(sentence), url ? button(url, 'Open team') : ''].filter(Boolean).join('\n'),
+  };
+};
+
 const tenderBody = (notification, payload, now) => {
   const facts = [];
   if (payload.buyerName) facts.push(['Buyer', payload.buyerName]);
@@ -207,7 +227,9 @@ export const formatNotification = (notification, { now = new Date(), unsubscribe
   const { label } = headingFor(notification.type);
   const body = isVaultType(notification.type)
     ? vaultBody(notification, payload, now)
-    : tenderBody(notification, payload, now);
+    : isTeamType(notification.type)
+      ? teamBody(notification, payload)
+      : tenderBody(notification, payload, now);
 
   return {
     subject: subjectFor(notification, payload),

@@ -21,6 +21,7 @@ async function down(pg) {
     'bids',
     'tracked_tenders',
     'vault_documents',
+    'invitations',
     'memberships',
     'role_permissions',
     'permissions',

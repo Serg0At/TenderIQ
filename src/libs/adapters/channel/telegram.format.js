@@ -6,6 +6,8 @@ import {
   appLink,
   headingFor,
   isVaultType,
+  isTeamType,
+  teamAnnouncement,
 } from './notification.present.js';
 
 /**
@@ -96,6 +98,15 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
    */
   if (isVaultType(notification.type)) {
     return formatVaultNotification(notification, payload, lines, now);
+  }
+
+  // A team announcement is one sentence about the company; none of the tender
+  // fields apply, and the roster is where to look for the rest.
+  if (isTeamType(notification.type)) {
+    lines.push(escapeHtml(teamAnnouncement(notification.type, payload)));
+    const url = appLink('/organization/members');
+    if (url) lines.push('', `<a href="${escapeHtml(url)}">Open team</a>`);
+    return lines.join('\n');
   }
 
   if (payload.title) lines.push(escapeHtml(payload.title));

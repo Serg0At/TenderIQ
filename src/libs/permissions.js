@@ -40,12 +40,25 @@ export const PERMISSIONS = {
 export const ROLES = Object.keys(PERMISSIONS);
 
 /**
- * Permissions that need an entitled plan on top of the role.
+ * Permissions — or named features — that need an entitled plan on top of the
+ * role.
  *
  * A plan downgrade must remove intelligence for every role including owner,
  * so this is checked separately from the matrix rather than folded into it.
+ *
+ * `invitations` is a feature key, not a permission, because the permission it
+ * rides on is shared: `user:manage` also covers removal, role change and
+ * transfer, and gating those would leave a downgraded customer with no way to
+ * remove an ex-employee except paying again. Gating the growth direction sells
+ * the plan; gating the shrink direction holds access hostage. So the invite
+ * route names this key explicitly (`authorize('user:manage', { planGate })`)
+ * and nothing else is affected. `pro`, not `business`: a whole price step in
+ * front of adding one colleague is where people share a login instead.
  */
-export const PLAN_GATED = { 'intelligence:read': ['pro', 'business', 'enterprise'] };
+export const PLAN_GATED = {
+  'intelligence:read': ['pro', 'business', 'enterprise'],
+  invitations: ['pro', 'business', 'enterprise'],
+};
 
 export const roleHas = (role, permission) => (PERMISSIONS[role] ?? []).includes(permission);
 
