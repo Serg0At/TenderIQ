@@ -213,25 +213,130 @@ Implemented — see `src/features/*/`. Follow the existing shape rather than inv
 
 ## Account and organization model
 
-**Decided 2026-09-06, NOT built.** Today `POST /auth/register` takes an `organizationName` and
-creates the user, the organization and the owner membership in one transaction. This design **keeps
-that transaction** — what changes is everything around it. Do not implement half of it; the pieces
-are load-bearing on each other.
+**Decided 2026-09-06, revised 2026-09-12. NOT built.** The 2026-09-06 design kept registration's
+create-user-and-organization transaction and declared orgless unreachable. **Both are reversed**, and
+one observation reverses them: *removal by someone else* makes orgless reachable no matter what
+`/auth/register` does. A state that can be reached has to be a state the API can serve, so it is now
+a first-class one rather than an invariant that should never fire. Do not implement half of this; the
+pieces are load-bearing on each other.
 
 ```
-POST /auth/register     { email, password, displayName, organizationName }  ->  201, no tokens
-POST /auth/verify-email { token }
-POST /auth/login        { email, password }  ->  full session + organizations[] for the switcher
+POST   /auth/register          { email, password, displayName }  -> 201, no tokens, no organization
+POST   /auth/verify-email      { token }
+POST   /auth/login             { email, password }  -> session + organizations[] (possibly empty)
+POST   /auth/switch-org        { organizationId }   -> re-mint against another membership
+POST   /organizations          { name, type? }      -> organization + a fresh session for it
+
+GET    /organization/members              roster; every member reads it
+PATCH  /organization/members/:userId      role change — four roles, never owner
+DELETE /organization/members/:userId      removal
+POST   /organization/leave                leaving
+POST   /organization/transfer-ownership   hand the single owner seat to another member
+DELETE /organization                      delete — owner only, sole member only, name typed back
+POST   /organization/invitations          invite an address at a role   (plan-gated: pro+)
+GET    /organization/invitations          this org's offers: pending | accepted | declined
+DELETE /organization/invitations/:id      cancel
+GET    /invitations                       offers addressed to me, across organizations
+POST   /invitations/:id/{accept,decline}
 ```
 
-**There is no orgless state.** Registration always creates an organization, and a user cannot leave
-their last one, so zero memberships is unreachable. That deletes the onboarding token
-(`scope: 'onboarding'`), its separate middleware, `POST /organizations`, `POST /organizations/join`
-and the two-shaped login response — the entire create-or-join fork. The fork existed so an invited
-user could join instead of create; invitations are in-app and land on an account that already exists,
-so it only ever had one live branch. `sessionFor`'s `ROLE_FORBIDDEN` on a missing membership stays as
-an invariant that should never fire, not as a branch point.
-
+- **Orgless is legal, and it is the same state twice.** A user who has just registered and a user who
+  has just been removed are indistinguishable to the API: no membership, a real session whose token
+  carries `org: null` / `role: null`, and `organizations: []` in the login response as the only
+  signal. There is no `memberships.status`, no "kicked" row, no tombstone — removal is a plain
+  `DELETE`. A status column was designed and dropped: `findMembership` is the single query that reads
+  `memberships`, and a revoked-but-present row is one forgotten `where` away from handing a removed
+  employee their access back, in code that reads as correct.
+- **The screen is never the enforcement.** `authenticate` verifies a signature and reads nothing else;
+  `authorize` reads `role` and `plan` out of the claims. So a session minted from a membership that no
+  longer exists would pass every gate in the system, and a blurred client would be decoration. The
+  gating lives in the null claims, which default-deny everywhere, plus an explicit allowlist:
+  `POST /organizations`, `GET /invitations` and accept/decline, `POST /auth/logout`.
+- **`NO_ORGANIZATION` is its own 403**, beside `EMAIL_UNVERIFIED` and for the same reason: the client
+  must tell "your role cannot do this" apart from "you are not in an organization yet" — different
+  screens, and this one has two buttons (create one, or check your invitations). `ROLE_FORBIDDEN` with
+  a null role names the wrong problem.
+- **An orgless session must refresh like any other.** `refresh()` looks up `findMembership(sub, org)`
+  and treats a miss as theft; with `org: null` that fires on every orgless user, logging them out
+  every 15 minutes while they try to create the organization that would fix it. It re-mints an orgless
+  session instead.
+- **Registration creates no organization**, and organizations are born in exactly one place. Making
+  `organizationName` optional at register would leave two paths that establish an owner membership and
+  satisfy the one-owner index, and the second one is the one that rots. The cost is one extra screen
+  for a solo supplier; the gain is that sign-up stops being un-retryable — today a failed organization
+  insert fails the whole transaction with the address already taken.
+- **An organization has exactly one owner, and Postgres enforces it.** Not "at least one":
+  `CREATE UNIQUE INDEX memberships_one_owner_uq ON memberships (organization_id) WHERE role_id =
+  'owner'`. A partial unique index needs a literal, so `roles.id` is the role's own name rather than a
+  CUID — which is free while `memberships` is empty and a foreign-key rewrite once it is not. The
+  service still guards the *zero* side; the database arbitrates the *two* side, the same division as
+  `source_payloads` and `notifications_dedupe_uq`.
+- **Ownership moves only through `transfer-ownership`, never through a role change.** `PATCH
+  /organization/members/:userId` takes the four non-owner roles and answers `VALIDATION_FAILED` for
+  `owner`, naming the transfer endpoint: ownership is a hand-off, not an assignment, and a validation
+  refusal says so structurally. Transfer is owner-only and **demotes the caller before promoting the
+  target**, in one transaction — a partial unique index cannot be deferred, so the reverse order
+  rejects your own hand-off.
+- **Who may act on whom is a rank rule**, not just a permission. `user:manage` is held by `owner` and
+  `admin` alike, so without it an admin can evict the owner who pays the bill. Owner acts on anyone;
+  admin acts only on roles below admin — never on another admin, never on the owner. Refusal is
+  `ROLE_FORBIDDEN`, not `NOT_FOUND`: the actor is looking at the member list and already knows the
+  person exists.
+- **Removal and leaving are separate endpoints because they are separate gates.** Leaving needs no
+  permission at all — it is your own membership, the same reasoning that dropped `client:switch` —
+  while removal needs `user:manage` plus the rank rule. One handler branching on "is this me" is how a
+  `viewer` eventually discovers they can remove people.
+- **You may always leave an organization that has someone else in it. To leave one that is only you,
+  you must delete it.** A sole owner leaving would strand an organization with zero owners, which the
+  index forbids; so `/leave` refuses, and the way out is `transfer-ownership` first or
+  `DELETE /organization`.
+- **Organizations CAN be deleted now, narrowly.** This reverses the 2026-09-06 "never deleted" rule,
+  which existed because nine tables CASCADE off `organizations` and `vault_documents` have objects in
+  a bucket that Postgres cannot reach. That cost is paid rather than avoided: deletion is owner-only,
+  allowed only when the owner is the **sole member**, requires the organization's name typed back, and
+  **purges vault objects from storage first, row second** — the object-first-row-second ordering the
+  vault already follows, which leaves a failed erasure retryable instead of reporting success while
+  the certificates survive. It is never a side effect of `/leave`: the one endpoint that needs no
+  permission must not be the most destructive call in the API.
+- **A user may create at most 3 organizations** (`organizations.created_by` already records it and
+  nothing reads it yet), plus a route rate limit. `POST /organizations` is reachable by any verified
+  user on `free`, so uncapped it mints tenants — each with a vault prefix — in a loop, and the cleanup
+  is the same storage purge above.
+- **Ending a membership revokes that organization's refresh families, and only that organization's.**
+  `refresh:user:<id>` is indexed per user, so `revokeAllForUser` would sign a consultant out of every
+  client at once; removal and leaving need `refresh:user:<id>:<org>`. Be honest about what this buys:
+  `refresh()` already fails closed when the membership is gone, so the revoke is Redis hygiene, the
+  belt to that single query's suspenders, and the only way to end one tenant's sessions without
+  touching another's. What it does **not** buy is a shorter window — a stateless access token cannot
+  be recalled, so a removed member keeps working for up to 15 minutes either way.
+- **A role change revokes nothing.** `refresh()` re-reads role and plan from the membership rather
+  than copying them from the old token, so a demotion or a transfer lands within one access-token
+  lifetime with nobody signed out — and signing a colleague out mid-task to deliver a permission
+  change is worse than 15 minutes of stale permissions. The same 15 minutes is the honest cost on a
+  transfer: the outgoing owner keeps `billing:manage` briefly, and the incoming one does not have it
+  yet.
+- **Removal does not touch the leaver's alert destinations.** `channel_subscriptions` rows survive
+  with their `verified_at` intact, so an ex-member's private Telegram keeps receiving that
+  organization's alerts until an owner revokes it — `revokeForOrg` is organization-scoped for exactly
+  this, and `listForOrg` shows revoked rows so there is something to click. This is a knowing trade:
+  auto-revoking would be tidier, but turning a channel off is organization-scoped while turning it on
+  is caller-scoped, and an owner cannot re-link a chat for someone they re-hire. One accidental
+  benefit — it is how a removed member learns *why* their screen went blank, since with no tombstone
+  the screen itself cannot name the organization.
+- **The roster is readable by every member.** `GET /organization/members` gates on `tender:read`, not
+  `user:manage`: a tenant is a company, and its own staff list is not a secret from its staff. Pending
+  invitations are **merged into the same list** but only for `user:manage` holders, each entry
+  carrying `kind: 'member' | 'invitation'` with `userId`, `displayName` and `joinedAt` explicitly
+  null rather than faked. An invitee's email address is therefore never visible to a `viewer`.
+- **`users.display_name` exists and registration collects it.** Without it the roster is a list of
+  email addresses.
+- **Removals and role changes raise an organization-wide announcement, in the third person.**
+  "Gevorg's role has been changed; he is now a consultant." Delivery has no per-recipient targeting —
+  `listDeliverable` filters on organization and channel and ignores `notifications.user_id` — so any
+  notification reaches every linked destination in the tenant. Writing these as company announcements
+  rather than personal messages is what makes that honest; a personally-addressed alert would need
+  per-user delivery built first, and that is phase 5's problem (a declined card is not a company
+  announcement).
 - **`organizations.tax_id` is the ՀՎՀՀ: unique, NULLABLE, collected only when the customer chooses to
   pay by invoice.** It is unverifiable — no source this project has carries a *supplier's* tax number
   — so it was never evidence, only a consistently-claimed identifier. Its one hard requirement is the
@@ -268,30 +373,35 @@ an invariant that should never fire, not as a branch point.
   an email, so there is nothing to age out — the row is a standing offer, and an offer does not rot.
   `UNIQUE (organization_id, email)` makes a repeat invite idempotent, the database arbitrating rather
   than application logic, the same rule ingestion already follows — and re-inviting a `declined`
-  address returns it to `pending`, since a decline is an answer to one offer, not a permanent refusal. The owner can **cancel**: a typo'd
-  address is a live offer to a stranger until someone withdraws it.
+  address returns it to `pending`, since a decline is an answer to one offer, not a permanent refusal.
+  The owner can **cancel**: a typo'd address is a live offer to a stranger until someone withdraws it.
+  An invitation is never issued at `owner`; there is only one owner seat and it moves by transfer.
 - **An invitation raises a notification, not a message.** `tender_id` NULL and `subject_id` = the
   invitation id — exactly the non-tender shape `notifications_dedupe_uq` was built for — so Telegram
-  delivers it with no new channel work. `GET /invitations` is the invitee's list; the owner sees every
-  invitation for their own organization at `pending`, `accepted` or `declined`, which is better
-  confirmation than a search hit ever was: an acceptance proves the right person received it, and a
-  decline is an answer rather than silence.
+  delivers it with no new channel work. Three surfaces, three different questions: `GET /invitations`
+  is *offers addressed to me* across every organization; `GET /organization/invitations` is *offers my
+  organization has sent*, at `pending`, `accepted` or `declined`, for `user:manage` holders; the
+  roster is *who is on this team now*. The overlap on pending rows is deliberate — a **declined**
+  invitation is not a roster entry, and it is exactly what an owner needs to see.
 - **Accepting an invitation adds a membership; it never moves one.** `memberships` is
   `UNIQUE (user_id, organization_id)` on purpose, and multi-org is the consultant case the
-  `enterprise` plan already sells. Leaving is a separate deliberate act, refused on the last
-  membership, and never bundled into accepting — someone joining a new company is not thinking about
-  their old data.
+  `enterprise` plan already sells. The one exception is an **orgless** acceptance, which re-mints the
+  session for the new organization — there is nothing to move away from. `POST /organizations` does
+  the same, or the founder creates their company and then watches a blocked screen do nothing until
+  the old `org: null` token expires.
 - **Switching organizations needs no permission**, and `client:switch` is dropped from `consultant`. A
   permission gates what may be done *inside* a tenant; choosing which of your own memberships to act
   under is which tenant the question is even about, so gating it only lets a user hold a membership
   they cannot use. `POST /auth/switch-org` re-mints against a different membership and starts a **new
   refresh family** rather than rotating the old one — the previous org's token must keep working,
   since the user has not left that tenant.
-- **`user:manage` is plan-gated at `pro` and up.** It is the only thing enforcing `multi-user`, which
-  is sold on `business` and appears in exactly one place in this codebase: a string in `seed.js` that
-  nothing reads. Gating at `business` puts a $115 → $250 cliff in front of adding one colleague, which
-  is where people share a login instead — costing the seat and corrupting the audit trail phase 5
-  needs.
+- **`user:manage` is plan-gated at `pro` and up — but only for invitations.** It is the only thing
+  enforcing `multi-user`, which is sold on `business` and appears in exactly one place in this
+  codebase: a string in `seed.js` that nothing reads. Gating at `business` puts a $115 → $250 cliff in
+  front of adding one colleague, which is where people share a login instead — costing the seat and
+  corrupting the audit trail phase 5 needs. Removal, role change, leaving and transfer stay
+  **role-gated only**: gating the growth direction sells the plan, while gating the shrink direction
+  means a downgraded customer's only route to removing an ex-employee is to pay again.
 - **A subscription belongs to an organization, and there is only one kind.** Gate 4 reads the plan of
   the session's organization (`sessionFor` → `planFor(membership.organization_id)`), so a user-level
   subscription would be invisible in the only place a consultant works — inside a client's tenant. A
@@ -306,10 +416,9 @@ an invariant that should never fire, not as a branch point.
   capability difference exists — if the two ever diverge it must be for a stated reason. This also
   means `enterprise`'s seeded `consultant-mode` feature entitles nothing; its only real difference
   from `business` is `sla`.
-- **Organizations are never deleted.** Nine tables CASCADE off `organizations`, and `vault_documents`
-  among them have files in object storage that Postgres cannot reach — a cascade orphans every
-  certificate in the bucket, against the object-first-row-second rule the vault already follows. An
-  abandoned organization sits inert on `free`.
+- **Nothing records that a removed member was ever here.** With no tombstone and no `audit_logs`
+  writer, "who did we remove last year" is unanswerable until phase 5 builds one. Known and accepted;
+  the alternative was a status column whose one forgotten filter is a silent access leak.
 
 Still to design: whether an unattached user can *discover* that their company already has an account —
 an approval queue that leaks that a company is a customer, so it is deliberately not part of this
@@ -535,9 +644,11 @@ decision that has already been made.
   is the only way a path added later cannot forget the check. `POST /auth/register` returns
   **201 with no tokens**; handing back a session there would mint credentials the very next request
   rejects. `users.email_verified_at` is the durable fact and only the one-time token lives in Redis.
-- **Registration creates the organization, and that is deliberate** — see *Account and organization
-  model* above, which keeps that transaction and rewrites everything around it. Not yet built: the
-  `displayName` field, the `invitations` table, and the plan gate on `user:manage`.
+- **Registration still creates the organization today, and that is now the thing to change** — see
+  *Account and organization model* above, which reverses it: registration creates only the user, and
+  orgless is a legal state. Not yet built: `users.display_name`, the `invitations` table, `POST
+  /organizations`, `POST /auth/switch-org`, the member endpoints, the one-owner index, and the
+  invite-only plan gate on `user:manage`.
 - **Reset codes have an attempt ceiling, and that is the actual lock.** Six digits is a million
   possibilities — roughly a minute of scripted guessing — so a code that merely waits out its TTL
   under unlimited tries is a delay, not a factor. `authStore.js` burns the code on the fifth failure;
@@ -724,3 +835,21 @@ sheet. Consult it before designing anything new; it almost certainly already spe
 
 Two caveats when reading it: it assumes Prisma/Zod/feature-folders (see *Deliberate deviations*), and
 its AI model IDs predate the current Claude generation (see *AI layer*). Everything else transfers.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as markdown files under `.scratch/<feature-slug>/` in this repo — there is no
+`gh`/`glab` workflow, and the GitHub and GitLab remotes are push targets, not boards. See
+[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+The five canonical triage roles under their own names, carried as a `Status:` line in the issue file
+rather than a tracker label. See [docs/agents/triage-labels.md](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context: one [CONTEXT.md](CONTEXT.md) glossary and one `docs/adr/`, both at the repo root.
+See [docs/agents/domain.md](docs/agents/domain.md).

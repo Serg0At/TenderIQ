@@ -19,14 +19,24 @@ Carries two independent optional claims: a ՀՎՀՀ and a supplier identity.
 _Avoid_: Account, Company, Workspace, Tenant, Client
 
 **Membership**:
-One user's belonging to one organization, at exactly one role. A user may hold several;
-a session names exactly one.
+One user's belonging to one organization, at exactly one role. A user may hold several,
+one, or none; a session names exactly one, or none.
 _Avoid_: Seat, Assignment, Access
+
+**Orgless**:
+The state of a user holding no membership — freshly registered, or just removed. The same
+state in both cases: signed in, nothing permitted.
+_Avoid_: Unattached, Kicked, Pending user, Limbo
 
 **Role**:
 A named set of permissions a membership carries — `owner`, `admin`, `coordinator`,
 `viewer`, `consultant`. Not a job title.
 _Avoid_: Permission level, Access level, Group
+
+**Owner**:
+The one membership per organization that carries `billing:manage`. Exactly one exists at
+all times, and it moves only by transfer.
+_Avoid_: Admin, Account owner, Superuser, Creator
 
 **Permission**:
 A single fine-grained capability string (`bid:write`, `intelligence:read`) that a role
@@ -37,6 +47,16 @@ _Avoid_: Scope, Right, Grant
 A standing offer from an organization to one specific email address, at a role fixed when
 it is issued. Bound to that address; not transferable.
 _Avoid_: Invite link, Invite code, Referral
+
+**Roster**:
+An organization's current members, with pending invitations merged in for those permitted
+to manage them. Every member may read it.
+_Avoid_: Member list, Team, Directory, Seats
+
+**Removal**:
+One member ending another's membership. Distinct from **Leaving**, which is ending your
+own — different gates, different endpoints.
+_Avoid_: Kick, Ban, Deactivate, Revoke
 
 **ՀՎՀՀ**:
 The Armenian eight-digit taxpayer number, unique across organizations but optional — an
