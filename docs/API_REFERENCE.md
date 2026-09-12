@@ -38,6 +38,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Request password reset](#request-password-reset) — `POST /auth/forgot-password`
 - [Check reset code](#check-reset-code) — `POST /auth/verify-reset-code`
 - [Reset password](#reset-password) — `POST /auth/reset-password`
+- [Switch organization](#switch-organization) — `POST /auth/switch-org`
 - [Current user](#current-user) — `GET /auth/me`
 
 ### Tenders (discovery)
@@ -71,6 +72,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Delete checklist item](#delete-checklist-item) — `DELETE /tracked-tenders/checklist/items/:itemId`
 
 ### Organization
+- [Create organization](#create-organization) — `POST /organizations`
 - [Get supplier identity](#get-supplier-identity) — `GET /organization/supplier-identity`
 - [Set supplier identity](#set-supplier-identity) — `PUT /organization/supplier-identity`
 - [Search supplier candidates](#search-supplier-candidates) — `GET /organization/supplier-identity/candidates`
@@ -194,7 +196,7 @@ Four gates run in order ([src/middlewares/authorize.js](src/middlewares/authoriz
 | `admin` | same as owner minus `billing:manage` |
 | `coordinator` | `tender:read`, `intelligence:read`, `savedsearch:write`, `trackedtender:write`, `bid:write`, `vault:write`, `vault:read`, `report:export` |
 | `viewer` | `tender:read`, `intelligence:read`, `vault:read` (read-only) |
-| `consultant` | coordinator's set plus `client:switch` |
+| `consultant` | identical to `coordinator` — a label recording that the member is external, not a distinct permission set |
 
 `intelligence:read` is additionally plan-gated to `pro`, `business`, `enterprise`.
 
@@ -220,7 +222,7 @@ From [src/utils/errors.js](src/utils/errors.js). Any of these may surface on any
 | `NOT_FOUND` | 404 | No such resource (also returned for cross-tenant ids). |
 | `CONFLICT` | 409 | Conflicts with current state. |
 | `RATE_LIMITED` | 429 | Request budget exhausted. `details.retryAfterSeconds`. |
-| `QUOTA_EXCEEDED` | 429 | Plan quota exceeded. *(enum member; no writer in the code today)* |
+| `QUOTA_EXCEEDED` | 429 | A counted cap was reached — today only the three-organizations-per-account cap on `POST /organizations`. `details.limit`. |
 | `INTERNAL_ERROR` | 500 | Unexpected error. `details.ref` is a correlation id for support. |
 | `DEPENDENCY_UNAVAILABLE` | 503 | Storage, Telegram or the AI layer is unavailable/unconfigured. |
 
@@ -228,7 +230,8 @@ Rate limiting ([src/middlewares/rateLimit.js](src/middlewares/rateLimit.js)) key
 when authenticated, IP otherwise, and sets `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and
 `Retry-After` on a 429. Budgets: global 300/min; `/auth/*` 10/min; `/auth/forgot-password`
 and `/auth/verify-email/resend` 5/hour; `/auth/verify-reset-code` and `/auth/reset-password`
-10/10min; the Telegram webhook 120/min.
+10/10min; `POST /organizations` 10/hour per user; `POST /auth/switch-org` 30/min per user; the
+Telegram webhook 120/min.
 
 ---
 
@@ -410,12 +413,17 @@ error, so the endpoint cannot be used to discover who holds an account.
       "name": "Shinarar LLC"
     },
     "role": "owner",
-    "plan": "free"
+    "plan": "free",
+    "organizations": [
+      { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
+    ]
   }
 }
 ```
 
-`expiresIn` is the access token's lifetime in seconds.
+`expiresIn` is the access token's lifetime in seconds. `organizations` is every membership the
+user holds, ordered by name then id; the session is minted for the first one, and the ids are
+what [Switch organization](#switch-organization) takes.
 
 **Errors:**
 
@@ -727,6 +735,70 @@ the confirmation link, so the account is verified by this act.
 - `422 VALIDATION_FAILED`: wrong or expired code; short password.
 - `429 RATE_LIMITED`: code burned after five failed attempts, or more than 10 requests/10
   minutes from this IP.
+
+---
+
+## Switch organization
+
+Re-mints the session against another of the caller's own memberships — the consultant moving
+between client tenants. **No permission is checked**: choosing which tenant to act in is not an
+act inside one, and holding the membership is the authority.
+
+It starts a **new refresh family** rather than rotating the current one, so the refresh token
+for the organization being left keeps working; switching back and forth during a day never
+signs anyone out.
+
+**API:**
+`POST /api/v1/auth/switch-org`
+
+**Authentication:** required (Bearer). No permission check.
+
+**Request data:**
+
+```json
+{
+  "organizationId": "cm9zx4k1p0301qw8fd8k2m4q6"
+}
+```
+
+- `organizationId` (**required**): 1–64 chars. Must be an organization the caller is a member
+  of.
+
+**Response data:**
+
+Same shape as [Log in](#log-in), minted for the requested organization:
+
+```json
+{
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 900,
+    "user": {
+      "id": "cm9zx4k1p0000qw8f3h2l7d5t",
+      "email": "consultant@example.am",
+      "displayName": "Anahit Petrosyan",
+      "locale": "hy",
+      "emailVerified": true
+    },
+    "organization": { "id": "cm9zx4k1p0301qw8fd8k2m4q6", "name": "Client B LLC" },
+    "role": "consultant",
+    "plan": "free",
+    "organizations": [
+      { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Advisory LLC", "role": "owner" },
+      { "id": "cm9zx4k1p0301qw8fd8k2m4q6", "name": "Client B LLC", "role": "consultant" }
+    ]
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `404 NOT_FOUND`: "Organization not found." — the caller holds no membership there. Not
+  `403`, so the endpoint cannot be used to learn which organization ids exist.
+- `422 VALIDATION_FAILED`: missing `organizationId`.
+- `429 RATE_LIMITED`: more than 30 switches/minute for this user.
 
 ---
 
@@ -1945,6 +2017,75 @@ No response body
 ---
 
 ## Organization
+
+## Create organization
+
+Founds an organization, makes the caller its **owner** in the same transaction, and returns a
+full session for it — the caller is working inside the new organization immediately, with no
+second call and no re-login. The caller's existing memberships are untouched; the previous
+session keeps working, and [Switch organization](#switch-organization) moves between them.
+
+An account may found at most **three** organizations that still exist, counted from who created
+them (not who owns them now, so handing the owner seat away does not free a slot).
+
+**API:**
+`POST /api/v1/organizations`
+
+**Authentication:** required (Bearer). No permission check — there is no tenant yet to hold a
+role in.
+
+**Request data:**
+
+```json
+{
+  "name": "Shinarar LLC",
+  "type": "construction"
+}
+```
+
+- `name` (**required**): trimmed, 2–200 chars.
+- `type` (optional): free text, max 100 chars, or `null`.
+
+**Response data:**
+
+`201 Created` — same shape as [Log in](#log-in), minted for the new organization:
+
+```json
+{
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 900,
+    "user": {
+      "id": "cm9zx4k1p0000qw8f3h2l7d5t",
+      "email": "procurement@shinarar.am",
+      "displayName": "Gevorg Sargsyan",
+      "locale": "hy",
+      "emailVerified": true
+    },
+    "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+    "role": "owner",
+    "plan": "free",
+    "organizations": [
+      { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
+    ]
+  }
+}
+```
+
+If the organization is created but minting the session fails, the organization still exists:
+it appears in the next login's `organizations`, and switching into it is the recovery — retrying
+the create would found a second one.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 EMAIL_UNVERIFIED`: address not confirmed.
+- `422 VALIDATION_FAILED`: missing or short `name`.
+- `429 QUOTA_EXCEEDED`: "An account can create at most 3 organizations." `details: { limit, created }`.
+- `429 RATE_LIMITED`: more than 10 creations/hour for this user.
+
+---
 
 ## Get supplier identity
 
@@ -3932,6 +4073,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | POST | `/api/v1/auth/forgot-password` | Email a six-digit reset code (neutral response) | No |
 | POST | `/api/v1/auth/verify-reset-code` | Check a reset code without spending it | No |
 | POST | `/api/v1/auth/reset-password` | Spend the code, reset password, revoke all sessions | No |
+| POST | `/api/v1/auth/switch-org` | Re-mint against another own membership, new refresh family | Yes |
 | GET | `/api/v1/auth/me` | The token's own claims | Yes |
 | GET | `/api/v1/tenders` | Filtered, cursor-paginated tender search | Yes (`tender:read`) |
 | GET | `/api/v1/tenders/:id` | Tender detail with lots and documents | Yes (`tender:read`) |
@@ -3955,6 +4097,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | PATCH | `/api/v1/tracked-tenders/checklist/items/:itemId` | Tick off / edit / clear review flag | Yes (`bid:write`) |
 | PATCH | `/api/v1/tracked-tenders/checklist/items/:itemId/document` | Attach or detach a vault document | Yes (`bid:write`) |
 | DELETE | `/api/v1/tracked-tenders/checklist/items/:itemId` | Delete a checklist item | Yes (`bid:write`) |
+| POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
 | GET | `/api/v1/organization/supplier-identity` | The party this org bids as | Yes (`tender:read`) |
 | PUT | `/api/v1/organization/supplier-identity` | Claim or unclaim that party | Yes (`org:manage`) |
 | GET | `/api/v1/organization/supplier-identity/candidates` | Search parties for the claim | Yes (`tender:read`) |

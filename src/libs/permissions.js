@@ -25,12 +25,15 @@ export const PERMISSIONS = {
   ],
   // Read-only by design: no :write permission of any kind.
   viewer: ['tender:read', 'intelligence:read', 'vault:read'],
-  // Operates across granted client orgs; same working permissions as a
-  // coordinator plus the ability to switch client context.
+  // Byte-identical to coordinator ON PURPOSE: the role is a label recording that
+  // the member is external, which the roster and a future audit log both want.
+  // There is no `client:switch` — choosing which of your own memberships to act
+  // under is not an act inside a tenant, so `POST /auth/switch-org` checks no
+  // permission. Do not "fix" the duplication; a divergence needs a stated reason.
   consultant: [
     'tender:read', 'intelligence:read',
     'savedsearch:write', 'trackedtender:write', 'bid:write',
-    'vault:write', 'vault:read', 'report:export', 'client:switch',
+    'vault:write', 'vault:read', 'report:export',
   ],
 };
 
