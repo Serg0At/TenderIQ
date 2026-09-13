@@ -25,6 +25,7 @@ export default class SavedSearchRepository {
     await trx(TABLE).insert({
       id,
       organization_id: organizationId,
+      name: profile.name,
       cpv_codes: profile.cpvCodes ?? [],
       keywords: profile.keywords ?? [],
       regions: profile.regions ?? [],
@@ -37,6 +38,7 @@ export default class SavedSearchRepository {
 
   static async update(id, organizationId, profile, trx = db) {
     const patch = {
+      ...(profile.name !== undefined ? { name: profile.name } : {}),
       ...(profile.cpvCodes !== undefined ? { cpv_codes: profile.cpvCodes } : {}),
       ...(profile.keywords !== undefined ? { keywords: profile.keywords } : {}),
       ...(profile.regions !== undefined ? { regions: profile.regions } : {}),

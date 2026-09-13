@@ -3,6 +3,7 @@ import { ApiError } from '../../utils/errors.js';
 
 const present = (row) => ({
   id: row.id,
+  name: row.name,
   cpvCodes: row.cpv_codes ?? [],
   keywords: row.keywords ?? [],
   regions: row.regions ?? [],

@@ -392,6 +392,9 @@ function up(pg) {
     .createTable('saved_searches', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      // What the profile is called in a list. NOT NULL because the alternative is telling
+      // profiles apart by reading their CPV arrays. Not unique: it is a label, not an identifier.
+      table.string('name', 100).notNullable();
       table.specificType('cpv_codes', 'text[]').notNullable().defaultTo('{}');
       table.specificType('keywords', 'text[]').notNullable().defaultTo('{}');
       table.specificType('regions', 'text[]').notNullable().defaultTo('{}');

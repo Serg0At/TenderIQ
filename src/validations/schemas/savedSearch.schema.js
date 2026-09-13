@@ -3,6 +3,7 @@ import { DELIVERABLE_CHANNELS } from '../../libs/adapters/channel/notification.p
 
 const codes = Joi.array().items(Joi.string().trim().max(20)).max(100);
 const words = Joi.array().items(Joi.string().trim().min(2).max(100)).max(50);
+const name = Joi.string().trim().min(1).max(100);
 
 /**
  * At least one positive signal is required.
@@ -12,6 +13,7 @@ const words = Joi.array().items(Joi.string().trim().min(2).max(100)).max(50);
  * and alert noise is what kills trust in the whole feature.
  */
 export const createSavedSearchSchema = Joi.object({
+  name: name.required(),
   cpvCodes: codes.default([]),
   keywords: words.default([]),
   regions: Joi.array().items(Joi.string().trim().max(100)).max(20).default([]),
@@ -54,6 +56,7 @@ export const createSavedSearchSchema = Joi.object({
   .required();
 
 export const updateSavedSearchSchema = Joi.object({
+  name,
   cpvCodes: codes,
   keywords: words,
   regions: Joi.array().items(Joi.string().trim().max(100)).max(20),

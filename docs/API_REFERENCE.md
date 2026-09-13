@@ -1076,6 +1076,7 @@ No request body
   "data": [
     {
       "id": "cm9zx4k1p0030qw8fp2r6t8w4",
+      "name": "Road works — Yerevan",
       "cpvCodes": ["45000000", "44100000"],
       "keywords": ["ասֆալտ", "բետոն"],
       "regions": ["Երևան", "Կոտայք"],
@@ -1112,6 +1113,7 @@ matches every tender ever published, which is indistinguishable from spam to who
 
 ```json
 {
+  "name": "Road works — Yerevan",
   "cpvCodes": ["45000000"],
   "keywords": ["ասֆալտ"],
   "regions": ["Երևան"],
@@ -1121,13 +1123,15 @@ matches every tender ever published, which is indistinguishable from spam to who
 }
 ```
 
+- `name` (required): 1–100 chars, trimmed. A label, not an identifier — two profiles may share one.
 - `cpvCodes` (optional, default `[]`): up to 100 strings, each max 20 chars.
 - `keywords` (optional, default `[]`): up to 50 strings, each 2–100 chars.
 - **At least one of `cpvCodes` or `keywords` must be non-empty.**
 - `regions` (optional, default `[]`): up to 20 strings, each max 100 chars.
 - `minValue` (optional): number ≥ 0, or `null`.
 - `maxValue` (optional): number ≥ 0, or `null`. Must be ≥ `minValue` when both are set.
-- `channels` (optional, default `["email"]`): up to 2 of `email`, `telegram`.
+- `channels` (optional, default `[]`): up to 2 of `email`, `telegram`. Empty means every channel the
+  organization has linked, resolved at send time.
 
 **Response data:**
 
@@ -1137,6 +1141,7 @@ matches every tender ever published, which is indistinguishable from spam to who
 {
   "data": {
     "id": "cm9zx4k1p0030qw8fp2r6t8w4",
+    "name": "Road works — Yerevan",
     "cpvCodes": ["45000000"],
     "keywords": ["ասֆալտ"],
     "regions": ["Երևան"],
@@ -1153,7 +1158,7 @@ matches every tender ever published, which is indistinguishable from spam to who
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`: `viewer` lacks `savedsearch:write`.
-- `422 VALIDATION_FAILED`: no CPV code and no keyword; `minValue` > `maxValue`; unknown channel.
+- `422 VALIDATION_FAILED`: missing `name`; no CPV code and no keyword; `minValue` > `maxValue`; unknown channel.
 
 ---
 
@@ -1191,6 +1196,7 @@ The updated profile, same shape as one list entry.
 {
   "data": {
     "id": "cm9zx4k1p0030qw8fp2r6t8w4",
+    "name": "Road works — Yerevan",
     "cpvCodes": ["45000000"],
     "keywords": ["ասֆալտ", "խճանյութ"],
     "regions": ["Երևան"],
