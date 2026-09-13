@@ -337,6 +337,45 @@ export default class OrganizationRepository {
     return (await query.del()) > 0;
   }
 
+  /**
+   * Delete an organization, only while `ownerUserId` is its owner and its only
+   * member.
+   *
+   * Both conditions are in the DELETE itself, not checked beforehand: an
+   * invitation accepted between the service's check and this statement would
+   * otherwise be cascaded away along with the tenant it just joined. Everything
+   * private — vault rows, pursuits, bids, invitations, notifications, alert
+   * destinations — cascades from this row.
+   */
+  /**
+   * Hold the organization row until the transaction ends. Any insert into a
+   * table with a foreign key to it — a vault document, a membership — waits
+   * behind this lock, so a deletion can check what exists and be sure nothing
+   * new arrives before it commits.
+   */
+  static async lockForUpdate(organizationId, trx) {
+    return trx('organizations').where({ id: organizationId }).forUpdate().first('id');
+  }
+
+  static async deleteIfSoleOwner({ organizationId, ownerUserId }, trx = db) {
+    const deleted = await trx('organizations')
+      .where({ id: organizationId })
+      .whereExists(function callerIsOwner() {
+        this.select('*')
+          .from('memberships as m')
+          .whereRaw('m.organization_id = organizations.id')
+          .andWhere({ 'm.user_id': ownerUserId, 'm.role_id': 'owner' });
+      })
+      .whereNotExists(function anyoneElse() {
+        this.select('*')
+          .from('memberships as m')
+          .whereRaw('m.organization_id = organizations.id')
+          .andWhereNot('m.user_id', ownerUserId);
+      })
+      .del();
+    return deleted > 0;
+  }
+
   static async countMembers(organizationId, trx = db) {
     const row = await trx('memberships').where({ organization_id: organizationId }).count('* as n').first();
     return Number(row?.n ?? 0);

@@ -36,7 +36,16 @@ export const transferOwnershipSchema = Joi.object({
   userId: Joi.string().trim().min(1).max(64).required(),
 }).required();
 
+/**
+ * The organization's name, typed back. Compared exactly and deliberately not
+ * trimmed or case-folded: the point is a deliberate act, not a fuzzy match.
+ */
+export const deleteOrganizationSchema = Joi.object({
+  name: Joi.string().max(200).required(),
+}).required();
+
 export default {
+  deleteOrganizationSchema,
   createOrganizationSchema,
   rosterQuerySchema,
   changeRoleSchema,

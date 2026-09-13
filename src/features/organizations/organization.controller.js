@@ -22,6 +22,10 @@ export default class OrganizationController {
     return ok(res, await OrganizationService.transferOwnership(actorOf(req), req.body));
   }
 
+  static async deleteOrganization(req, res) {
+    return ok(res, await OrganizationService.deleteOrganization(actorOf(req), req.body));
+  }
+
   static async leave(req, res) {
     return ok(res, await OrganizationService.leave(actorOf(req)));
   }

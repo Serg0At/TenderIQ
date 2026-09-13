@@ -168,6 +168,24 @@ export default class VaultDocumentRepository {
     return updated ? this.findRow(id, organizationId, trx) : null;
   }
 
+  /**
+   * Every object key this organisation's vault points at, whatever the row's
+   * status. A `pending` row may already have bytes behind it — the client
+   * uploads before it confirms — so erasing an organisation cannot skip it.
+   */
+  static async storageKeysForOrg(organizationId, trx = db) {
+    return trx(TABLE).where({ organization_id: organizationId }).pluck('storage_key');
+  }
+
+  /** Whether an upload was registered recently enough that its presigned PUT may still be used. */
+  static async hasPendingSince(organizationId, since, trx = db) {
+    const row = await trx(TABLE)
+      .where({ organization_id: organizationId, status: 'pending' })
+      .andWhere('created_at', '>', since)
+      .first('id');
+    return Boolean(row);
+  }
+
   static async remove(id, organizationId, trx = db) {
     return trx(TABLE).where({ id, organization_id: organizationId }).del();
   }

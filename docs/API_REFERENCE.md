@@ -78,6 +78,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
 - [Leave the organization](#leave-the-organization) — `POST /organization/leave`
 - [Transfer ownership](#transfer-ownership) — `POST /organization/transfer-ownership`
+- [Delete the organization](#delete-the-organization) — `DELETE /organization`
 - [Invite a member](#invite-a-member) — `POST /organization/invitations`
 - [List sent invitations](#list-sent-invitations) — `GET /organization/invitations`
 - [Cancel an invitation](#cancel-an-invitation) — `DELETE /organization/invitations/:id`
@@ -2466,6 +2467,82 @@ has two.
 
 ---
 
+## Delete the organization
+
+Closes the account. Deliberately narrow: **the owner only, only as its sole member, and only with the
+organization's name typed back** exactly. Everything private cascades with it — vault documents,
+tracked tenders, bids, checklists, saved searches, invitations, notifications and alert
+destinations.
+
+**Vault files are erased from storage before the organization row is deleted.** If storage fails
+part-way, the request answers `503` and the organization, its rows and its remaining files are left
+intact, so the same request can simply be sent again. Leaving never deletes anything; this is the
+only way an organization goes away.
+
+The caller's sessions for the organization are revoked, and the response carries a fresh session:
+their first remaining membership, or an orgless session if this was their last. A deleted
+organization no longer counts toward the three-organization creation cap.
+
+**API:**
+`DELETE /api/v1/organization`
+
+**Authentication:** required (Bearer). Permission: `org:manage`, and the caller must be the owner.
+
+**Request data:**
+
+```json
+{
+  "name": "Shinarar LLC"
+}
+```
+
+- `name` (**required**): the organization's current name, exactly — not trimmed, not
+  case-insensitive. Sent in the `DELETE` body rather than the query string, so the name does not
+  end up in access logs.
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "deleted": true,
+    "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+    "vaultObjectsErased": 4,
+    "session": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expiresIn": 900,
+      "user": {
+        "id": "cm9zx4k1p0000qw8f3h2l7d5t",
+        "email": "procurement@shinarar.am",
+        "displayName": "Gevorg Sargsyan",
+        "locale": "hy",
+        "emailVerified": true
+      },
+      "organization": null,
+      "role": null,
+      "plan": null,
+      "organizations": []
+    }
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`.
+- `403 ROLE_FORBIDDEN`: "Only the owner can delete the organization."
+- `409 CONFLICT`: other members remain (`details.otherMembers`) — remove them, or transfer ownership
+  and leave; a document upload registered within the upload-URL lifetime may still be in flight
+  (`details.retryAfterSeconds`) — nothing has been erased; or a member joined or a document was
+  added while deleting (retry).
+- `422 VALIDATION_FAILED`: `name` missing or not exactly the organization's name.
+- `503 DEPENDENCY_UNAVAILABLE`: document storage failed part-way; nothing was deleted from the
+  database, and the request can be retried.
+
+---
+
 ## Invite a member
 
 Offers an email address a role in the caller's organization. The answer is **the same object for
@@ -4771,6 +4848,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |
 | POST | `/api/v1/organization/leave` | Leave your own membership (never the owner) | Yes |
 | POST | `/api/v1/organization/transfer-ownership` | Hand the owner seat to a member; caller becomes admin | Yes (owner) |
+| DELETE | `/api/v1/organization` | Delete as sole-member owner, name typed back; vault erased first | Yes (owner) |
 | POST | `/api/v1/organization/invitations` | Offer an address a role (neutral response) | Yes (`user:manage`, Pro+) |
 | GET | `/api/v1/organization/invitations` | Offers this organization has sent, any status | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/invitations/:id` | Withdraw a pending or declined offer | Yes (`user:manage`) |

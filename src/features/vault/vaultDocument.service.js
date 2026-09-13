@@ -43,6 +43,22 @@ const { VAULT } = config;
  * 500 that says we are broken. Verified — confirming against a stopped MinIO
  * answered 500 before this existed.
  */
+/**
+ * Erase one object, or fail as a dependency outage.
+ *
+ * The one rule both erasures share: never report an erasure while the file
+ * survives. Removing a key that is already gone succeeds in both drivers, which
+ * is what makes a retried erasure safe.
+ */
+const eraseObject = async (key) => {
+  const storage = await getStorage();
+  try {
+    await storage.remove(key);
+  } catch (error) {
+    throw asDependencyFailure(error, 'remove');
+  }
+};
+
 const asDependencyFailure = (error, action) => {
   logger.error(`[vault] storage ${action} failed: ${error.message}`);
   return new ApiError('DEPENDENCY_UNAVAILABLE', {
@@ -287,18 +303,63 @@ export default class VaultDocumentService {
 
     const attachedTo = await checklists.itemsUsingDocument(id, organizationId);
 
-    const storage = await getStorage();
-    try {
-      await storage.remove(row.storage_key);
-    } catch (error) {
-      // The row is deliberately left intact: reporting a successful erasure
-      // while the file survives is the one failure this operation must not have.
-      throw asDependencyFailure(error, 'remove');
-    }
+    // On failure the row is deliberately left intact: reporting a successful
+    // erasure while the file survives is the one failure this must not have.
+    await eraseObject(row.storage_key);
     await checklists.detachDocument(id, organizationId);
     await vaultDocuments.remove(id, organizationId);
 
     return { deleted: true, detachedChecklistItems: attachedTo.length };
+  }
+
+  /**
+   * Erase every object an organisation's vault holds, ahead of deleting the
+   * organisation itself.
+   *
+   * Objects only — the rows stay, and go with the organisation's own row by
+   * cascade. That is the vault's object-first, row-second rule at organisation
+   * scale: a storage failure part-way leaves every row, and therefore every key,
+   * in place, so the whole deletion can simply be run again. Removing an object
+   * that is already gone succeeds in both drivers, which is what makes that
+   * retry safe.
+   *
+   * Refused while an upload may still be in flight. A presigned PUT stays valid
+   * for its TTL whether or not its row still exists, so bytes for a `pending`
+   * row could land after the purge — and after the cascade, with nothing left
+   * pointing at them. Waiting out the TTL is the only way to be sure they will
+   * not.
+   *
+   * Returns the keys erased, as a Set, for `assertPurged`.
+   */
+  static async purgeOrganization(organizationId, { now = new Date() } = {}) {
+    const since = new Date(now.getTime() - VAULT.UPLOAD_URL_TTL_SECONDS * 1000);
+    if (await vaultDocuments.hasPendingSince(organizationId, since)) {
+      throw ApiError.conflict(
+        'A document upload is still in progress. Try again once it has finished or expired.',
+        { retryAfterSeconds: VAULT.UPLOAD_URL_TTL_SECONDS }
+      );
+    }
+
+    const keys = new Set(await vaultDocuments.storageKeysForOrg(organizationId));
+    for (const key of keys) await eraseObject(key);
+    return keys;
+  }
+
+  /**
+   * Inside the deleting transaction, after the organization row is locked:
+   * every key the vault now points at must be one that was erased.
+   *
+   * The lock is what makes this read trustworthy. Registering a document
+   * inserts a row whose foreign key takes a share lock on the organization row,
+   * so while the deleter holds that row FOR UPDATE no new document can commit —
+   * and one that committed before the lock is visible here and refuses the
+   * delete, rather than being cascaded away with its object left in the bucket.
+   */
+  static async assertPurged(organizationId, purgedKeys, trx) {
+    const keys = await vaultDocuments.storageKeysForOrg(organizationId, trx);
+    if (keys.some((key) => !purgedKeys.has(key))) {
+      throw ApiError.conflict('A document was added while deleting. Try again.');
+    }
   }
 
   /**

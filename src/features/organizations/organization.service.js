@@ -6,6 +6,7 @@ import organizations, { ROSTER_MEMBERS } from '../../repositories/organization.r
 import AuthService from '../auth/auth.service.js';
 import { roleHas, canActOn, canGrant, rolesActableBy } from '../../libs/permissions.js';
 import AnnouncementService from '../../services/announcement.service.js';
+import VaultDocumentService from '../vault/vaultDocument.service.js';
 import { ApiError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 
@@ -136,6 +137,20 @@ const ownerCannotGo = async (organizationId, action) => {
 };
 
 /**
+ * Revoke a user's refresh families in one organization, logging rather than
+ * throwing. `refresh()` already refuses a token whose membership or
+ * organization is gone, so a Redis failure here costs hygiene — and turning it
+ * into a 500 would report something that happened as something that failed.
+ */
+const revokeQuietly = async (userId, organizationId) => {
+  try {
+    await AuthService.revokeOrganizationSessions(userId, organizationId);
+  } catch (error) {
+    logger.error(`[organizations] session revoke for ${userId} in ${organizationId} failed: ${error.message}`);
+  }
+};
+
+/**
  * End one membership: delete it and forget the accepted invitation behind it,
  * in one transaction; then, outside it, announce and revoke.
  *
@@ -143,9 +158,7 @@ const ownerCannotGo = async (organizationId, action) => {
  * that happens afterwards. The order after the commit is deliberate. The
  * announcement goes first because it cannot be retried — a second attempt at
  * the removal finds no member and answers 404. The session revoke goes last and
- * is logged rather than thrown: `refresh()` already refuses a token whose
- * membership is gone, so a Redis failure here costs hygiene, and turning it into
- * a 500 would report a removal that happened as one that failed.
+ * is logged rather than thrown (`revokeQuietly`).
  *
  * Returns false when the guarded delete matched nothing.
  */
@@ -161,12 +174,7 @@ const endMembership = async ({ organizationId, user, actableRoles = null, announ
   if (!ended) return false;
 
   if (announce) await AnnouncementService.raise(announce);
-
-  try {
-    await AuthService.revokeOrganizationSessions(user.id, organizationId);
-  } catch (error) {
-    logger.error(`[organizations] session revoke for ${user.id} in ${organizationId} failed: ${error.message}`);
-  }
+  await revokeQuietly(user.id, organizationId);
   return true;
 };
 
@@ -415,6 +423,83 @@ export default class OrganizationService {
     return {
       left: true,
       organization: { id: actor.organizationId, name: membership.organization_name },
+      session: await AuthService.sessionFor(user, null),
+    };
+  }
+
+  /**
+   * Delete the organization.
+   *
+   * Narrow on purpose: the owner only, only as its sole member, and only with
+   * the organization's name typed back, so a tenant cannot be destroyed by
+   * reflex. It is never a side effect of leaving — the one call that needs no
+   * permission must not be the most destructive one in the API.
+   *
+   * Vault objects are erased from storage FIRST and the row second. Postgres
+   * can cascade every private table, but it cannot reach a bucket; deleting the
+   * row first would report success while the certificates survived, and would
+   * leave nothing to find them by. This way a storage failure leaves the
+   * organization, its rows and its keys intact, and the request retryable.
+   *
+   * The row delete then locks the organization row and re-checks the two things
+   * that could have changed while objects were being erased: a document
+   * registered after the purge read its keys, and a member who joined. Either
+   * makes this a CONFLICT to retry rather than a cascade that swallows them. An
+   * upload still in flight refuses the deletion before anything is erased.
+   *
+   * The caller's sessions for this organization are revoked, and the response
+   * carries a fresh session: their first remaining membership, or orgless.
+   */
+  static async deleteOrganization(actor, { name }) {
+    const { role: actorRole, organization_name: organizationName } = await currentMembershipOf(actor);
+    if (actorRole !== 'owner') {
+      throw new ApiError('ROLE_FORBIDDEN', {
+        message: 'Only the owner can delete the organization.',
+        details: { role: actorRole },
+      });
+    }
+
+    if (name !== organizationName) {
+      throw ApiError.validation([
+        { field: 'name', message: 'Type the organization name exactly to confirm deletion.' },
+      ]);
+    }
+
+    const otherMembers = (await organizations.countMembers(actor.organizationId)) - 1;
+    if (otherMembers > 0) {
+      throw ApiError.conflict(
+        'An organization can be deleted only by its sole member. Remove the other members first, or transfer ownership and leave.',
+        { otherMembers }
+      );
+    }
+
+    const user = await users.findById(actor.userId);
+    if (!user) throw ApiError.unauthenticated();
+
+    const purgedKeys = await VaultDocumentService.purgeOrganization(actor.organizationId);
+
+    await withTransaction(async (trx) => {
+      await organizations.lockForUpdate(actor.organizationId, trx);
+      await VaultDocumentService.assertPurged(actor.organizationId, purgedKeys, trx);
+
+      const deleted = await organizations.deleteIfSoleOwner(
+        { organizationId: actor.organizationId, ownerUserId: user.id },
+        trx
+      );
+      if (!deleted) {
+        throw ApiError.conflict(
+          'The organization changed while deleting — someone joined, or ownership moved. Reload and try again.'
+        );
+      }
+    });
+
+    logger.info(`[organizations] ${actor.organizationId} deleted by ${user.id}; ${purgedKeys.size} vault object(s) erased`);
+    await revokeQuietly(user.id, actor.organizationId);
+
+    return {
+      deleted: true,
+      organization: { id: actor.organizationId, name: organizationName },
+      vaultObjectsErased: purgedKeys.size,
       session: await AuthService.sessionFor(user, null),
     };
   }

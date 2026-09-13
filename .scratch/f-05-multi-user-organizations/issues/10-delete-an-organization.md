@@ -11,15 +11,26 @@ most destructive call in the API.
 
 **Blocked by:** 08.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Only the owner can delete the organization, and only when they are its sole member.
-- [ ] The organization's name must be echoed back in the request, so it cannot be destroyed by
+- [x] Only the owner can delete the organization, and only when they are its sole member.
+- [x] The organization's name must be echoed back in the request, so it cannot be destroyed by
       reflex.
-- [ ] Every vault object belonging to the organization is erased from storage before the row is
+- [x] Every vault object belonging to the organization is erased from storage before the row is
       deleted.
-- [ ] A failure partway through leaves the deletion retryable rather than half-done and reported as
+- [x] A failure partway through leaves the deletion retryable rather than half-done and reported as
       successful.
-- [ ] An organization with another member in it cannot be deleted.
-- [ ] Leaving never deletes anything.
-- [ ] After deletion the owner is in the orgless state if they belonged nowhere else.
+- [x] An organization with another member in it cannot be deleted.
+- [x] Leaving never deletes anything.
+- [x] After deletion the owner is in the orgless state if they belonged nowhere else.
+
+## Implementation notes
+
+- Purging goes by `vault_documents` rows of every status; the storage port has no list operation.
+  An object whose row was already pruned by the daily pending-upload sweep (bytes arrived, never
+  confirmed) is unreachable by this or any path — a pre-existing vault gap, not introduced here.
+- Deletion is refused while a `pending` upload is younger than `VAULT.UPLOAD_URL_TTL_SECONDS`,
+  because its presigned PUT could still deliver bytes after the purge.
+- The transaction locks the organization row `FOR UPDATE` before re-checking vault keys and
+  membership, so a concurrent document registration or accepted invitation waits on the foreign-key
+  share lock instead of being cascaded away.

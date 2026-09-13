@@ -9,6 +9,7 @@ import {
   rosterQuerySchema,
   changeRoleSchema,
   transferOwnershipSchema,
+  deleteOrganizationSchema,
 } from '../../validations/schemas/organization.schema.js';
 
 const router = Router();
@@ -68,6 +69,20 @@ currentOrganizationRoutes.delete(
  * removal precisely because the two have different gates.
  */
 currentOrganizationRoutes.post('/leave', OrganizationController.leave);
+
+/**
+ * Deleting the organization. `org:manage` at the gate; owner-only, sole-member
+ * and the typed-back name in the service. Admins hold `org:manage` too, which is
+ * why the gate alone is not the rule. The name travels in the DELETE body — the
+ * confirmation belongs to this one request, and a query string would put the
+ * company's name into every access log on the way.
+ */
+currentOrganizationRoutes.delete(
+  '/',
+  authorize('org:manage'),
+  validate(deleteOrganizationSchema),
+  OrganizationController.deleteOrganization
+);
 
 /**
  * The only way ownership moves. `user:manage` at the gate, and owner-only in the
