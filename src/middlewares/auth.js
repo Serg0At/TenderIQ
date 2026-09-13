@@ -63,10 +63,10 @@ export const authenticate = (req, _res, next) => verifyBearer(req, next, { allow
  * The orgless allowlist, spelled out as the routes that mount this instead.
  *
  * Every caller is a route an orgless session must reach to stop being orgless,
- * or to learn that it is: `POST /organizations`, the invitations addressed to
- * the caller, `POST /auth/switch-org` (the way out for a second device still
- * holding an orgless session after the first joined somewhere), and
- * `GET /auth/me`. Log out and refresh take no bearer token at all. Grep for this
+ * or to learn that it is: `POST /organizations`, `/invitations` (the offers
+ * addressed to the caller, and answering them), `POST /auth/switch-org` (the
+ * way out for a second device still holding an orgless session after the first
+ * joined somewhere), and `GET /auth/me`. Log out and refresh take no bearer token at all. Grep for this
  * name to audit the list; anything added to it needs the same justification.
  */
 export const authenticateOrgless = (req, _res, next) => verifyBearer(req, next, { allowOrgless: true });

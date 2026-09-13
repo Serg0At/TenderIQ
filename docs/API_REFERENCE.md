@@ -81,6 +81,11 @@ All paths are relative to the base path **`/api/v1`**.
 - [Set supplier identity](#set-supplier-identity) — `PUT /organization/supplier-identity`
 - [Search supplier candidates](#search-supplier-candidates) — `GET /organization/supplier-identity/candidates`
 
+### Invitations (addressed to me)
+- [List my invitations](#list-my-invitations) — `GET /invitations`
+- [Accept an invitation](#accept-an-invitation) — `POST /invitations/:id/accept`
+- [Decline an invitation](#decline-an-invitation) — `POST /invitations/:id/decline`
+
 ### Document vault
 - [List vault documents](#list-vault-documents) — `GET /vault-documents`
 - [Vault summary](#vault-summary) — `GET /vault-documents/summary`
@@ -214,7 +219,7 @@ removed from their last organization; the API does not distinguish them — hold
 whose claims carry `org`, `role` and `plan` as `null`. Every endpoint behind a permission answers
 `403 NO_ORGANIZATION`, refused at token verification itself. The allowlist is explicit —
 the routes mounted on `authenticateOrgless` ([src/middlewares/auth.js](src/middlewares/auth.js)):
-[Create organization](#create-organization), the invitation endpoints addressed to the caller,
+[Create organization](#create-organization), [the invitations addressed to the caller](#list-my-invitations),
 [Switch organization](#switch-organization) (the way out for a second device still holding an
 orgless session), and [Current user](#current-user). [Refresh](#refresh-session) and
 [Log out](#log-out) take no bearer token. The client's locked screen
@@ -251,7 +256,7 @@ Rate limiting ([src/middlewares/rateLimit.js](src/middlewares/rateLimit.js)) key
 when authenticated, IP otherwise, and sets `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and
 `Retry-After` on a 429. Budgets: global 300/min; `/auth/*` 10/min; `/auth/forgot-password`
 and `/auth/verify-email/resend` 5/hour; `/auth/verify-reset-code` and `/auth/reset-password`
-10/10min; `POST /organizations` 10/hour per user; `POST /organization/invitations` 60/hour per user; `POST /auth/switch-org` 30/min per user; the
+10/10min; `POST /organizations` 10/hour per user; `POST /organization/invitations` 60/hour per user; accepting or declining 30/min per user; `POST /auth/switch-org` 30/min per user; the
 Telegram webhook 120/min.
 
 ---
@@ -2489,6 +2494,158 @@ Plain array, not paginated.
 
 ---
 
+## Invitations (addressed to me)
+
+The invitee's side of an invitation. All three endpoints are on the
+[orgless allowlist](#the-orgless-state) and need no permission — an offer addressed to you is yours
+to read and answer, and there may be no tenant yet to hold a role in. The address is always the
+session user's own verified email; nothing in the request names it.
+
+## List my invitations
+
+Pending offers addressed to the caller's address, from **any** organization — so someone can join
+several clients. An offer sent before the address had an account appears here once that address
+registers and verifies. Answered offers drop out, and so do offers from organizations the caller
+already belongs to (they cannot be accepted). Newest first.
+
+**API:**
+`GET /api/v1/invitations`
+
+**Authentication:** required (Bearer); orgless sessions allowed. No permission check.
+
+**Request data:**
+
+Query parameters:
+
+- `page[size]` (optional): 1–100, default 20.
+- `page[cursor]` (optional): `meta.cursor` from the previous page.
+
+**Response data:**
+
+```json
+{
+  "data": [
+    {
+      "id": "cm9zx4k1p0500qw8f7t2x6c1n",
+      "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+      "role": "coordinator",
+      "invitedBy": { "displayName": "Gevorg Sargsyan" },
+      "createdAt": "2026-09-15T09:02:11.845Z"
+    }
+  ],
+  "meta": { "cursor": "MjAyNi0wOS0xNVQwOTowMjoxMS44NDVafGNtOXo...", "hasMore": false }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `422 VALIDATION_FAILED`: bad page size.
+
+---
+
+## Accept an invitation
+
+Adds a membership at the invitation's role. It **adds, never moves**: every membership the caller
+already holds is left exactly as it was.
+
+Where the caller ends up depends on where they are working:
+
+- **Orgless session** → `session` is a full session for the new organization, so they are working
+  inside it immediately with no second call.
+- **Session already in an organization** → `session` is `null` and the caller stays where they
+  are; moving to the new tenant is [Switch organization](#switch-organization).
+
+Someone removed from an organization and invited back joins at the **new** invitation's role.
+
+**API:**
+`POST /api/v1/invitations/:id/accept`
+
+**Authentication:** required (Bearer); orgless sessions allowed. No permission check.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "accepted": true,
+    "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+    "role": "coordinator",
+    "session": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expiresIn": 900,
+      "user": {
+        "id": "cm9zx4k1p0600qw8f2k9b4j7h",
+        "email": "armen@example.am",
+        "displayName": "Armen Grigoryan",
+        "locale": "hy",
+        "emailVerified": true
+      },
+      "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+      "role": "coordinator",
+      "plan": "pro",
+      "organizations": [
+        { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "coordinator" }
+      ]
+    }
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `404 NOT_FOUND`: no such invitation addressed to the caller (another person's invitation id
+  answers the same).
+- `409 CONFLICT`: already accepted; already declined ("Ask for a new one to join."); or the caller is
+  already a member of that organization — the offer stays pending and their role is unchanged.
+
+Re-accepting an offer the caller already accepted, from an orgless session while still holding that
+membership, answers `200` with a session again rather than `409` — the recovery path if the first
+response was lost after the membership was created.
+- `429 RATE_LIMITED`: more than 30 answers/minute for this user.
+
+---
+
+## Decline an invitation
+
+Records a refusal the sender can see as `declined` in
+[List sent invitations](#list-sent-invitations). Nothing is announced to the sender's organization.
+A declined offer can be re-sent by the organization, which returns it to pending.
+
+**API:**
+`POST /api/v1/invitations/:id/decline`
+
+**Authentication:** required (Bearer); orgless sessions allowed. No permission check.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "declined": true
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `404 NOT_FOUND`: no such invitation addressed to the caller.
+- `409 CONFLICT`: already accepted or already declined.
+- `429 RATE_LIMITED`: more than 30 answers/minute for this user.
+
+---
+
 ## Document vault
 
 Uploading is a **three-step handshake**, not a POST of bytes:
@@ -4369,6 +4526,9 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | POST | `/api/v1/organization/invitations` | Offer an address a role (neutral response) | Yes (`user:manage`, Pro+) |
 | GET | `/api/v1/organization/invitations` | Offers this organization has sent, any status | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/invitations/:id` | Withdraw a pending or declined offer | Yes (`user:manage`) |
+| GET | `/api/v1/invitations` | Pending offers addressed to me, any organization | Yes (orgless allowed) |
+| POST | `/api/v1/invitations/:id/accept` | Join at the offered role; session only if orgless | Yes (orgless allowed) |
+| POST | `/api/v1/invitations/:id/decline` | Refuse an offer; the sender sees it | Yes (orgless allowed) |
 | GET | `/api/v1/organization/supplier-identity` | The party this org bids as | Yes (`tender:read`) |
 | PUT | `/api/v1/organization/supplier-identity` | Claim or unclaim that party | Yes (`org:manage`) |
 | GET | `/api/v1/organization/supplier-identity/candidates` | Search parties for the claim | Yes (`tender:read`) |

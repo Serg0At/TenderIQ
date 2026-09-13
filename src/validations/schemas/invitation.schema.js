@@ -34,4 +34,16 @@ export const invitationQuerySchema = Joi.object({
   }).default({}),
 }).options({ stripUnknown: true });
 
-export default { INVITABLE_ROLES, sendInvitationSchema, invitationQuerySchema };
+export const myInvitationQuerySchema = Joi.object({
+  page: Joi.object({
+    size: Joi.number().integer().min(1).max(100).default(20),
+    cursor: Joi.string().max(200).allow(null, ''),
+  }).default({}),
+}).options({ stripUnknown: true });
+
+export default {
+  INVITABLE_ROLES,
+  sendInvitationSchema,
+  invitationQuerySchema,
+  myInvitationQuerySchema,
+};

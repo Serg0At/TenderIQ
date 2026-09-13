@@ -93,6 +93,76 @@ export default class InvitationRepository {
     };
   }
 
+  /**
+   * Pending offers addressed to one address, across every organization.
+   *
+   * The only cross-tenant read in this file, and it is keyed on the address
+   * rather than on anything a caller could choose: the service passes the
+   * session user's own verified email, never a value from the request. That is
+   * also all "matched when that address registers and verifies" needs — an
+   * offer sent before the account existed has the same address on it.
+   *
+   * Offers from organizations `userId` already belongs to are left out: they
+   * cannot be accepted (that would be a second membership), and listing them
+   * would put an Accept button in front of the user that can only ever fail.
+   */
+  static async listPendingForEmail(email, userId, { limit = 20, cursor = null } = {}, trx = db) {
+    const query = trx(`${TABLE} as i`)
+      .join('organizations as o', 'o.id', 'i.organization_id')
+      .leftJoin('users as u', 'u.id', 'i.invited_by')
+      .where('i.email', String(email).toLowerCase())
+      .andWhere('i.status', 'pending')
+      .whereNotExists(function alreadyMember() {
+        this.select('*')
+          .from('memberships as m')
+          .whereRaw('m.organization_id = i.organization_id')
+          .andWhere('m.user_id', userId);
+      })
+      .select('i.*', 'o.name as organization_name', 'u.display_name as invited_by_name');
+
+    const after = decodeCursor(cursor);
+    if (after) query.whereRaw('(i.created_at, i.id) < (?::timestamptz, ?)', [after.createdAt, after.id]);
+
+    const rows = await query
+      .orderBy([{ column: 'i.created_at', order: 'desc' }, { column: 'i.id', order: 'desc' }])
+      .limit(limit + 1);
+
+    const page = rows.slice(0, limit);
+    return {
+      rows: page,
+      hasMore: rows.length > limit,
+      cursor: page.length ? encodeCursor(page[page.length - 1]) : null,
+    };
+  }
+
+  /**
+   * One offer addressed to this address, held until the transaction ends.
+   *
+   * Scoped on the email as well as the id, so an invitation id that belongs to
+   * somebody else reads exactly like one that does not exist. The lock is what
+   * makes a double-clicked accept add one membership rather than race two
+   * inserts into the unique constraint.
+   *
+   * `trx` has no `db` default on purpose: outside a transaction the lock ends
+   * with the statement, so calling this without one would guard nothing.
+   */
+  static async lockForEmail(id, email, trx) {
+    return trx(`${TABLE} as i`)
+      .join('organizations as o', 'o.id', 'i.organization_id')
+      .where('i.id', id)
+      .andWhere('i.email', String(email).toLowerCase())
+      .forUpdate('i')
+      .first('i.*', 'o.name as organization_name');
+  }
+
+  /** Record the invitee's answer. Only a pending offer can be answered. */
+  static async answer(id, status, trx = db) {
+    const updated = await trx(TABLE)
+      .where({ id, status: 'pending' })
+      .update({ status, responded_at: trx.fn.now(), updated_at: trx.fn.now() });
+    return updated > 0;
+  }
+
   static async findForOrg(id, organizationId, trx = db) {
     return trx(TABLE).where({ id, organization_id: organizationId }).first();
   }
