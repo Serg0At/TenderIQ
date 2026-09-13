@@ -31,4 +31,14 @@ export const changeRoleSchema = Joi.object({
     }),
 }).required();
 
-export default { createOrganizationSchema, rosterQuerySchema, changeRoleSchema };
+/** The member receiving the seat, by user id — never an address, never an invitation. */
+export const transferOwnershipSchema = Joi.object({
+  userId: Joi.string().trim().min(1).max(64).required(),
+}).required();
+
+export default {
+  createOrganizationSchema,
+  rosterQuerySchema,
+  changeRoleSchema,
+  transferOwnershipSchema,
+};

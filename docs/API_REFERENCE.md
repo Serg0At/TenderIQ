@@ -77,6 +77,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
 - [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
 - [Leave the organization](#leave-the-organization) — `POST /organization/leave`
+- [Transfer ownership](#transfer-ownership) — `POST /organization/transfer-ownership`
 - [Invite a member](#invite-a-member) — `POST /organization/invitations`
 - [List sent invitations](#list-sent-invitations) — `GET /organization/invitations`
 - [Cancel an invitation](#cancel-an-invitation) — `DELETE /organization/invitations/:id`
@@ -2399,6 +2400,72 @@ No request body
 
 ---
 
+## Transfer ownership
+
+Hands the organization's single owner seat to another member — the **only** way ownership moves.
+The caller becomes an `admin` (so they can finish what they were doing, or then leave) and the
+target becomes the `owner`, in one transaction: the organization is never without an owner and never
+has two.
+
+- Owner-only, checked against the database: a previous owner's still-valid token cannot hand the
+  seat away again.
+- The target must already be a member — not an email address, not a pending invitation.
+- **Nobody is signed out.** Both new roles take effect within one access-token lifetime, so the
+  outgoing owner briefly keeps `billing:manage`.
+- Raises an organization-wide announcement (`team-ownership-transferred`): "Ownership of Shinarar
+  LLC has passed from Gevorg Sargsyan to Lilit Hakobyan."
+
+**API:**
+`POST /api/v1/organization/transfer-ownership`
+
+**Authentication:** required (Bearer). Permission: `user:manage`, and the caller must be the owner.
+
+**Request data:**
+
+```json
+{
+  "userId": "cm9zx4k1p0400qw8f1r6d9s3m"
+}
+```
+
+- `userId` (**required**): the member receiving the seat; must not be the caller.
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "owner": {
+      "kind": "member",
+      "userId": "cm9zx4k1p0400qw8f1r6d9s3m",
+      "displayName": "Lilit Hakobyan",
+      "email": "lilit@shinarar.am",
+      "role": "owner",
+      "joinedAt": "2026-09-14T11:40:57.020Z"
+    },
+    "previousOwner": {
+      "kind": "member",
+      "userId": "cm9zx4k1p0000qw8f3h2l7d5t",
+      "displayName": "Gevorg Sargsyan",
+      "email": "procurement@shinarar.am",
+      "role": "admin",
+      "joinedAt": "2026-09-13T08:14:02.311Z"
+    }
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`.
+- `403 ROLE_FORBIDDEN`: "Only the owner can transfer ownership." — including a previous owner, and
+  the loser of two simultaneous transfers.
+- `404 NOT_FOUND`: the target is not a member of this organization.
+- `422 VALIDATION_FAILED`: missing `userId`, or the caller's own id.
+
+---
+
 ## Invite a member
 
 Offers an email address a role in the caller's organization. The answer is **the same object for
@@ -4703,6 +4770,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |
 | POST | `/api/v1/organization/leave` | Leave your own membership (never the owner) | Yes |
+| POST | `/api/v1/organization/transfer-ownership` | Hand the owner seat to a member; caller becomes admin | Yes (owner) |
 | POST | `/api/v1/organization/invitations` | Offer an address a role (neutral response) | Yes (`user:manage`, Pro+) |
 | GET | `/api/v1/organization/invitations` | Offers this organization has sent, any status | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/invitations/:id` | Withdraw a pending or declined offer | Yes (`user:manage`) |

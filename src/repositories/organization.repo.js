@@ -286,6 +286,41 @@ export default class OrganizationRepository {
   }
 
   /**
+   * Hand the owner seat from one member to another, inside the caller's
+   * transaction.
+   *
+   * Demote first, then promote. `memberships_one_owner_uq` is a unique INDEX,
+   * and an index cannot be deferred to commit — so promoting first would put two
+   * owner rows in the organization for one statement, and the index would reject
+   * the organization's own hand-off. Inside the transaction the zero-owner
+   * moment between the two statements is invisible to everyone else.
+   *
+   * The demotion is guarded in its WHERE — it only matches while the caller
+   * still holds the seat — so two concurrent transfers cannot both succeed: the
+   * second blocks on the row, then finds it no longer `owner`. The promotion
+   * needs no role guard, since nobody else can hold the seat while the caller
+   * does. Returns which step missed, for the caller to name the problem and roll
+   * back.
+   *
+   * `trx` is required, with no `db` default: run outside a transaction, the
+   * demotion would commit on its own and a missed promotion would leave the
+   * organization with no owner at all.
+   */
+  static async transferOwnership({ organizationId, fromUserId, toUserId }, trx) {
+    const demoted = await trx('memberships')
+      .where({ organization_id: organizationId, user_id: fromUserId, role_id: 'owner' })
+      .update({ role_id: 'admin' });
+    if (!demoted) return { ok: false, missed: 'from' };
+
+    const promoted = await trx('memberships')
+      .where({ organization_id: organizationId, user_id: toUserId })
+      .update({ role_id: 'owner' });
+    if (!promoted) return { ok: false, missed: 'to' };
+
+    return { ok: true };
+  }
+
+  /**
    * End a membership: a plain DELETE, with no status left behind (ADR 0001).
    *
    * The owner seat is excluded in the WHERE, and so is any role the actor may

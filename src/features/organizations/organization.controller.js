@@ -18,6 +18,10 @@ export default class OrganizationController {
     return noContent(res);
   }
 
+  static async transferOwnership(req, res) {
+    return ok(res, await OrganizationService.transferOwnership(actorOf(req), req.body));
+  }
+
   static async leave(req, res) {
     return ok(res, await OrganizationService.leave(actorOf(req)));
   }

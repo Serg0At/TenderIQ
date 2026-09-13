@@ -8,6 +8,7 @@ import {
   createOrganizationSchema,
   rosterQuerySchema,
   changeRoleSchema,
+  transferOwnershipSchema,
 } from '../../validations/schemas/organization.schema.js';
 
 const router = Router();
@@ -67,5 +68,17 @@ currentOrganizationRoutes.delete(
  * removal precisely because the two have different gates.
  */
 currentOrganizationRoutes.post('/leave', OrganizationController.leave);
+
+/**
+ * The only way ownership moves. `user:manage` at the gate, and owner-only in the
+ * service against the database — admins hold `user:manage` too, and a previous
+ * owner's token still says owner for a while after handing over.
+ */
+currentOrganizationRoutes.post(
+  '/transfer-ownership',
+  authorize('user:manage'),
+  validate(transferOwnershipSchema),
+  OrganizationController.transferOwnership
+);
 
 export default router;

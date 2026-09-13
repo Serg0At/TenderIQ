@@ -116,6 +116,7 @@ export const HEADINGS = {
   'team-invitation': { emoji: '✉️', label: 'Team invitation sent' },
   'team-role-changed': { emoji: '👥', label: 'Team role changed' },
   'team-member-removed': { emoji: '🚪', label: 'Team member removed' },
+  'team-ownership-transferred': { emoji: '🔑', label: 'Ownership transferred' },
 };
 
 const FALLBACK_HEADING = { emoji: '🔔', label: 'Tender alert' };
@@ -184,6 +185,8 @@ export const teamAnnouncement = (type, payload = {}) => {
       return `${name}'s role in ${org} has been changed to ${role}.`;
     case 'team-member-removed':
       return `${name} has been removed from ${org}.`;
+    case 'team-ownership-transferred':
+      return `Ownership of ${org} has passed from ${payload.previousOwnerName} to ${name}.`;
     default:
       return `The team at ${org} has changed.`;
   }

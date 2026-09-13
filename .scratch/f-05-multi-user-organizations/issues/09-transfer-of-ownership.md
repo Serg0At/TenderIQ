@@ -8,13 +8,13 @@ is promoted or the organization's own hand-off is rejected.
 
 **Blocked by:** 07.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Only the owner can transfer ownership; an admin attempting it is refused.
-- [ ] The target must already be a member of the organization — not an email address, not an
+- [x] Only the owner can transfer ownership; an admin attempting it is refused.
+- [x] The target must already be a member of the organization — not an email address, not an
       invitation.
-- [ ] The caller becomes an admin and the target becomes the owner, in one transaction.
-- [ ] The organization is never momentarily without an owner, and never momentarily with two.
-- [ ] Nobody is signed out; both parties' new permissions take effect within one access-token
+- [x] The caller becomes an admin and the target becomes the owner, in one transaction.
+- [x] The organization is never momentarily without an owner, and never momentarily with two.
+- [x] Nobody is signed out; both parties' new permissions take effect within one access-token
       lifetime. The outgoing owner therefore keeps billing management briefly — known and accepted.
-- [ ] After the transfer the previous owner can no longer perform owner-only actions.
+- [x] After the transfer the previous owner can no longer perform owner-only actions.

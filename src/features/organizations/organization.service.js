@@ -105,6 +105,13 @@ export const assertCanGrant = (actorRole, role) => {
   }
 };
 
+/** Transfer is the owner's alone; the previous owner and every admin get this. */
+const onlyOwnerMayTransfer = (role) =>
+  new ApiError('ROLE_FORBIDDEN', {
+    message: 'Only the owner can transfer ownership.',
+    details: { role },
+  });
+
 /** The owner-seat refusal for a role change, naming the way out. */
 const ownerSeatConflict = (action) =>
   ApiError.conflict(
@@ -309,6 +316,70 @@ export default class OrganizationService {
     }
 
     logger.info(`[organizations] user ${target.user_id} removed from ${actor.organizationId} by ${actor.userId}`);
+  }
+
+  /**
+   * Hand the single owner seat to another member.
+   *
+   * The only way ownership ever moves: never a role change, never an
+   * invitation. Owner-only, checked against the database rather than the token,
+   * because a previous owner's token still says `owner` for up to one
+   * access-token lifetime after a hand-off and must not be able to hand the seat
+   * away a second time. The target must already be a member — an address or a
+   * pending invitation cannot hold billing for a company.
+   *
+   * The caller becomes an admin, not a viewer and not a stranger: they are
+   * usually handing over in order to leave, and need to finish what they were
+   * doing first. Nobody is signed out; both new roles land within one
+   * access-token lifetime, so the outgoing owner briefly keeps
+   * `billing:manage` — known and accepted.
+   */
+  static async transferOwnership(actor, { userId: targetUserId }) {
+    const { role: actorRole, organization_name: organizationName } = await currentMembershipOf(actor);
+    if (actorRole !== 'owner') throw onlyOwnerMayTransfer(actorRole);
+    if (targetUserId === actor.userId) {
+      throw ApiError.validation([{ field: 'userId', message: 'Ownership must go to another member.' }]);
+    }
+
+    const [target, caller] = await Promise.all([
+      organizations.findMember(actor.organizationId, targetUserId),
+      organizations.findMember(actor.organizationId, actor.userId),
+    ]);
+    if (!target) throw ApiError.notFound('Member');
+
+    await withTransaction(async (trx) => {
+      const result = await organizations.transferOwnership(
+        { organizationId: actor.organizationId, fromUserId: actor.userId, toUserId: target.user_id },
+        trx
+      );
+      if (result.ok) return;
+      // Throwing rolls the demotion back along with everything else.
+      if (result.missed === 'from') throw onlyOwnerMayTransfer('admin');
+      throw ApiError.notFound('Member');
+    });
+
+    // Both rows were read before the transaction and are reported with the roles
+    // it just gave them. Re-reading after the commit would race the outgoing
+    // owner's very next call — typically leaving — and turn a hand-off that
+    // happened into a 500, whose retry is then a 403.
+    const owner = { ...target, role: 'owner' };
+    const previousOwner = { ...caller, role: 'admin' };
+    logger.info(`[organizations] ownership of ${actor.organizationId} moved ${actor.userId} -> ${target.user_id}`);
+
+    await AnnouncementService.raise({
+      organizationId: actor.organizationId,
+      type: 'team-ownership-transferred',
+      subjectId: createId(),
+      userId: actor.userId,
+      payload: {
+        memberUserId: target.user_id,
+        memberName: target.display_name,
+        previousOwnerName: caller.display_name,
+        organizationName,
+      },
+    });
+
+    return { owner: presentMember(owner), previousOwner: presentMember(previousOwner) };
   }
 
   /**
