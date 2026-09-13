@@ -74,6 +74,7 @@ All paths are relative to the base path **`/api/v1`**.
 ### Organization
 - [Create organization](#create-organization) — `POST /organizations`
 - [List members](#list-members) — `GET /organization/members`
+- [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
 - [Invite a member](#invite-a-member) — `POST /organization/invitations`
 - [List sent invitations](#list-sent-invitations) — `GET /organization/invitations`
 - [Cancel an invitation](#cancel-an-invitation) — `DELETE /organization/invitations/:id`
@@ -207,6 +208,14 @@ Four gates run in order ([src/middlewares/authorize.js](src/middlewares/authoriz
 | `coordinator` | `tender:read`, `intelligence:read`, `savedsearch:write`, `trackedtender:write`, `bid:write`, `vault:write`, `vault:read`, `report:export` |
 | `viewer` | `tender:read`, `intelligence:read`, `vault:read` (read-only) |
 | `consultant` | identical to `coordinator` — a label recording that the member is external, not a distinct permission set |
+
+**Rank rule.** `user:manage` actions on a member (role change, removal) also require the caller to
+outrank the target: the `owner` acts on anyone; an `admin` acts only on `coordinator`, `viewer` and
+`consultant` — never on another admin or the owner. The same rule covers the role being **granted**:
+an admin may not promote anyone to `admin` or invite at `admin`; only the owner may. A refusal is
+`403 ROLE_FORBIDDEN` (not `404`),
+and the caller's role is re-read from the database for these actions rather than trusted from the
+token.
 
 `intelligence:read` is additionally plan-gated to `pro`, `business`, `enterprise`. Sending an
 invitation is plan-gated the same way (feature key `invitations`), but only sending: every other
@@ -2224,6 +2233,68 @@ joined, and there may be no account behind the address.
 
 ---
 
+## Change a member's role
+
+Moves a member among the four non-owner roles. Ownership is **not** assignable here — it is a
+hand-off, done by transfer.
+
+- Subject to the [rank rule](#authorization-gates): an admin cannot change another admin's role or
+  the owner's.
+- The owner's own role cannot be changed this way either (the organization would have no owner).
+- **Nobody is signed out.** Role and plan are re-read on every refresh, so the new role takes
+  effect within one access-token lifetime.
+- Not plan-gated — a downgraded organization can always reassign its people.
+- A real change raises an organization-wide announcement (`team-role-changed`), worded in the third
+  person: "Gevorg Sargsyan's role in Shinarar LLC has been changed to consultant." Setting the role
+  a member already has changes nothing and announces nothing.
+
+**API:**
+`PATCH /api/v1/organization/members/:userId`
+
+**Authentication:** required (Bearer). Permission: `user:manage`, plus the rank rule.
+
+**Request data:**
+
+```json
+{
+  "role": "consultant"
+}
+```
+
+- `role` (**required**): `admin` | `coordinator` | `viewer` | `consultant`. `owner` is a
+  `422 VALIDATION_FAILED` whose message names `POST /organization/transfer-ownership`.
+
+**Response data:**
+
+The member, in the roster's shape:
+
+```json
+{
+  "data": {
+    "kind": "member",
+    "userId": "cm9zx4k1p0400qw8f1r6d9s3m",
+    "displayName": "Lilit Hakobyan",
+    "email": "lilit@shinarar.am",
+    "role": "consultant",
+    "joinedAt": "2026-09-14T11:40:57.020Z"
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`.
+- `403 ROLE_FORBIDDEN`: caller lacks `user:manage`; the target outranks them
+  (`details: { role, targetRole }`); or the caller may not grant that role
+  (`details: { role, grantedRole }` — an admin promoting to `admin`).
+- `404 NOT_FOUND`: no such member in this organization.
+- `409 CONFLICT`: the target is the owner ("Transfer ownership to another member first"); or the
+  member changed concurrently.
+- `422 VALIDATION_FAILED`: unknown role, or `owner`.
+
+---
+
 ## Invite a member
 
 Offers an email address a role in the caller's organization. The answer is **the same object for
@@ -2276,7 +2347,9 @@ Always exactly this. Use [List sent invitations](#list-sent-invitations) to see 
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `402 PLAN_UPGRADE_REQUIRED`: `details: { permission: "user:manage", feature: "invitations", plan }`.
-- `403 NO_ORGANIZATION` / `403 ROLE_FORBIDDEN`.
+- `403 NO_ORGANIZATION` / `403 ROLE_FORBIDDEN` — including an admin inviting at `admin`
+  (`details: { role, grantedRole }`). This depends only on the sender, so the response for any
+  address is still identical.
 - `422 VALIDATION_FAILED`: bad email; unknown role; `owner`, with a message naming
   `POST /organization/transfer-ownership`.
 - `429 RATE_LIMITED`: more than 60 invitations/hour for this user.
@@ -4523,6 +4596,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | DELETE | `/api/v1/tracked-tenders/checklist/items/:itemId` | Delete a checklist item | Yes (`bid:write`) |
 | POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
+| PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
 | POST | `/api/v1/organization/invitations` | Offer an address a role (neutral response) | Yes (`user:manage`, Pro+) |
 | GET | `/api/v1/organization/invitations` | Offers this organization has sent, any status | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/invitations/:id` | Withdraw a pending or declined offer | Yes (`user:manage`) |

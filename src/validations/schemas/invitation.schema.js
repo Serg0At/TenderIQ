@@ -1,18 +1,16 @@
 import Joi from 'joi';
-import { ROLES } from '../../libs/permissions.js';
+import { ASSIGNABLE_ROLES } from '../../libs/permissions.js';
 
 /**
- * The roles an invitation may offer: every role except owner.
+ * The role an invitation offers: any of `ASSIGNABLE_ROLES`, never owner.
  *
  * Owner is refused with its own message rather than folded into "must be one
  * of", because the refusal is structural — there is one owner seat and it moves
  * by transfer — and a client should be able to say so.
  */
-export const INVITABLE_ROLES = ROLES.filter((role) => role !== 'owner');
-
 const role = Joi.string()
   .invalid('owner')
-  .valid(...INVITABLE_ROLES)
+  .valid(...ASSIGNABLE_ROLES)
   .required()
   .messages({
     'any.invalid':
@@ -42,7 +40,6 @@ export const myInvitationQuerySchema = Joi.object({
 }).options({ stripUnknown: true });
 
 export default {
-  INVITABLE_ROLES,
   sendInvitationSchema,
   invitationQuerySchema,
   myInvitationQuerySchema,

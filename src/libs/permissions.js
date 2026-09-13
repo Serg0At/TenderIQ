@@ -40,6 +40,40 @@ export const PERMISSIONS = {
 export const ROLES = Object.keys(PERMISSIONS);
 
 /**
+ * Every role that can be handed out: all but owner.
+ *
+ * There is exactly one owner seat per organization and it moves only by
+ * transfer (ADR 0002), so neither an invitation nor a role change may name it.
+ */
+export const ASSIGNABLE_ROLES = ROLES.filter((role) => role !== 'owner');
+
+/**
+ * Who may act on whom, beyond holding `user:manage`.
+ *
+ * `owner` and `admin` both hold that permission, so without a rank an admin can
+ * evict the owner who pays the bill, or a compromised admin can clear out the
+ * other admins. The rule: the owner acts on anyone; everyone else acts only on
+ * roles strictly below their own — so an admin manages coordinators, viewers
+ * and consultants, and never another admin or the owner. The three working
+ * roles share a rank; none of them holds `user:manage` anyway.
+ */
+const RANK = { owner: 3, admin: 2, coordinator: 1, viewer: 1, consultant: 1 };
+
+export const canActOn = (actorRole, targetRole) =>
+  actorRole === 'owner' || (RANK[actorRole] ?? 0) > (RANK[targetRole] ?? Number.POSITIVE_INFINITY);
+
+/**
+ * The same rule for the role being handed out: an actor may grant only roles
+ * they could then act on. The owner may make an admin; an admin may not, or the
+ * rule that stops an admin removing other admins would not stop them creating
+ * more of them. `owner` is never grantable at all — it moves by transfer.
+ */
+export const canGrant = (actorRole, role) => role !== 'owner' && canActOn(actorRole, role);
+
+/** The target roles an actor may act on — for putting the rank rule inside a WHERE clause. */
+export const rolesActableBy = (actorRole) => ROLES.filter((role) => canActOn(actorRole, role));
+
+/**
  * Permissions — or named features — that need an entitled plan on top of the
  * role.
  *
@@ -68,4 +102,14 @@ export const planAllows = (plan, permission) => {
   return entitled.includes(String(plan ?? '').toLowerCase());
 };
 
-export default { PERMISSIONS, ROLES, PLAN_GATED, roleHas, planAllows };
+export default {
+  PERMISSIONS,
+  ROLES,
+  ASSIGNABLE_ROLES,
+  PLAN_GATED,
+  roleHas,
+  planAllows,
+  canActOn,
+  canGrant,
+  rolesActableBy,
+};

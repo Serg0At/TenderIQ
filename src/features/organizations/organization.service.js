@@ -1,8 +1,10 @@
+import { createId } from '@paralleldrive/cuid2';
 import { withTransaction } from '../../libs/knex.js';
 import users from '../../repositories/user.repo.js';
 import organizations, { ROSTER_MEMBERS } from '../../repositories/organization.repo.js';
 import AuthService from '../auth/auth.service.js';
-import { roleHas } from '../../libs/permissions.js';
+import { roleHas, canActOn, canGrant, rolesActableBy } from '../../libs/permissions.js';
+import AnnouncementService from '../../services/announcement.service.js';
 import { ApiError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 
@@ -19,6 +21,16 @@ import { logger } from '../../utils/logger.js';
  */
 const MAX_CREATED_ORGANIZATIONS = 3;
 
+/** A member in the roster's shape. */
+const presentMember = (row) => ({
+  kind: 'member',
+  userId: row.user_id,
+  displayName: row.display_name,
+  email: row.email,
+  role: row.role,
+  joinedAt: row.joined_at,
+});
+
 /**
  * A roster entry as a client sees it.
  *
@@ -30,14 +42,7 @@ const MAX_CREATED_ORGANIZATIONS = 3;
  */
 const presentRosterEntry = (row) =>
   row.section === ROSTER_MEMBERS
-    ? {
-        kind: 'member',
-        userId: row.user_id,
-        displayName: row.display_name,
-        email: row.email,
-        role: row.role,
-        joinedAt: row.at,
-      }
+    ? presentMember({ ...row, joined_at: row.at })
     : {
         kind: 'invitation',
         invitationId: row.entry_id,
@@ -48,6 +53,63 @@ const presentRosterEntry = (row) =>
         joinedAt: null,
         invitedAt: row.at,
       };
+
+/**
+ * The actor's role as the database has it now, not as their token remembers it.
+ *
+ * A token's role can be up to one access-token lifetime stale, which is an
+ * accepted cost for reading tenders and not for deciding who may demote whom:
+ * an admin demoted a minute ago must not spend those minutes changing the roles
+ * of people who now outrank them. A missing membership is ROLE_FORBIDDEN — the
+ * token says they manage users here, and they no longer do.
+ */
+export const currentMembershipOf = async ({ userId, organizationId }) => {
+  const membership = await organizations.findMembership(userId, organizationId);
+  if (!membership) throw ApiError.forbidden('ROLE_FORBIDDEN', { reason: 'no longer a member' });
+  return membership;
+};
+
+/**
+ * The member an action targets, subject to the rank rule.
+ *
+ * Refused as ROLE_FORBIDDEN, never NOT_FOUND, when the target exists but
+ * outranks the actor: they are looking at the roster and already know this
+ * person is there, so hiding it would only name the wrong problem. A target
+ * who is not in this organization at all is NOT_FOUND.
+ */
+const targetFor = async (actorRole, organizationId, targetUserId) => {
+  const target = await organizations.findMember(organizationId, targetUserId);
+  if (!target) throw ApiError.notFound('Member');
+  if (!canActOn(actorRole, target.role)) {
+    throw new ApiError('ROLE_FORBIDDEN', {
+      message: `Your role cannot act on a member whose role is ${target.role}.`,
+      details: { role: actorRole, targetRole: target.role },
+    });
+  }
+  return target;
+};
+
+/**
+ * The rank rule applied to the role being handed out, not only to the member
+ * receiving it. Without it an admin who may not touch another admin could still
+ * make new ones — and a compromised admin account would mint the administrators
+ * it cannot remove.
+ */
+export const assertCanGrant = (actorRole, role) => {
+  if (!canGrant(actorRole, role)) {
+    throw new ApiError('ROLE_FORBIDDEN', {
+      message: `Your role cannot grant the ${role} role.`,
+      details: { role: actorRole, grantedRole: role },
+    });
+  }
+};
+
+/** The sole-owner refusal, naming the way out. */
+const ownerSeatConflict = (action) =>
+  ApiError.conflict(
+    `The owner cannot be ${action}. Transfer ownership to another member first (POST /organization/transfer-ownership).`,
+    { targetRole: 'owner' }
+  );
 
 export default class OrganizationService {
   /**
@@ -92,6 +154,62 @@ export default class OrganizationService {
 
     logger.info(`[organizations] ${organizationId} created by user ${user.id}`);
     return AuthService.sessionFor(user, organizationId);
+  }
+
+  /**
+   * Change a member's role among the four non-owner roles.
+   *
+   * Gated by `user:manage` and the rank rule, and deliberately not by plan: a
+   * downgraded organization must still be able to reassign its people.
+   *
+   * Revokes nothing. `refresh()` re-reads role and plan from the membership, so
+   * the change lands within one access-token lifetime with nobody signed out —
+   * signing a colleague out mid-draft to deliver a permission change is worse
+   * than fifteen minutes of stale permissions.
+   *
+   * The owner seat is refused here as a CONFLICT naming transfer: demoting the
+   * only owner would leave an organization nobody can administer, and the unique
+   * index only guards against two owners, never zero.
+   */
+  static async changeMemberRole(actor, targetUserId, { role }) {
+    const { role: actorRole, organization_name: organizationName } = await currentMembershipOf(actor);
+    const target = await targetFor(actorRole, actor.organizationId, targetUserId);
+    if (target.role === 'owner') throw ownerSeatConflict('given another role');
+    assertCanGrant(actorRole, role);
+
+    if (target.role !== role) {
+      const changed = await organizations.updateMemberRole({
+        organizationId: actor.organizationId,
+        userId: target.user_id,
+        role,
+        actableRoles: rolesActableBy(actorRole),
+      });
+
+      if (!changed) {
+        // Lost a race: re-read and give the answer that is true now.
+        await targetFor(actorRole, actor.organizationId, targetUserId);
+        throw ApiError.conflict('That member changed while you were editing. Reload and try again.');
+      }
+
+      await AnnouncementService.raise({
+        organizationId: actor.organizationId,
+        type: 'team-role-changed',
+        // Every change is its own event; two changes to one person are two
+        // announcements, never deduped into the first.
+        subjectId: createId(),
+        // Who acted — the same meaning as on every other team announcement.
+        userId: actor.userId,
+        payload: {
+          memberUserId: target.user_id,
+          memberName: target.display_name,
+          role,
+          previousRole: target.role,
+          organizationName,
+        },
+      });
+    }
+
+    return presentMember(await organizations.findMember(actor.organizationId, target.user_id));
   }
 
   /**

@@ -4,6 +4,7 @@ import organizations from '../../repositories/organization.repo.js';
 import users from '../../repositories/user.repo.js';
 import AnnouncementService from '../../services/announcement.service.js';
 import AuthService from '../auth/auth.service.js';
+import { currentMembershipOf, assertCanGrant } from '../organizations/organization.service.js';
 import { ApiError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 
@@ -61,8 +62,18 @@ export default class InvitationService {
    * updates the role in place. The organization is told through its existing
    * alert channels; the announcement names the role and the sender, never the
    * address.
+   *
+   * The rank check reads the sender's own membership, never the invitee's
+   * account, so the neutral response still holds: whether it passes depends
+   * only on who is asking.
    */
   static async send(actor, { email, role }) {
+    // The rank rule covers the role being offered: an admin may not invite an
+    // admin, for the same reason they may not promote one. Read from the
+    // database, as every rank decision is.
+    const { role: actorRole, organization_name: organizationName } = await currentMembershipOf(actor);
+    assertCanGrant(actorRole, role);
+
     const invitation = await invitations.upsert({
       organizationId: actor.organizationId,
       email,
@@ -70,11 +81,8 @@ export default class InvitationService {
       invitedBy: actor.userId,
     });
 
-    // Both reads are about the sender's own side — nothing about the invitee.
-    const [organization, inviter] = await Promise.all([
-      organizations.findById(actor.organizationId),
-      users.findById(actor.userId),
-    ]);
+    // About the sender's own side — nothing about the invitee is looked up.
+    const inviter = await users.findById(actor.userId);
 
     await AnnouncementService.raise({
       organizationId: actor.organizationId,
@@ -85,7 +93,7 @@ export default class InvitationService {
       payload: {
         invitationId: invitation.id,
         role,
-        organizationName: organization?.name ?? null,
+        organizationName,
         invitedByName: inviter?.display_name ?? null,
       },
     });

@@ -7,6 +7,7 @@ import { rateLimit } from '../../middlewares/rateLimit.js';
 import {
   createOrganizationSchema,
   rosterQuerySchema,
+  changeRoleSchema,
 } from '../../validations/schemas/organization.schema.js';
 
 const router = Router();
@@ -42,6 +43,15 @@ currentOrganizationRoutes.get(
   authorize('tender:read'),
   validate(rosterQuerySchema, 'query'),
   OrganizationController.listMembers
+);
+
+// `user:manage` plus the rank rule in the service. Not plan-gated: shrinking or
+// reassigning a team must never require paying again.
+currentOrganizationRoutes.patch(
+  '/members/:userId',
+  authorize('user:manage'),
+  validate(changeRoleSchema),
+  OrganizationController.changeMemberRole
 );
 
 export default router;

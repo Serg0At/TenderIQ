@@ -251,6 +251,40 @@ export default class OrganizationRepository {
     };
   }
 
+  /** One member of one organization, in the roster's shape. Scoped on the organization. */
+  static async findMember(organizationId, userId, trx = db) {
+    return trx('memberships as m')
+      .join('users as u', 'u.id', 'm.user_id')
+      .where('m.organization_id', organizationId)
+      .andWhere('m.user_id', userId)
+      .first(
+        'm.user_id',
+        'u.display_name',
+        'u.email',
+        'm.role_id as role',
+        'm.created_at as joined_at'
+      );
+  }
+
+  /**
+   * Change a member's role, only if the member's CURRENT role is one the actor
+   * may act on and is not the owner seat.
+   *
+   * Both conditions live in the WHERE clause rather than in a check before the
+   * update, so a concurrent change — the target promoted to admin a moment ago,
+   * or handed the owner seat — makes this update nothing instead of letting a
+   * decision made against a stale read land. Zero rows is the caller's cue to
+   * re-read and say why.
+   */
+  static async updateMemberRole({ organizationId, userId, role, actableRoles }, trx = db) {
+    const updated = await trx('memberships')
+      .where({ organization_id: organizationId, user_id: userId })
+      .whereIn('role_id', actableRoles)
+      .whereNot('role_id', 'owner')
+      .update({ role_id: role });
+    return updated > 0;
+  }
+
   /**
    * How many organizations this user has founded and that still exist.
    *
