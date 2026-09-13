@@ -42,7 +42,7 @@ that would catch a gnumner redesign before customers do.
 2-space, single-quote, semicolon.
 
 Migrations are hand-run scripts, not the Knex CLI. `migrate:up` runs `up()` over the whole schema in
-one transaction and is not idempotent; `migrate:down` drops all 30 tables. A schema change means
+one transaction and is not idempotent; `migrate:down` drops every table. A schema change means
 editing `migrations/create_table.js` *and* `drop_table.js`, or adding a new script.
 
 ## Processes
@@ -137,9 +137,9 @@ What matters when touching it:
 - **Raw payloads are kept forever.** When a parser improves, normalization replays from storage; the
   source is never re-crawled.
 - **Pagination depth is the tid high-water mark, not `maxListingPages` and not a time window.** The
-  board is a 9-year archive, not a live feed, and its listing table has **no publish-date column** —
+  board is a multi-year archive, not a live feed, and its listing table has **no publish-date column** —
   a time-based rule would compare against a field that does not exist (it did, silently, and made
-  every sweep walk 40 pages). tids ascend with publication and the board is newest-first, so continue
+  every sweep walk to the page cap). tids ascend with publication and the board is newest-first, so continue
   to page N+1 only while the page's lowest tid is still above `sweep:tid:{source}:{slug}`. The
   watermark advances only when a chain terminates, so a sweep that dies mid-chain re-walks the gap
   rather than skipping it. `maxListingPages` is the cold-start bound only. Loading history is a
@@ -213,7 +213,7 @@ Implemented — see `src/features/*/`. Follow the existing shape rather than inv
 
 ## Account and organization model
 
-**Decided 2026-09-06, revised 2026-09-12. NOT built.** The 2026-09-06 design kept registration's
+**Decided 2026-09-06, revised 2026-09-12, built 2026-09-13 (F-05, tickets 01–10).** The 2026-09-06 design kept registration's
 create-user-and-organization transaction and declared orgless unreachable. **Both are reversed**, and
 one observation reverses them: *removal by someone else* makes orgless reachable no matter what
 `/auth/register` does. A state that can be reached has to be a state the API can serve, so it is now
@@ -247,11 +247,15 @@ POST   /invitations/:id/{accept,decline}
   `DELETE`. A status column was designed and dropped: `findMembership` is the single query that reads
   `memberships`, and a revoked-but-present row is one forgotten `where` away from handing a removed
   employee their access back, in code that reads as correct.
-- **The screen is never the enforcement.** `authenticate` verifies a signature and reads nothing else;
-  `authorize` reads `role` and `plan` out of the claims. So a session minted from a membership that no
-  longer exists would pass every gate in the system, and a blurred client would be decoration. The
-  gating lives in the null claims, which default-deny everywhere, plus an explicit allowlist:
-  `POST /organizations`, `GET /invitations` and accept/decline, `POST /auth/logout`.
+- **The screen is never the enforcement.** `authorize` reads `role` and `plan` out of the claims, so a
+  session minted from a membership that no longer exists would pass every gate in the system, and a
+  blurred client would be decoration. The gating lives in the null claims. `authenticate` itself
+  refuses an orgless token with `NO_ORGANIZATION`, so a route that authenticates and forgets to
+  authorize still denies it; the allowlist is explicit and greppable — the routes mounted on
+  `authenticateOrgless`: `POST /organizations`, `/invitations` (list, accept, decline),
+  `POST /auth/switch-org` (the way out for a second device still holding an orgless session) and
+  `GET /auth/me`. `POST /auth/refresh` and `/auth/logout` take no bearer token. An orgless refresh
+  stays orgless even if a membership has appeared since — moving into a tenant is `switch-org`.
 - **`NO_ORGANIZATION` is its own 403**, beside `EMAIL_UNVERIFIED` and for the same reason: the client
   must tell "your role cannot do this" apart from "you are not in an organization yet" — different
   screens, and this one has two buttons (create one, or check your invitations). `ROLE_FORBIDDEN` with
@@ -291,7 +295,7 @@ POST   /invitations/:id/{accept,decline}
   index forbids; so `/leave` refuses, and the way out is `transfer-ownership` first or
   `DELETE /organization`.
 - **Organizations CAN be deleted now, narrowly.** This reverses the 2026-09-06 "never deleted" rule,
-  which existed because nine tables CASCADE off `organizations` and `vault_documents` have objects in
+  which existed because many tables CASCADE off `organizations` and `vault_documents` have objects in
   a bucket that Postgres cannot reach. That cost is paid rather than avoided: deletion is owner-only,
   allowed only when the owner is the **sole member**, requires the organization's name typed back, and
   **purges vault objects from storage first, row second** — the object-first-row-second ordering the
@@ -378,7 +382,11 @@ POST   /invitations/:id/{accept,decline}
   An invitation is never issued at `owner`; there is only one owner seat and it moves by transfer.
 - **An invitation raises a notification, not a message.** `tender_id` NULL and `subject_id` = the
   invitation id — exactly the non-tender shape `notifications_dedupe_uq` was built for — so Telegram
-  delivers it with no new channel work. Three surfaces, three different questions: `GET /invitations`
+  delivers it with no new channel work. Because delivery is organization-wide, it is a
+  `team-invitation` announcement **in the inviting organization**, naming the role and the sender and
+  never the address (a viewer's linked chat receives it). **The invitee is not personally notified**
+  (spec story 29): that needs an account lookup on send or per-user delivery, both ruled out; they
+  find the offer through `GET /invitations`. Three surfaces, three different questions: `GET /invitations`
   is *offers addressed to me* across every organization; `GET /organization/invitations` is *offers my
   organization has sent*, at `pending`, `accepted` or `declined`, for `user:manage` holders; the
   roster is *who is on this team now*. The overlap on pending rows is deliberate — a **declined**
@@ -397,8 +405,8 @@ POST   /invitations/:id/{accept,decline}
   since the user has not left that tenant.
 - **`user:manage` is plan-gated at `pro` and up — but only for invitations.** It is the only thing
   enforcing `multi-user`, which is sold on `business` and appears in exactly one place in this
-  codebase: a string in `seed.js` that nothing reads. Gating at `business` puts a $115 → $250 cliff in
-  front of adding one colleague, which is where people share a login instead — costing the seat and
+  codebase: a string in `seed.js` that nothing reads. Gating at `business` puts the whole pro → business price
+  step in front of adding one colleague, which is where people share a login instead — costing the seat and
   corrupting the audit trail phase 5 needs. Removal, role change, leaving and transfer stay
   **role-gated only**: gating the growth direction sells the plan, while gating the shrink direction
   means a downgraded customer's only route to removing an ex-employee is to pay again.
@@ -509,15 +517,15 @@ reference.
 The reference specification says Prisma, Zod, and feature-first folders with a `container.js`
 composition root. This codebase uses **Knex + hand-written migrations**, **Joi**, and layer-first
 folders. These are decisions, not gaps — don't "fix" them. Reasoning is recorded in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [PROJECT_STATUS.md](PROJECT_STATUS.md).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Where reference docs say "Prisma client", read "Knex instance"; where they say "Zod schema", read
 "Joi schema".
 
 ## Current state
 
 Ingestion, the HTTP API, discovery, the intelligence layer, the **bid pipeline**, the **AI
-checklist** and the **document vault** all run. Phase 5 (accounts and billing) and 6
-(post-award) do not exist.
+checklist** and the **document vault** all run, and so do **multi-user organizations** (F-05).
+Billing — the rest of phase 5 — and phase 6 (post-award) do not exist.
 
 **Team tasks were cut**, not deferred — the assignment/due-date feature was built and then
 removed as unnecessary. Do not rebuild it from the reference spec's `product/Feature List.md`
@@ -644,12 +652,31 @@ decision that has already been made.
   is the only way a path added later cannot forget the check. `POST /auth/register` returns
   **201 with no tokens**; handing back a session there would mint credentials the very next request
   rejects. `users.email_verified_at` is the durable fact and only the one-time token lives in Redis.
-- **Registration still creates the organization today, and that is now the thing to change** — see
-  *Account and organization model* above, which reverses it: registration creates only the user, and
-  orgless is a legal state. Built so far: `users.display_name` (NOT NULL, collected at
-  registration), `roles.id` keyed by the role's own name, and `memberships_one_owner_uq`. Not yet
-  built: the `invitations` table, `POST /organizations`, `POST /auth/switch-org`, the member
-  endpoints, and the invite-only plan gate on `user:manage`.
+- **Multi-user organizations (F-05) are built** as *Account and organization model* describes:
+  registration creates only the user; `POST /organizations`, `POST /auth/switch-org`, the roster,
+  invitations (send/list/cancel, and the invitee's list/accept/decline), role change, removal,
+  leaving, transfer and deletion all run. `docs/API_REFERENCE.md` documents every endpoint. Things
+  decided while building that the model above does not say:
+  - **The rank rule also covers the role being granted.** An admin may not promote anyone to
+    `admin` or invite at `admin`; only the owner may. Otherwise the rule that stops a compromised
+    admin removing administrators would not stop it minting them.
+  - **Rank decisions re-read the actor's role from `memberships`**, never the token, and repeat the
+    rank and owner-seat conditions in the UPDATE/DELETE `WHERE`, so a race is a no-op rather than a
+    decision against a stale read.
+  - **Ending a membership deletes the member's `accepted` invitation.** A re-invite leaves accepted
+    rows untouched (that person has joined), so without it a removed member could never be invited
+    back.
+  - **Team announcements go through `services/announcement.service.js`**: the request records the
+    notification and queues `notify.deliver` on ALERTS, so no HTTP response waits on Telegram or SMTP.
+    A notification recorded but never delivered is re-queued on the next raise. `user_id` is the
+    actor. BullMQ refuses a custom job id containing `:` unless it splits into exactly three parts —
+    use hyphens (`checklist.service.js` still uses `checklist:${id}`, which throws).
+  - **Deleting an organization** refuses while a pending vault upload is younger than the upload-URL
+    TTL, and locks the organization row `FOR UPDATE` before re-checking vault keys and membership, so
+    nothing registered concurrently is cascaded away with its object left in the bucket.
+  - **Plan gating on invitations** uses `authorize('user:manage', { planGate: 'invitations' })`; every
+    other `user:manage` action stays role-gated. No subscription writer exists yet, so every
+    organization reads `free` and sending an invitation answers 402 for everyone until F-02.
 - **Reset codes have an attempt ceiling, and that is the actual lock.** Six digits is a million
   possibilities — roughly a minute of scripted guessing — so a code that merely waits out its TTL
   under unlimited tries is a delay, not a factor. `authStore.js` burns the code on the fifth failure;
@@ -695,8 +722,8 @@ decision that has already been made.
   submit lock; `/organization/supplier-identity` claims the party this org bids AS.
   `bids.reconcile` (half-hourly, on the ALERTS queue) resolves submitted bids against the
   public ledger into `won` / `lost` / `not_found`, storing `winning_price` at resolution time.
-  Deadline reminders now run **two** sweeps: the matched safety net (72h/24h) plus a tighter
-  pipeline countdown (48h/12h/3h) on `considering`/`preparing` pursuits only.
+  Deadline reminders now run **two** sweeps: the matched safety net plus a tighter
+  pipeline countdown on `considering`/`preparing` pursuits only.
 - **`organizations.supplier_party_id` is the join that makes win/loss possible.** Awards and
   the public bid ledger identify a bidder by `parties.id`; without this column there is no way
   to ask "did we win". It is claimed explicitly by a human from a search — **never auto-matched
@@ -709,7 +736,7 @@ decision that has already been made.
 - **A win comes from `awards`, never from `rank = 1`** — the same rule the ingestion layer
   learned the hard way. The source ranks rejected submissions too.
 - **`sample_size` is not sample independence.** Awards are per lot, so one multi-lot procurement
-  can clear `MIN_COMPARABLES` alone — 47 of the 55 categories that pass draw from fewer than five
+  can clear `MIN_COMPARABLES` alone, and most categories that pass draw from only a handful of
   distinct tenders. `price_benchmarks.distinct_tenders` carries the real figure; anything that
   states a confidence must read it, not `sample_size`.
 - **AI bid checklist (phase 4c) is built** — `aiExtractor.js` was the last empty file and no
@@ -724,12 +751,12 @@ decision that has already been made.
   thing the feature could ship, and a prompt rule is guidance while a containment check is an
   invariant. Comparison is whitespace-normalised, because run-together spacing is a .docx
   extraction artifact rather than a property of the document.
-- **Below `AI.CHECKLIST_MIN_CONFIDENCE` (0.75) an item is flagged for human review**, and the
+- **Below `AI.CHECKLIST_MIN_CONFIDENCE` an item is flagged for human review**, and the
   flag is **stored, not recomputed on read** — otherwise raising the threshold would silently
   re-open items a human had already cleared.
 - **No invitation document means `status: 'unavailable'` with a reason, never an empty
   checklist.** An empty list reads as "nothing is required for this tender", which is the most
-  dangerous thing this feature could say. Only 329 of 2,590 tenders currently have an archive,
+  dangerous thing this feature could say. Most tenders have no stored archive,
   so this is the common path, not the edge case.
 - **An oversized document is refused, never truncated.** Requirements cluster at the END of an
   invitation (annexes, submission instructions), so truncation would drop exactly what the
@@ -739,7 +766,7 @@ decision that has already been made.
   and a manual item carries `confidence: null` / `evidence: null` rather than a fabricated 1.0,
   so a person's assertion stays distinguishable from an extraction.
 - **The document vault (phase 4d) is built.** `/vault-documents` serves the certificate
-  library; `vault.expiry` sweeps daily at 06:11 UTC for lapsing documents, lapsed ones and
+  library; `vault.expiry` sweeps daily for lapsing documents, lapsed ones and
   abandoned uploads.
 - **Uploads never pass through the API.** `POST /vault-documents` registers what the client is
   about to send and returns a presigned PUT; the client uploads straight to object storage;
@@ -801,9 +828,6 @@ decision that has already been made.
   `add_*.js` there, it is in flight — step 2 or 3 has not finished. Past migrations are
   recoverable from git history if ever needed; they are not kept on disk.
 
-Read [PROJECT_STATUS.md](PROJECT_STATUS.md) for the file-by-file gap analysis in blocking
-order before starting anything non-trivial; it is kept current and states the recommended next step.
-
 ## Docs
 
 | Document | Contents |
@@ -815,7 +839,7 @@ order before starting anything non-trivial; it is kept current and states the re
 
 ### Reference specification (outside this repo)
 
-The full product and engineering spec lives at `../CRM/gov-tender-monitoring/docs` — ~169 files, one
+The full product and engineering spec lives at `../CRM/gov-tender-monitoring/docs` — one
 self-contained document per topic, each following a Purpose · Overview · Detail · Diagrams · Examples
 · Edge cases · Alternatives · Trade-offs · Risks template. Its `README.md` is the canonical fact
 sheet. Consult it before designing anything new; it almost certainly already specifies the thing.
