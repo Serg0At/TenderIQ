@@ -8,6 +8,7 @@ import {
   isVaultType,
   isTeamType,
   teamAnnouncement,
+  matchedSearchesLine,
 } from './notification.present.js';
 
 /**
@@ -137,6 +138,11 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
   if (notification.type === 'amendment' && payload.changedFields?.length) {
     lines.push('', `<b>Changed:</b> ${escapeHtml(payload.changedFields.join(', '))}`);
   }
+
+  // Which of the organization's saved searches this is for, so a supplier with
+  // several can tell "IT hardware" apart from "Road works" without opening it.
+  const matched = matchedSearchesLine(payload);
+  if (matched) lines.push('', `<b>Matched:</b> ${escapeHtml(matched)}`);
 
   // Why this matched, so a noisy profile can be recognised and narrowed.
   if (payload.reasons?.length) {

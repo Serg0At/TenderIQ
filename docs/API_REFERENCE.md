@@ -3512,7 +3512,11 @@ No request body
         "buyerName": "«Երևանի քաղաքապետարան» ՀՈԱԿ",
         "sourceUrl": "https://eauction.armeps.am/tender/284391/invitation.zip",
         "score": 0.82,
-        "reasons": ["cpv:45000000", "keyword:ասֆալտ"]
+        "reasons": ["cpv:45000000", "keyword:ասֆալտ"],
+        "matchedSearches": [
+          { "id": "cm9zx4k1p0030qw8fp2r6t8w4", "name": "Road works — Yerevan", "score": 0.82, "reasons": ["cpv:45000000", "keyword:ասֆալտ"] },
+          { "id": "cm9zx4k1p0031qw8fk7d2m1c9", "name": "Asphalt", "score": 0.5, "reasons": ["keyword:ասֆալտ"] }
+        ]
       },
       "readAt": null,
       "createdAt": "2026-08-14T09:41:02.775Z"
@@ -3525,12 +3529,17 @@ No request body
 
 | Type | Raised by | Extra payload fields |
 |---|---|---|
-| `tender-match` | matcher | `score`, `reasons` |
-| `amendment` | matcher | `score`, `reasons`, `changedFields` |
+| `tender-match` | matcher | `score`, `reasons`, `matchedSearches` |
+| `amendment` | matcher | `score`, `reasons`, `matchedSearches`, `changedFields` |
 | `reminder-72h`, `reminder-24h` | reminder (matched safety net) | `hoursRemaining` |
 | `countdown-48h`, `countdown-12h`, `countdown-3h` | reminder (pipeline countdown) | `hoursRemaining`, `trackedTenderId`, `pipelineStatus` |
 | `vault-expiry-30d`, `vault-expiry-7d`, `vault-expiry-1d` | vault expiry sweep | `documentId`, `kind`, `filename`, `validUntil`, `daysRemaining` |
 | `vault-expired` | vault expiry sweep | same, with `daysRemaining: 0` |
+
+A tender raises **one** match alert per organization however many of its saved searches it
+matches. `matchedSearches` lists them all (`id`, `name` as it was when the alert was raised,
+`score`, `reasons`), best score first; the top-level `score` and `reasons` are the best match's.
+Alerts raised before `matchedSearches` existed do not carry it.
 
 `payload` is a JSONB column whose contents vary by `type` as above; the column itself is not
 schema-constrained. `tenderId` is `null` on vault alerts — those dedupe on

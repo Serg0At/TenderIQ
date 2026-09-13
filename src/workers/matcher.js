@@ -4,7 +4,7 @@ import savedSearches from '../repositories/savedSearch.repo.js';
 import notifications from '../repositories/notification.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import { getChannel, channelsForOrg } from '../services/delivery.service.js';
-import { scoreMatch, MATCH_THRESHOLD } from '../services/matcher.service.js';
+import { matchesByOrganization, channelsForMatches } from '../services/matcher.service.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -43,27 +43,24 @@ export const handleTenderMatched = async (job) => {
 
   const profiles = await savedSearches.listAll();
   const type = event === 'TenderAmended' ? 'amendment' : 'tender-match';
+  const groups = matchesByOrganization(candidate, profiles);
 
+  // `matched` counts searches and `notified` counts organizations alerted, so a
+  // log line cannot read five matching searches in one org as five alerts sent.
   let matched = 0;
+  let notified = 0;
   let delivered = 0;
-  // Held for quiet hours, not lost — counted separately so a run that delivered
-  // nothing because everyone was asleep is not read as a broken channel.
+  // Throttled by a provider, not lost — counted separately so a run that
+  // delivered nothing because a provider pushed back is not read as a broken
+  // channel.
   let deferred = 0;
 
-  for (const profile of profiles) {
-    const result = scoreMatch(candidate, {
-      cpvCodes: profile.cpv_codes ?? [],
-      keywords: profile.keywords ?? [],
-      regions: profile.regions ?? [],
-      minValue: profile.min_value,
-      maxValue: profile.max_value,
-    });
-
-    if (!result.matched || result.score < MATCH_THRESHOLD) continue;
-    matched += 1;
+  for (const { organizationId, matches } of groups) {
+    matched += matches.length;
+    const [best] = matches;
 
     const { created, notification } = await notifications.createIfNew({
-      organizationId: profile.organization_id,
+      organizationId,
       type,
       tenderId,
       payload: {
@@ -78,8 +75,14 @@ export const handleTenderMatched = async (job) => {
         // the schema, and the payload is already the notification's contract.
         buyerName: tender.buyer_name ?? null,
         sourceUrl: tender.invitation_url ?? null,
-        score: result.score,
-        reasons: result.reasons,
+        // The best match's, kept at the top level so a reader written before
+        // `matchedSearches` existed still finds them.
+        score: best.score,
+        reasons: best.reasons,
+        // Every search that matched, as named when the alert was raised: the
+        // payload is the notification's record, so a later rename does not
+        // rewrite what a past alert said.
+        matchedSearches: matches.map(({ id, name, score, reasons }) => ({ id, name, score, reasons })),
         // The "what changed" summary the spec asks for on re-notification.
         ...(type === 'amendment' ? { changedFields } : {}),
       },
@@ -88,20 +91,21 @@ export const handleTenderMatched = async (job) => {
     // Already told them: dedupe is per (org, tender, type), so a re-run of the
     // matcher is silent rather than a second ping.
     if (!created) continue;
+    notified += 1;
 
     /**
-     * A profile that names no channel is asking to be reached however this org
+     * A search that names no channel is asking to be reached however this org
      * can be reached — so resolve it now rather than falling back to `log`,
      * which is an operator record and not a delivery. Reminders and vault
      * expiry already route through `channelsForOrg` for the same reason.
      *
-     * Dedupe is per (org, tender, type) and only a newly created notification
-     * reaches this line, so this runs at most once per org per tender however
-     * many of that org's profiles matched.
+     * Each channel sends once however many searches named it: a channel fans
+     * out to every destination itself, so a second call would be a second copy.
      */
-    const channels = profile.channels?.length
-      ? profile.channels
-      : await channelsForOrg(profile.organization_id);
+    const { named, useOrgDefault } = channelsForMatches(matches);
+    const channels = useOrgDefault
+      ? [...new Set([...named, ...(await channelsForOrg(organizationId))])]
+      : named;
     for (const channelName of channels) {
       const channel = getChannel(channelName);
       // The channel writes its own alert_deliveries rows — one per destination
@@ -116,12 +120,13 @@ export const handleTenderMatched = async (job) => {
 
   if (matched) {
     logger.info(
-      `[matcher] ${tender.reference_code}: ${matched} match(es), ${delivered} delivered` +
-        (deferred ? `, ${deferred} deferred to quiet hours` : '')
+      `[matcher] ${tender.reference_code}: ${matched} match(es) across ${groups.length} org(s), ` +
+        `${notified} notified, ${delivered} delivered` +
+        (deferred ? `, ${deferred} deferred` : '')
     );
   }
 
-  return { tenderId, event, profiles: profiles.length, matched, delivered, deferred };
+  return { tenderId, event, profiles: profiles.length, matched, notified, delivered, deferred };
 };
 
 /**

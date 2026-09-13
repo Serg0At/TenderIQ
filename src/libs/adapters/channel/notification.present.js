@@ -153,6 +153,18 @@ export const headingFor = (type) => {
  * rule with the headings is the point: a family that can be muted but has no
  * heading, or the reverse, is an alert that names the wrong thing.
  */
+/**
+ * The saved searches a match alert was raised for, as one line — or null.
+ *
+ * Null for a notification raised before `matchedSearches` existed, and for any
+ * type that is not a match, so the line is simply absent rather than empty.
+ * Names are listed best match first, which is the order the matcher stored.
+ */
+export const matchedSearchesLine = (payload = {}) => {
+  const names = (payload.matchedSearches ?? []).map((m) => m?.name).filter(Boolean);
+  return names.length ? names.join(', ') : null;
+};
+
 /** True for the alerts that are about the org's own document rather than a tender. */
 export const isVaultType = (type) => String(type ?? '').startsWith('vault-');
 
@@ -194,6 +206,7 @@ export const teamAnnouncement = (type, payload = {}) => {
 
 export default {
   DELIVERABLE_CHANNELS,
+  matchedSearchesLine,
   money,
   deadline,
   tenderLink,

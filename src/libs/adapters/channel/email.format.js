@@ -9,6 +9,7 @@ import {
   isVaultType,
   isTeamType,
   teamAnnouncement,
+  matchedSearchesLine,
 } from './notification.present.js';
 
 /**
@@ -193,6 +194,16 @@ const tenderBody = (notification, payload, now) => {
     lines.push('', `Changed: ${changed}`);
     html.push(
       `<p style="margin:16px 0 0;font-size:14px"><strong>Changed:</strong> ${escapeHtml(changed)}</p>`
+    );
+  }
+
+  // Which of the organization's saved searches this is for, so a supplier with
+  // several can tell "IT hardware" apart from "Road works" without opening it.
+  const matched = matchedSearchesLine(payload);
+  if (matched) {
+    lines.push('', `Matched: ${matched}`);
+    html.push(
+      `<p style="margin:16px 0 0;font-size:14px"><strong>Matched:</strong> ${escapeHtml(matched)}</p>`
     );
   }
 

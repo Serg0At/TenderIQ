@@ -81,4 +81,62 @@ export const scoreMatch = (tender, profile) => {
 /** Below this a match is too weak to interrupt someone's day. */
 export const MATCH_THRESHOLD = 0.5;
 
-export default { scoreMatch, MATCH_THRESHOLD };
+/**
+ * Every saved search a tender matches, grouped by the organization that owns it.
+ *
+ * The alert is decided per organization, not per search. Notifications dedupe on
+ * (organization, type, tender), so a loop that raised one per search let the
+ * first match in `listAll()` order name the alert and pick its channels, and
+ * every later match in the same organization vanished — its name unmentioned
+ * and its channels never attempted. Grouping first is what lets one alert speak
+ * for all of them.
+ *
+ * Matches are best score first with `id` as the tiebreaker, so the order an
+ * alert lists them in does not depend on the order rows came back in.
+ */
+export const matchesByOrganization = (tender, profiles) => {
+  const groups = new Map();
+
+  for (const profile of profiles) {
+    const result = scoreMatch(tender, {
+      cpvCodes: profile.cpv_codes ?? [],
+      keywords: profile.keywords ?? [],
+      regions: profile.regions ?? [],
+      minValue: profile.min_value,
+      maxValue: profile.max_value,
+    });
+    if (!result.matched || result.score < MATCH_THRESHOLD) continue;
+
+    const match = {
+      id: profile.id,
+      name: profile.name,
+      score: result.score,
+      reasons: result.reasons,
+      channels: profile.channels ?? [],
+    };
+    const group = groups.get(profile.organization_id);
+    if (group) group.push(match);
+    else groups.set(profile.organization_id, [match]);
+  }
+
+  return [...groups].map(([organizationId, matches]) => ({
+    organizationId,
+    matches: matches.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+  }));
+};
+
+/**
+ * Where one organization's alert goes, given every search that matched.
+ *
+ * The union of what the searches name, because each search asked for its
+ * channels and none of them outranks another. A search that names nothing means
+ * "however this organization can be reached", and a sibling naming one specific
+ * channel must not narrow that — so `useOrgDefault` is true when ANY match is
+ * empty, and the caller adds the organization's reachable channels on top.
+ */
+export const channelsForMatches = (matches) => ({
+  named: [...new Set(matches.flatMap((m) => m.channels))],
+  useOrgDefault: matches.some((m) => !m.channels.length),
+});
+
+export default { scoreMatch, MATCH_THRESHOLD, matchesByOrganization, channelsForMatches };
