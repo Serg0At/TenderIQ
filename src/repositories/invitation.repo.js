@@ -163,6 +163,20 @@ export default class InvitationRepository {
     return updated > 0;
   }
 
+  /**
+   * Forget that this address once accepted an offer from this organization.
+   *
+   * Called when the membership it produced ends. A re-invite leaves accepted
+   * rows alone — that person has joined — so without this a removed member
+   * could never be invited back: the upsert would find their old accepted row
+   * and change nothing.
+   */
+  static async clearAccepted(organizationId, email, trx = db) {
+    return trx(TABLE)
+      .where({ organization_id: organizationId, email: String(email).toLowerCase(), status: 'accepted' })
+      .del();
+  }
+
   static async findForOrg(id, organizationId, trx = db) {
     return trx(TABLE).where({ id, organization_id: organizationId }).first();
   }

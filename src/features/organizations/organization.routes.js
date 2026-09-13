@@ -54,4 +54,18 @@ currentOrganizationRoutes.patch(
   OrganizationController.changeMemberRole
 );
 
+// Removal: `user:manage` plus the rank rule, not plan-gated.
+currentOrganizationRoutes.delete(
+  '/members/:userId',
+  authorize('user:manage'),
+  OrganizationController.removeMember
+);
+
+/**
+ * Leaving: authenticated and nothing else. It is the caller's own membership,
+ * so there is no permission to hold — and it is a separate endpoint from
+ * removal precisely because the two have different gates.
+ */
+currentOrganizationRoutes.post('/leave', OrganizationController.leave);
+
 export default router;

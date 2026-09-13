@@ -89,8 +89,18 @@ const tokenKey = (jti) => `refresh:token:${jti}`;
  * their families, and "sign everyone out" would mean scanning the keyspace.
  */
 const userFamiliesKey = (userId) => `refresh:user:${userId}`;
+/**
+ * The families a user holds in ONE organization.
+ *
+ * The user index alone cannot end one tenant's sessions: `revokeAllForUser`
+ * would sign a consultant out of every client because one of them removed
+ * them. Removal and leaving need exactly the families minted for that
+ * organization, and nothing else. An orgless family is in no organization and
+ * is not indexed here.
+ */
+const userOrgFamiliesKey = (userId, organizationId) => `refresh:user:${userId}:${organizationId}`;
 
-export const rememberRefresh = async (family, jti, userId) => {
+export const rememberRefresh = async (family, jti, userId, organizationId = null) => {
   const client = redis.getRedis();
   await client.set(tokenKey(jti), family, 'EX', REFRESH_TTL);
   await client.sadd(familyKey(family), jti);
@@ -101,6 +111,11 @@ export const rememberRefresh = async (family, jti, userId) => {
     // Refreshed on every rotation, so an active session's index never expires
     // out from under it while the family itself is still alive.
     await client.expire(userFamiliesKey(userId), REFRESH_TTL);
+
+    if (organizationId) {
+      await client.sadd(userOrgFamiliesKey(userId, organizationId), family);
+      await client.expire(userOrgFamiliesKey(userId, organizationId), REFRESH_TTL);
+    }
   }
 };
 
@@ -114,12 +129,30 @@ export const consumeRefresh = async (family, jti) => {
 };
 
 /** Logout, password change, or detected theft — all revoke the whole family. */
-export const revokeFamily = async (family, userId = null) => {
+export const revokeFamily = async (family, userId = null, organizationId = null) => {
   const client = redis.getRedis();
   const members = await client.smembers(familyKey(family));
   if (members.length) await client.del(...members.map(tokenKey));
   await client.del(familyKey(family));
   if (userId) await client.srem(userFamiliesKey(userId), family);
+  if (userId && organizationId) await client.srem(userOrgFamiliesKey(userId, organizationId), family);
+};
+
+/**
+ * Every session this user holds in one organization, gone — and only those.
+ *
+ * What ending a membership calls. Be honest about what it buys: `refresh()`
+ * already fails closed once the membership is gone, so this is Redis hygiene
+ * and the belt to that query's suspenders. It does not shorten anything — a
+ * stateless access token cannot be recalled, and a removed member keeps it
+ * until it expires either way.
+ */
+export const revokeForOrganization = async (userId, organizationId) => {
+  const client = redis.getRedis();
+  const families = await client.smembers(userOrgFamiliesKey(userId, organizationId));
+  for (const family of families) await revokeFamily(family, userId);
+  await client.del(userOrgFamiliesKey(userId, organizationId));
+  return families.length;
 };
 
 /**
@@ -255,6 +288,7 @@ export default {
   familyOf,
   consumeRefresh,
   revokeFamily,
+  revokeForOrganization,
   revokeAllForUser,
   issueVerificationToken,
   readVerificationToken,

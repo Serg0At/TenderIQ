@@ -70,7 +70,7 @@ const issueTokens = async ({ userId, organizationId, role, plan, family = create
     { expiresIn: AUTH.REFRESH_TOKEN_ACTIVE_TIME, jwtid: jti }
   );
 
-  await store.rememberRefresh(family, jti, userId);
+  await store.rememberRefresh(family, jti, userId, organizationId);
   return { accessToken, refreshToken, expiresIn: store.toSeconds(AUTH.ACCESS_TOKEN_ACTIVE_TIME) };
 };
 
@@ -215,6 +215,15 @@ export default class AuthService {
    */
   static async sessionFor(user, organizationId) {
     return sessionFor(user, organizationId);
+  }
+
+  /**
+   * End every refresh family this user holds in one organization, leaving their
+   * sessions in every other organization alone. For a membership that has just
+   * ended.
+   */
+  static async revokeOrganizationSessions(userId, organizationId) {
+    return store.revokeForOrganization(userId, organizationId);
   }
 
   /**
@@ -401,7 +410,7 @@ export default class AuthService {
     const tracked = await store.familyOf(claims.jti);
 
     if (!tracked) {
-      await store.revokeFamily(claims.family, claims.sub);
+      await store.revokeFamily(claims.family, claims.sub, claims.org);
       logger.warn(`[auth] refresh reuse detected for user ${claims.sub}; family revoked`);
       throw ApiError.unauthenticated('This session has been revoked. Please sign in again.');
     }
@@ -448,7 +457,7 @@ export default class AuthService {
     if (!refreshToken) return { revoked: false };
     try {
       const claims = jwt.verify(refreshToken, AUTH.JWT_REFRESH_SECRET);
-      await store.revokeFamily(claims.family, claims.sub);
+      await store.revokeFamily(claims.family, claims.sub, claims.org);
       return { revoked: true };
     } catch {
       // An unparseable token is already useless; logout stays idempotent.

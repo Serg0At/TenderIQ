@@ -286,6 +286,28 @@ export default class OrganizationRepository {
   }
 
   /**
+   * End a membership: a plain DELETE, with no status left behind (ADR 0001).
+   *
+   * The owner seat is excluded in the WHERE, and so is any role the actor may
+   * not act on, for the same reason as `updateMemberRole` — a concurrent
+   * transfer or promotion must turn this into a no-op, never into deleting the
+   * owner. Nothing references `memberships`, so the documents, pursuits and
+   * bids the member created stay exactly where they are: with the organization.
+   */
+  static async deleteMembership({ organizationId, userId, actableRoles = null }, trx = db) {
+    const query = trx('memberships')
+      .where({ organization_id: organizationId, user_id: userId })
+      .whereNot('role_id', 'owner');
+    if (actableRoles) query.whereIn('role_id', actableRoles);
+    return (await query.del()) > 0;
+  }
+
+  static async countMembers(organizationId, trx = db) {
+    const row = await trx('memberships').where({ organization_id: organizationId }).count('* as n').first();
+    return Number(row?.n ?? 0);
+  }
+
+  /**
    * How many organizations this user has founded and that still exist.
    *
    * Reads `created_by`, not ownership: a founder who transferred the owner

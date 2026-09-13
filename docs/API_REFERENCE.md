@@ -75,6 +75,8 @@ All paths are relative to the base path **`/api/v1`**.
 - [Create organization](#create-organization) — `POST /organizations`
 - [List members](#list-members) — `GET /organization/members`
 - [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
+- [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
+- [Leave the organization](#leave-the-organization) — `POST /organization/leave`
 - [Invite a member](#invite-a-member) — `POST /organization/invitations`
 - [List sent invitations](#list-sent-invitations) — `GET /organization/invitations`
 - [Cancel an invitation](#cancel-an-invitation) — `DELETE /organization/invitations/:id`
@@ -2292,6 +2294,108 @@ The member, in the roster's shape:
 - `409 CONFLICT`: the target is the owner ("Transfer ownership to another member first"); or the
   member changed concurrently.
 - `422 VALIDATION_FAILED`: unknown role, or `owner`.
+
+---
+
+## Remove a member
+
+Ends another member's membership. It is a plain deletion — nothing records that they were here —
+and everything they created (documents, tracked tenders, bids) stays with the organization.
+
+- Subject to the [rank rule](#authorization-gates); the owner cannot be removed — transfer the seat
+  first, or, if the owner is the only member, delete the organization.
+- **Not plan-gated**, so a downgraded organization can always close an access hole.
+- Revokes the removed member's refresh sessions **for this organization only**; their sessions in
+  other organizations keep working. Their current access token is stateless and keeps working until
+  it expires (up to one access-token lifetime). If this was their last organization, their next
+  sign-in lands in the [orgless state](#the-orgless-state).
+- Clears their accepted invitation, so the organization can invite them back later at any role.
+- Raises an organization-wide announcement (`team-member-removed`): "Lilit Hakobyan has been removed
+  from Shinarar LLC." The removed member's own alert destinations are **not** revoked, so it reaches
+  them too — which is how they learn which organization removed them. An owner can switch those
+  destinations off under Integrations.
+
+**API:**
+`DELETE /api/v1/organization/members/:userId`
+
+**Authentication:** required (Bearer). Permission: `user:manage`, plus the rank rule.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+`204 No Content`
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`.
+- `403 ROLE_FORBIDDEN`: caller lacks `user:manage`, or the target outranks them.
+- `404 NOT_FOUND`: no such member in this organization.
+- `409 CONFLICT`: the target is the owner — "Transfer ownership to another member first", or, as the
+  only member, "Delete the organization instead". `details: { role, otherMembers }`. Or the member
+  changed concurrently.
+
+---
+
+## Leave the organization
+
+Ends the caller's own membership in the organization their session is acting in. **No permission is
+needed** — it is their own membership — which is why it is a separate endpoint from removal. Leaving
+never deletes anything.
+
+The owner cannot leave: with other members they must [transfer ownership](#transfer-ownership)
+first; as the only member they must delete the organization instead.
+
+The session for this organization is over (its refresh families are revoked), so the response
+carries a fresh session: the caller's first remaining membership, or an orgless session if this was
+their last.
+
+**API:**
+`POST /api/v1/organization/leave`
+
+**Authentication:** required (Bearer). No permission check.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "left": true,
+    "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+    "session": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expiresIn": 900,
+      "user": {
+        "id": "cm9zx4k1p0400qw8f1r6d9s3m",
+        "email": "lilit@shinarar.am",
+        "displayName": "Lilit Hakobyan",
+        "locale": "hy",
+        "emailVerified": true
+      },
+      "organization": null,
+      "role": null,
+      "plan": null,
+      "organizations": []
+    }
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`: the session is in no organization.
+- `404 NOT_FOUND`: the caller is no longer a member here.
+- `409 CONFLICT`: the caller is the owner — "Transfer ownership to another member first", or, as the
+  only member, "Delete the organization instead". `details: { role, otherMembers }`.
 
 ---
 
@@ -4597,6 +4701,8 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
+| DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |
+| POST | `/api/v1/organization/leave` | Leave your own membership (never the owner) | Yes |
 | POST | `/api/v1/organization/invitations` | Offer an address a role (neutral response) | Yes (`user:manage`, Pro+) |
 | GET | `/api/v1/organization/invitations` | Offers this organization has sent, any status | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/invitations/:id` | Withdraw a pending or declined offer | Yes (`user:manage`) |

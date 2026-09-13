@@ -1,5 +1,7 @@
 import OrganizationService from './organization.service.js';
-import { ok, created, paginated } from '../../utils/respond.js';
+import { ok, created, noContent, paginated } from '../../utils/respond.js';
+
+const actorOf = (req) => ({ userId: req.user.id, organizationId: req.user.organizationId });
 
 export default class OrganizationController {
   /** 201 with a session: the organization exists and the caller is already inside it. */
@@ -8,8 +10,16 @@ export default class OrganizationController {
   }
 
   static async changeMemberRole(req, res) {
-    const actor = { userId: req.user.id, organizationId: req.user.organizationId };
-    return ok(res, await OrganizationService.changeMemberRole(actor, req.params.userId, req.body));
+    return ok(res, await OrganizationService.changeMemberRole(actorOf(req), req.params.userId, req.body));
+  }
+
+  static async removeMember(req, res) {
+    await OrganizationService.removeMember(actorOf(req), req.params.userId);
+    return noContent(res);
+  }
+
+  static async leave(req, res) {
+    return ok(res, await OrganizationService.leave(actorOf(req)));
   }
 
   static async listMembers(req, res) {

@@ -10,19 +10,29 @@ elsewhere, which is what the per-organization refresh index is for.
 
 **Blocked by:** 07, 03.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] An owner or admin removes a member, subject to the rank rule from 07.
-- [ ] Any member can leave, with no permission required.
-- [ ] The sole owner can neither be removed nor leave; the refusal names the way out — transfer
+- [x] An owner or admin removes a member, subject to the rank rule from 07.
+- [x] Any member can leave, with no permission required.
+- [x] The sole owner can neither be removed nor leave; the refusal names the way out — transfer
       ownership, or delete the organization.
-- [ ] Removal deletes the membership outright; no revoked or kicked state is retained (ADR 0001).
-- [ ] Ending a membership revokes that organization's refresh families only, leaving the person's
+- [x] Removal deletes the membership outright; no revoked or kicked state is retained (ADR 0001).
+- [x] Ending a membership revokes that organization's refresh families only, leaving the person's
       sessions in their other organizations working.
-- [ ] A removed member who belonged nowhere else lands in the orgless state from 03.
-- [ ] The removed member's alert destinations are left alone, so the announcement reaches them —
+- [x] A removed member who belonged nowhere else lands in the orgless state from 03.
+- [x] The removed member's alert destinations are left alone, so the announcement reaches them —
       this is how they find out which organization removed them. An owner can revoke those
       destinations separately.
-- [ ] Documents, tracked tenders and bids the removed member created stay with the organization.
-- [ ] Removal raises an organization-wide announcement in the third person.
-- [ ] Removing a member does not require an entitled plan.
+- [x] Documents, tracked tenders and bids the removed member created stay with the organization.
+- [x] Removal raises an organization-wide announcement in the third person.
+- [x] Removing a member does not require an entitled plan.
+
+## Implementation notes
+
+- Ending a membership also deletes the member's `accepted` invitation for that organization, so a
+  re-invite creates a fresh offer (tickets 05 and 06 depend on this).
+- A removed member's refresh families for the organization are revoked, but their current access
+  token is stateless and keeps working until it expires — accepted, as CLAUDE.md records.
+- Sessions minted before the per-organization index existed are not in it; `refresh()` still
+  refuses them because the membership is gone.
+- Leaving raises no announcement (story 52 names role changes and removals only).
