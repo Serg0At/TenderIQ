@@ -278,6 +278,11 @@ function up(pg) {
       table.string('status').notNullable();
       table.string('go_no_go');
       table.text('decision_note');
+      // What the relevant list showed when this was tracked from it: the score, and the band,
+      // reasons and moment as shown. Written once on insert, never recomputed — a recomputed
+      // score would describe a ranking nobody saw. Both NULL when tracked from elsewhere.
+      table.decimal('relevance_score', 5, 4);
+      table.jsonb('relevance_shown');
       table.timestamp('created_at').defaultTo(pg.fn.now());
       table.timestamp('updated_at').defaultTo(pg.fn.now());
       table.unique(['organization_id', 'tender_id']);
@@ -642,6 +647,10 @@ async function indexes(pg) {
      CHECK (status IN ('considering','preparing','submitted','won','lost','dropped'))`);
   await pg.raw(`ALTER TABLE tracked_tenders ADD CONSTRAINT tracked_tenders_go_no_go_chk
      CHECK (go_no_go IS NULL OR go_no_go IN ('go','no_go','undecided'))`);
+  // A recorded relevance is a score AND what was shown, or neither.
+  await pg.raw(`ALTER TABLE tracked_tenders ADD CONSTRAINT tracked_tenders_relevance_chk
+     CHECK ((relevance_score IS NULL) = (relevance_shown IS NULL)
+        AND (relevance_score IS NULL OR relevance_score BETWEEN 0 AND 1))`);
   await pg.raw(`ALTER TABLE bids ADD CONSTRAINT bids_outcome_chk
      CHECK (outcome IS NULL OR outcome IN ('won','lost','not_found'))`);
 

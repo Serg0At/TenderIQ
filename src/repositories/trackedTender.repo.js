@@ -149,7 +149,10 @@ export default class TrackedTenderRepository {
    * requests would both pass. A conflict returns the existing row: tracking
    * something you already track is not an error, it is a no-op.
    */
-  static async track({ organizationId, tenderId, status = 'considering', goNoGo = null, decisionNote = null }, trx = db) {
+  static async track(
+    { organizationId, tenderId, status = 'considering', goNoGo = null, decisionNote = null, relevance = null },
+    trx = db
+  ) {
     const id = createId();
     const inserted = await trx(TABLE)
       .insert({
@@ -159,6 +162,12 @@ export default class TrackedTenderRepository {
         status,
         go_no_go: goNoGo,
         decision_note: decisionNote,
+        // Written on insert only: a repeat track is a no-op and must not
+        // overwrite what was shown at the moment of the decision.
+        relevance_score: relevance?.score ?? null,
+        relevance_shown: relevance
+          ? JSON.stringify({ band: relevance.band, reasons: relevance.reasons, shownAt: relevance.shownAt })
+          : null,
       })
       .onConflict(['organization_id', 'tender_id'])
       .ignore()

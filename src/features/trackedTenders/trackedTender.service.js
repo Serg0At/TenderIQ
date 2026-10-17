@@ -4,6 +4,7 @@ import tenders from '../../repositories/tender.repo.js';
 import organizations from '../../repositories/organization.repo.js';
 import parties from '../../repositories/party.repo.js';
 import BidOutcomeService from '../../services/bidOutcome.service.js';
+import { verifyRelevance } from '../../libs/relevanceReceipt.js';
 import config from '../../configs/variables.config.js';
 import { ApiError } from '../../utils/errors.js';
 
@@ -42,6 +43,12 @@ const present = (row) => ({
   decisionNote: row.decision_note,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+  // What the relevant list showed when this was tracked from it — null when it
+  // was tracked from anywhere else. Recorded once and never recomputed.
+  relevance:
+    row.relevance_score === null || row.relevance_score === undefined
+      ? null
+      : { score: Number(row.relevance_score), ...row.relevance_shown },
   tender: {
     id: row.tender_id,
     title: row.tender_title,
@@ -117,10 +124,25 @@ export default class TrackedTenderService {
    * a foreign-key violation the error handler would report as INTERNAL_ERROR.
    * Tracking something already tracked returns the existing row — a supplier
    * clicking "pursue" twice has not made a mistake worth an error page.
+   *
+   * `relevance` is what the relevant list showed for this tender, handed back
+   * verbatim. It is recorded only if its signature proves this organization was
+   * shown exactly that for exactly this tender; a mismatch is a 422 rather than
+   * a silent drop, because a client that sends a broken one has a bug worth
+   * seeing. Omitted, nothing is recorded and the pursuit works as before.
    */
-  static async track(organizationId, { tenderId, status, goNoGo, decisionNote }) {
+  static async track(organizationId, { tenderId, status, goNoGo, decisionNote, relevance = null }) {
     const tender = await tenders.findDetail(tenderId);
     if (!tender) throw ApiError.notFound('Tender');
+
+    if (relevance && !verifyRelevance(organizationId, tenderId, relevance)) {
+      throw ApiError.validation([
+        {
+          field: 'relevance',
+          message: 'This is not what the relevant list showed for this tender. Send it back unchanged, or omit it.',
+        },
+      ]);
+    }
 
     const { created, row } = await trackedTenders.track({
       organizationId,
@@ -128,6 +150,7 @@ export default class TrackedTenderService {
       status: status ?? 'considering',
       goNoGo: goNoGo ?? null,
       decisionNote: decisionNote ?? null,
+      relevance,
     });
 
     return { created, trackedTender: await TrackedTenderService.detail(organizationId, row.id) };

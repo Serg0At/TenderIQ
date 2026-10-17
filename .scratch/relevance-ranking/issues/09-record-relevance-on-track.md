@@ -18,14 +18,14 @@ that absence is honest rather than backfilled with a guess.
 
 **Blocked by:** 05.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Tracking a tender from the relevant list stores the score and reasons that were shown.
-- [ ] The stored value is the one computed for that request, never recomputed afterwards.
-- [ ] Tracking a tender outside the relevant list records no score, and the pursuit works exactly
+- [x] Tracking a tender from the relevant list stores the score and reasons that were shown.
+- [x] The stored value is the one computed for that request, never recomputed afterwards.
+- [x] Tracking a tender outside the relevant list records no score, and the pursuit works exactly
       as before.
-- [ ] The stored score is visible when reading the pursuit back, so the question can be asked
+- [x] The stored score is visible when reading the pursuit back, so the question can be asked
       without a database session.
-- [ ] Nothing else about the pursuit's behaviour, state machine or submit lock changes.
-- [ ] The schema change follows the additive-script workflow in CLAUDE.md, is mirrored into the
+- [x] Nothing else about the pursuit's behaviour, state machine or submit lock changes.
+- [x] The schema change follows the additive-script workflow in CLAUDE.md, is mirrored into the
       full-schema migration, and the script is deleted once applied.

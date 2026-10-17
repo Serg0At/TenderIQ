@@ -10,6 +10,22 @@ const STATUSES = ['considering', 'preparing', 'submitted', 'won', 'lost', 'dropp
  * field; the constraint is what guarantees no other writer — a worker, a
  * script, a future admin tool — can put an unknown status in the column.
  */
+/**
+ * The relevance a row of the relevant list showed, handed back verbatim when a
+ * tender is tracked from that list. Verified against its signature in the
+ * service; the shapes here only bound the size. `reasons` items keep every key
+ * (`unknown`), because the signature covers them exactly as they were shown.
+ * `tracking` is state, not ranking, and is dropped.
+ */
+const shownRelevanceSchema = Joi.object({
+  score: Joi.number().min(0).max(1).required(),
+  band: Joi.string().valid('strong', 'moderate', 'weak').required(),
+  reasons: Joi.array().items(Joi.object().unknown(true)).max(20).required(),
+  shownAt: Joi.string().isoDate().required(),
+  signature: Joi.string().hex().length(64).required(),
+  tracking: Joi.any().strip(),
+});
+
 export const trackTenderSchema = Joi.object({
   tenderId: Joi.string().trim().max(40).required(),
   // A tender can be tracked straight into `preparing`, but not into a settled
@@ -17,6 +33,8 @@ export const trackTenderSchema = Joi.object({
   status: Joi.string().valid('considering', 'preparing').default('considering'),
   goNoGo: Joi.string().valid('go', 'no_go', 'undecided').allow(null),
   decisionNote: Joi.string().trim().max(2000).allow(null, ''),
+  // Only when tracking from the relevant list; omitted everywhere else.
+  relevance: shownRelevanceSchema.allow(null),
 }).required();
 
 export const updateTrackedTenderSchema = Joi.object({

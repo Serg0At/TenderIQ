@@ -4,6 +4,7 @@ import { rankTenders, basisOf, compareRanked } from '../../services/relevance.se
 import { purchaseKindOf, purchaseKindLabels } from '../../libs/purchaseKinds.js';
 import { cpvPrefixesFor } from '../../libs/fields.js';
 import config from '../../configs/variables.config.js';
+import { signRelevance } from '../../libs/relevanceReceipt.js';
 import { ApiError } from '../../utils/errors.js';
 
 /** Comma-separated or repeated query params both arrive here as one list. */
@@ -181,11 +182,16 @@ export default class TenderService {
     const served = rest.slice(0, limit);
     const hasMore = rest.length > limit;
 
+    // Signed as shown, so tracking from this list can record exactly this.
+    const shownAt = new Date().toISOString();
     return {
-      rows: served.map((r) => ({
-        ...TenderService.present(r.tender.row),
-        relevance: { score: r.score, band: r.band, reasons: r.reasons, tracking: r.tracking },
-      })),
+      rows: served.map((r) => {
+        const shown = { score: r.score, band: r.band, reasons: r.reasons, shownAt };
+        return {
+          ...TenderService.present(r.tender.row),
+          relevance: { ...shown, tracking: r.tracking, signature: signRelevance(organizationId, r.id, shown) },
+        };
+      }),
       meta: {
         basis: 'ranked',
         missing: basis.missing,

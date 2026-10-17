@@ -1070,7 +1070,9 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
           },
           { "code": "field", "field": "medical", "cpvCode": "33141211", "lot": 10 }
         ],
-        "tracking": null
+        "shownAt": "2026-10-17T14:05:01.123Z",
+        "tracking": null,
+        "signature": "9f2c…64 hex chars"
       }
     }
   ],
@@ -1106,6 +1108,9 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
 - `relevance.tracking` — `null`, or `{ trackedTenderId, status, goNoGo }` when your organization
   already tracks this tender, so the client can badge it. A tracked tender sits at its natural
   position: it is neither boosted by its own pursuit nor hidden.
+- `relevance.shownAt`, `relevance.signature` — when this was computed, and a signature over it.
+  Send the whole `relevance` object back with [Track a tender](#track-a-tender) to record what
+  was shown.
 - `meta.basis` — `ranked`, or `insufficient_data` (below).
 - `meta.missing` — the signal sources this organization has not given yet, from `field`,
   `saved_search`, `supplier_identity` (see [Set supplier identity](#set-supplier-identity)) and
@@ -1460,6 +1465,12 @@ No request body
       "decisionNote": "Margins work if we subcontract the asphalt.",
       "createdAt": "2026-08-20T07:45:12.331Z",
       "updatedAt": "2026-08-28T15:09:03.118Z",
+      "relevance": {
+        "score": 0.6312,
+        "band": "strong",
+        "reasons": [{ "code": "bid_category", "level": "exact", "cpvCode": "45233120", "lots": 4, "sameBuyer": false, "lot": 1 }],
+        "shownAt": "2026-08-20T07:44:58.004Z"
+      },
       "tender": {
         "id": "cm9zx4k1p0010qw8fj3k9d2p1",
         "title": "Շինարարական աշխատանքների գնում",
@@ -1497,6 +1508,8 @@ No request body
 }
 ```
 
+`relevance` is what the [relevant list](#relevant-tenders) showed when the tender was tracked from
+it, recorded once and never recomputed — `null` when it was tracked from anywhere else.
 `bid` is `null` when no draft exists. `gapVsWinner` is computed, not stored:
 `(price - winningPrice) / winningPrice`, and `null` unless both are known and the winner's
 price is positive. `outcome` is `won`, `lost`, `not_found` or `null` — `not_found` means the
@@ -1636,11 +1649,20 @@ create. Both are successes.
   submitted states are reached by doing the thing, not by claiming it.
 - `goNoGo` (optional): `go`, `no_go`, `undecided`, or `null`.
 - `decisionNote` (optional): max 2000 chars, `null` or `""` allowed.
+- `relevance` (optional): **only when tracking from the [relevant list](#relevant-tenders)** — the
+  row's `relevance` object sent back **unchanged** (`score`, `band`, `reasons`, `shownAt`,
+  `signature`; `tracking` may ride along and is ignored). The pursuit records what the supplier
+  was looking at, so the product can later ask whether highly ranked tenders become pursuits and
+  wins. The signature binds it to this organization and this tender; anything altered is refused.
+  Omit it when tracking from anywhere else — nothing is recorded and the pursuit is otherwise
+  identical.
 
 **Response data:**
 
 `201 Created` on a new pursuit, `200 OK` when it was already tracked. Body is the full tracked
-tender in the same shape as [Tracked tender detail](#tracked-tender-detail).
+tender in the same shape as [Tracked tender detail](#tracked-tender-detail). Its `relevance` is
+what was recorded — `{ score, band, reasons, shownAt }` — or `null`. It is written once, on the
+create: a repeat track never overwrites it, and it is never recomputed.
 
 **Errors:**
 
@@ -1648,7 +1670,9 @@ tender in the same shape as [Tracked tender detail](#tracked-tender-detail).
 - `403 ROLE_FORBIDDEN`: `viewer` lacks `trackedtender:write`.
 - `404 NOT_FOUND`: "Tender not found." Checked before insert so a bad id is a 404, not a
   foreign-key violation reported as a 500.
-- `422 VALIDATION_FAILED`: missing `tenderId`; `status` of `submitted`/`won`/`lost`/`dropped`.
+- `422 VALIDATION_FAILED`: missing `tenderId`; `status` of `submitted`/`won`/`lost`/`dropped`;
+  a `relevance` that is not exactly what the relevant list showed this organization for this
+  tender (`field: "relevance"`).
 
 ---
 
@@ -1681,6 +1705,7 @@ decisionNote, createdAt, updatedAt, nested `tender`, nested `bid` or `null`), wr
     "decisionNote": "Margins work if we subcontract the asphalt.",
     "createdAt": "2026-08-20T07:45:12.331Z",
     "updatedAt": "2026-08-28T15:09:03.118Z",
+    "relevance": null,
     "tender": { },
     "bid": { }
   }
