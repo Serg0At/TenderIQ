@@ -33,10 +33,18 @@ export const WEIGHTS = {
   won: 0.8,
   /** Bid in this category, won or not. A loss is participation, never a penalty. */
   bid: 0.55,
+  /** The team pursued a similar tender — what it is actually working on. */
+  pursued: 0.55,
   savedSearch: 0.4,
   field: 0.25,
   /** Bid at this buyer before, in some other category. */
   knownBuyer: 0.15,
+  /**
+   * The team dropped, or marked no-go, a similar tender. A PENALTY, applied as
+   * score × (1 − penalty): it can push a tender into the weak band, and can
+   * never take it below zero or out of the list.
+   */
+  dropped: 0.5,
 };
 
 /** How much of a signal survives a weaker CPV match. */
@@ -99,6 +107,13 @@ const BASIS_SOURCES = [
     name: 'supplier_identity',
     present: (s) => Boolean(s.ledger?.partyId),
     scorable: (s) => (s.ledger?.items ?? []).length > 0,
+  },
+  {
+    name: 'pipeline',
+    present: (s) => (s.pipeline ?? []).length > 0,
+    // Only pursuits can lift a tender; a pipeline of nothing but dropped ones
+    // can only push down, and there is nothing to push.
+    scorable: (s) => (s.pipeline ?? []).some(isPursued),
   },
 ];
 
@@ -292,6 +307,58 @@ const categorySignal = (tender, unit, ledger) => {
 };
 
 /**
+ * Pursued or turned down. Dropping a pursuit, or marking it no-go, is the team
+ * saying "not for us"; every other state — including `lost`, which is having
+ * competed — is the team saying "this is our kind of work".
+ */
+const isPursued = (item) => item.status !== 'dropped' && item.goNoGo !== 'no_go';
+
+/** The pipeline, aged and split into the two directions it pushes. */
+const indexPipeline = (pipeline, now, fullMonths) => {
+  const pursued = [];
+  const dropped = [];
+  const tracking = new Map();
+  for (const item of pipeline ?? []) {
+    tracking.set(item.tenderId, { trackedTenderId: item.trackedTenderId, status: item.status, goNoGo: item.goNoGo ?? null });
+    if (!item.codes?.length) continue;
+    const entry = { ...item, weight: recencyWeight(item.at, now, fullMonths) };
+    (isPursued(item) ? pursued : dropped).push(entry);
+  }
+  return { pursued, dropped, tracking };
+};
+
+/**
+ * How strongly a unit resembles a set of the team's pursuits: per CPV level,
+ * the recency-weighted count of tenders with a code that close, cumulative
+ * downward like the ledger. The candidate itself never counts — a tracked
+ * tender sits at its natural position, unboosted, or the list would only tell
+ * the team what it already knows.
+ */
+const resemblance = (tender, unit, items, weight, code) => {
+  let best = null;
+  for (const cpvCode of unit.codes) {
+    const sums = Object.fromEntries(CPV_LEVELS.map((level) => [level, [0, 0]]));
+    for (const item of items) {
+      if (item.tenderId === tender.id) continue;
+      const match = bestCpvMatch([cpvCode], item.codes);
+      if (match.level === 'none') continue;
+      for (const at of CPV_LEVELS.slice(CPV_LEVELS.indexOf(match.level))) {
+        sums[at][0] += item.weight;
+        sums[at][1] += 1;
+      }
+    }
+    for (const level of CPV_LEVELS) {
+      const [w, tenders] = sums[level];
+      const strength = weight * CLOSENESS[level] * volume(w);
+      if (strength > 0 && (!best || strength > best.strength)) {
+        best = { strength, reason: { code, level, cpvCode, tenders, lot: unit.lot } };
+      }
+    }
+  }
+  return best;
+};
+
+/**
  * A buyer this supplier has bid at before, in another category: a relationship
  * already built counts for a little. Skipped when the category signal already
  * stands on a win at this buyer, which said it louder.
@@ -310,22 +377,39 @@ const scoreTender = (tender, signals, context) => {
   let best = null;
   for (const unit of unitsOf(tender)) {
     const category = categorySignal(tender, unit, context.ledger);
+    const pursued = resemblance(tender, unit, context.pipeline.pursued, WEIGHTS.pursued, 'pursued_similar');
     const positives = [
       ...(category ? [category] : []),
+      ...(pursued ? [pursued] : []),
       ...knownBuyerSignal(tender, context.ledger, category),
       ...savedSearchSignal(tender, unit, signals.savedSearches ?? []),
       ...fieldSignal(unit, signals.fields ?? []),
     ];
-    const score = combine(positives.map((p) => p.strength));
+    const lifted = combine(positives.map((p) => p.strength));
+
+    // A demotion is only named when there was something to demote.
+    const dropped = lifted > 0
+      ? resemblance(tender, unit, context.pipeline.dropped, WEIGHTS.dropped, 'dropped_similar')
+      : null;
+    const score = lifted * (1 - (dropped?.strength ?? 0));
+
     if (!best || score > best.score) {
       best = {
         score,
-        reasons: positives.sort((a, b) => b.strength - a.strength).map((p) => p.reason),
+        reasons: [
+          ...positives.sort((a, b) => b.strength - a.strength).map((p) => p.reason),
+          ...(dropped ? [dropped.reason] : []),
+        ],
       };
     }
   }
   const score = round(best.score);
-  return { score, band: bandOf(score), reasons: best.reasons };
+  return {
+    score,
+    band: bandOf(score),
+    reasons: best.reasons,
+    tracking: context.pipeline.tracking.get(tender.id) ?? null,
+  };
 };
 
 /**
@@ -345,15 +429,19 @@ export const compareRanked = (a, b) => {
  * Rank candidate tenders for one organization.
  *
  * @param {Array}  candidates  `{ id, title, referenceCode, cpvCode, buyerId, estimatedValue, deadlineAt, lots: [{ lotNumber, codes, keywordHits }] }`
- * @param {object} signals     `{ fields, savedSearches, ledger: { partyId, items: [{ tenderId, cpvCode, buyerId, at, won }] } }`
+ * @param {object} signals     `{ fields, savedSearches, ledger: { partyId, items: [{ tenderId, cpvCode, buyerId, at, won }] },
+ *                             pipeline: [{ trackedTenderId, tenderId, status, goNoGo, at, codes }] }`
  * @param {object} options     `{ now, recencyMonths }` — the clock every signal ages against, and
  *                             the full-weight window; both explicit so a backtest can replay a past day
- * @returns {Array} `{ tender, id, deadlineAt, score, band, reasons }`, best first
+ * @returns {Array} `{ tender, id, deadlineAt, score, band, reasons, tracking }`, best first
  */
 export const rankTenders = (candidates, signals, { now, recencyMonths } = {}) => {
   if (!(now instanceof Date)) throw new Error('rankTenders needs an explicit `now`');
   if (!Number.isFinite(recencyMonths) || recencyMonths <= 0) throw new Error('rankTenders needs `recencyMonths`');
-  const context = { ledger: indexLedger(signals.ledger, now, recencyMonths) };
+  const context = {
+    ledger: indexLedger(signals.ledger, now, recencyMonths),
+    pipeline: indexPipeline(signals.pipeline, now, recencyMonths),
+  };
   return candidates
     .map((tender) => ({ tender, id: tender.id, deadlineAt: tender.deadlineAt ?? null, ...scoreTender(tender, signals, context) }))
     .sort(compareRanked);

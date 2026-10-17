@@ -1069,7 +1069,8 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
             "match": "cpv", "level": "group", "covered": true, "cpvCode": "33141211", "lot": 10
           },
           { "code": "field", "field": "medical", "cpvCode": "33141211", "lot": 10 }
-        ]
+        ],
+        "tracking": null
       }
     }
   ],
@@ -1096,23 +1097,32 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
 | `won_category` | Your supplier identity won lots in this category — at this same buyer when `sameBuyer` | `level`, `cpvCode`, `lots` (lots won, at this buyer when `sameBuyer`), `sameBuyer`, `lot` |
 | `bid_category` | Your supplier identity bid in this category (won or lost — losing still means you compete there) | `level`, `cpvCode`, `lots` (lots bid, rejected bids included), `lot` |
 | `known_buyer` | You have bid at this buyer before, in another category | `lots` (lots bid there), `wins` |
+| `pursued_similar` | Your team is pursuing, or has pursued, similar tenders | `level`, `cpvCode`, `tenders`, `lot` |
+| `dropped_similar` | **Lowers the score.** Your team dropped, or marked no-go, similar tenders. Always listed last | `level`, `cpvCode`, `tenders`, `lot` |
 | `saved_search` | One of your saved searches matches | `searchId`, `searchName`, `match` (`cpv` \| `keyword`); for `cpv`: `level`, `covered` (the search asked for this code or a parent of it), `cpvCode`; for `keyword`: `keywords` (up to 3); `lot` |
 | `field` | The tender falls under one of your fields | `field`, `cpvCode`, `lot` |
 
+- `relevance.tracking` — `null`, or `{ trackedTenderId, status, goNoGo }` when your organization
+  already tracks this tender, so the client can badge it. A tracked tender sits at its natural
+  position: it is neither boosted by its own pursuit nor hidden.
 - `meta.basis` — `ranked`, or `insufficient_data` (below).
 - `meta.missing` — the signal sources this organization has not given yet, from `field`,
-  `saved_search` and `supplier_identity` (see [Set supplier identity](#set-supplier-identity)),
-  so the client can offer the button that adds each.
+  `saved_search`, `supplier_identity` (see [Set supplier identity](#set-supplier-identity)) and
+  `pipeline` (nothing [tracked](#track-a-tender) yet), so the client can offer the button that adds
+  each.
 
 **What it ranks on**, strongest first: lots your supplier identity **won** in a similar category
-(strongest at the same buyer); lots it **bid** on in a similar category; your **saved searches**;
-your **fields**; and, weakly, a **buyer** you have bid at before. Similar means the CPV hierarchy —
+(strongest at the same buyer); lots it **bid** on in a similar category, or tenders your team
+**pursued**; your **saved searches**; your **fields**; and, weakly, a **buyer** you have bid at
+before. Pushing the other way, tenders similar to ones your team **dropped** or marked **no-go**
+score lower — they can fall into `weak`, never out of the list. A loss is never a penalty. Similar means the CPV hierarchy —
 the same code, then the same group, then the same division, each weaker. Bid history comes from
 the public ledger only, so it needs a claimed supplier identity; without one the ranking runs on
-the rest. History never expires but counts less with age: full weight for 12 months, half to 36,
-a quarter beyond (`RELEVANCE_FULL_WEIGHT_MONTHS`).
+the rest. Bid and pursuit history never expire but count less with age: full weight for 12 months, half
+to 36, a quarter beyond (`RELEVANCE_FULL_WEIGHT_MONTHS`).
 
-**Nothing to rank on.** An organization with no field, no saved search and no bid history gets a successful,
+**Nothing to rank on.** An organization with no field, no saved search, no bid history and no
+pursuit gets a successful,
 empty answer rather than an invented order — the same shape
 [Bid performance](#bid-performance) uses for `insufficient_data`:
 
@@ -1121,7 +1131,7 @@ empty answer rather than an invented order — the same shape
   "data": [],
   "meta": {
     "basis": "insufficient_data",
-    "missing": ["field", "saved_search", "supplier_identity"],
+    "missing": ["field", "saved_search", "supplier_identity", "pipeline"],
     "fallbackFilters": ["field", "purchaseKind"],
     "cursor": null,
     "hasMore": false

@@ -17,15 +17,15 @@ the caller's organization by the repository.
 
 **Blocked by:** 05.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A tender similar to ones the organization has pursued ranks above an otherwise equal tender.
-- [ ] A tender similar to ones it dropped or marked no-go ranks below an otherwise equal tender.
-- [ ] A dropped pursuit can push a tender into the weak band, but never removes it from the list.
-- [ ] A tracked tender appears at its natural position and carries its pursuit state in the row.
-- [ ] Tracking state is read for the caller's organization only, and never leaks across tenants.
-- [ ] Pursuit history is subject to the same recency weighting as bid history, using the same
+- [x] A tender similar to ones the organization has pursued ranks above an otherwise equal tender.
+- [x] A tender similar to ones it dropped or marked no-go ranks below an otherwise equal tender.
+- [x] A dropped pursuit can push a tender into the weak band, but never removes it from the list.
+- [x] A tracked tender appears at its natural position and carries its pursuit state in the row.
+- [x] Tracking state is read for the caller's organization only, and never leaks across tenants.
+- [x] Pursuit history is subject to the same recency weighting as bid history, using the same
       configuration value.
-- [ ] Reasons distinguish "your team pursued similar work" from "your team dropped similar work",
+- [x] Reasons distinguish "your team pursued similar work" from "your team dropped similar work",
       so the client can explain a demotion as readily as a promotion.
-- [ ] An organization with an empty pipeline ranks exactly as it did before this ticket.
+- [x] An organization with an empty pipeline ranks exactly as it did before this ticket.

@@ -157,7 +157,7 @@ export default class TenderService {
     return {
       rows: served.map((r) => ({
         ...TenderService.present(r.tender.row),
-        relevance: { score: r.score, band: r.band, reasons: r.reasons },
+        relevance: { score: r.score, band: r.band, reasons: r.reasons, tracking: r.tracking },
       })),
       meta: {
         basis: 'ranked',

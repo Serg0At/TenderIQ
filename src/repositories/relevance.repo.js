@@ -75,17 +75,54 @@ export default class RelevanceRepository {
   }
 
   /**
+   * Everything this organization is tracking, with each tender's CPV codes —
+   * headline and every lot — and when the team last acted on it.
+   *
+   * Private tenant data: scoped on `tt.organization_id` here, so one tenant's
+   * pursuits can never inform another's ranking.
+   */
+  static async pipelineFor(organizationId, trx = db) {
+    const rows = await trx('tracked_tenders as tt')
+      .join('tenders as t', 't.id', 'tt.tender_id')
+      .where('tt.organization_id', organizationId)
+      .select(
+        'tt.id',
+        'tt.tender_id',
+        'tt.status',
+        'tt.go_no_go',
+        trx.raw('coalesce(tt.updated_at, tt.created_at) as at'),
+        trx.raw(
+          `array_remove(array(
+             select distinct c from unnest(
+               array[t.cpv_code] || array(select l.cpv_code from tender_lots l where l.tender_id = t.id)
+             ) as c
+           ), null) as codes`
+        )
+      );
+
+    return rows.map((row) => ({
+      trackedTenderId: row.id,
+      tenderId: row.tender_id,
+      status: row.status,
+      goNoGo: row.go_no_go,
+      at: row.at,
+      codes: row.codes ?? [],
+    }));
+  }
+
+  /**
    * The organization's signal bundle, loaded once per request.
    *
    * Shaped for `rankTenders`: camelCase, no Knex rows past this point.
    */
   static async signalsFor(organizationId, trx = db) {
-    const [organization, searches] = await Promise.all([
+    const [organization, searches, pipeline] = await Promise.all([
       trx('organizations').where({ id: organizationId }).first('type', 'supplier_party_id'),
       trx('saved_searches')
         .where({ organization_id: organizationId })
         .orderBy([{ column: 'created_at' }, { column: 'id' }])
         .select('id', 'name', 'cpv_codes', 'keywords', 'min_value', 'max_value'),
+      RelevanceRepository.pipelineFor(organizationId, trx),
     ]);
 
     // The ledger needs the claimed identity first, so it is the second round trip.
@@ -97,6 +134,7 @@ export default class RelevanceRepository {
     return {
       fields: organization?.type ?? [],
       ledger: { partyId, items: ledger },
+      pipeline,
       savedSearches: searches.map((s) => ({
         id: s.id,
         name: s.name,
