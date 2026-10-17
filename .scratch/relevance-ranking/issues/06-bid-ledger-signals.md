@@ -29,23 +29,23 @@ has bid on one tender. That is a data problem, resolved in ticket 10, not a reas
 
 **Blocked by:** 05.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A tender in a category the organization has won in ranks above one in a category it has only
+- [x] A tender in a category the organization has won in ranks above one in a category it has only
       bid in, which ranks above one at a merely familiar buyer.
-- [ ] Winning at the same buyer in the same category is the strongest single signal available.
-- [ ] A loss never lowers a tender's rank.
-- [ ] Category closeness uses the shared CPV rule from ticket 04, so an exact code counts for more
+- [x] Winning at the same buyer in the same category is the strongest single signal available.
+- [x] A loss never lowers a tender's rank.
+- [x] Category closeness uses the shared CPV rule from ticket 04, so an exact code counts for more
       than a shared division.
-- [ ] Recent history outweighs old history, in steps, with the boundary held in configuration and
+- [x] Recent history outweighs old history, in steps, with the boundary held in configuration and
       used nowhere else by hard-coded literal.
-- [ ] History is never discarded by age — an old bid counts less, not zero.
-- [ ] Reasons name the evidence and its scale, enough for a client to write "you won 3 lots at
+- [x] History is never discarded by age — an old bid counts less, not zero.
+- [x] Reasons name the evidence and its scale, enough for a client to write "you won 3 lots at
       this buyer" without inventing anything.
-- [ ] An organization with no supplier identity still receives a ranking from its other signals,
+- [x] An organization with no supplier identity still receives a ranking from its other signals,
       and the response names the missing identity.
-- [ ] Participation counts include rejected bids and money statistics exclude them, matching the
+- [x] Participation counts include rejected bids and money statistics exclude them, matching the
       two counting rules the profile and public-bid repositories already follow.
-- [ ] Reading a tenant's ranking never exposes another tenant's private data; every ledger signal
+- [x] Reading a tenant's ranking never exposes another tenant's private data; every ledger signal
       is drawn from public award and bid records only.
-- [ ] Still inside the 1.5s P95 budget with the ledger queries added.
+- [x] Still inside the 1.5s P95 budget with the ledger queries added.

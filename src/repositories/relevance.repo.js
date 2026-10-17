@@ -1,13 +1,79 @@
 import db from '../libs/knex.js';
 
+/** One row per (tender, lot): the lot's first item code, as profile.repo.js reads a lot's category. */
+const lotCategoryCte = (qb) =>
+  qb.distinctOn('tender_id', 'lot_number')
+    .select('tender_id', 'lot_number', 'cpv_code')
+    .from('tender_lots')
+    .orderBy([{ column: 'tender_id' }, { column: 'lot_number' }, { column: 'item_sequence' }]);
+
 /**
  * The evidence relevance ranks on, for one organization.
  *
- * Every read is scoped on `organization_id` here, not by the caller: saved
- * searches and fields are this tenant's own claims, and nothing read for one
- * organization's ranking may describe another's.
+ * Every private read is scoped on `organization_id` here, not by the caller:
+ * saved searches and fields are this tenant's own claims, and nothing read for
+ * one organization's ranking may describe another's. The ledger is the
+ * exception that proves it — it is public record, keyed on the party the
+ * organization claimed, and identical whoever asks.
  */
 export default class RelevanceRepository {
+  /**
+   * Every lot these parties bid on in the public ledger, rejected bids
+   * included, with whether they won it.
+   *
+   * A win is an `awards` row naming the party — never `rank = 1`, which the
+   * source assigns to rejected submissions too. The category is the lot's
+   * code, falling back to the tender's headline code. `at` is when the bid was
+   * made: the auction, else the deadline, else publication.
+   *
+   * `before` replays the ledger as of a past moment, for the backtest: only
+   * bids whose auction had already happened. A lot's award is published days
+   * after its auction, so a replay counts a win from its auction date — a few
+   * days early, and on the generous side.
+   *
+   * Returns a Map of party id → items.
+   */
+  static async ledgerFor(partyIds, { before = null } = {}, trx = db) {
+    const byParty = new Map(partyIds.map((id) => [id, []]));
+    if (!partyIds.length) return byParty;
+
+    const query = trx('public_tender_bids as b')
+      .with('lot_category', lotCategoryCte)
+      .join('tenders as t', 't.id', 'b.tender_id')
+      .leftJoin('lot_category as l', function joinLot() {
+        this.on('l.tender_id', '=', 'b.tender_id').andOn('l.lot_number', '=', 'b.lot_number');
+      })
+      .leftJoin('awards as a', function awardOfLot() {
+        this.on('a.tender_id', '=', 'b.tender_id')
+          .andOn('a.lot_number', '=', 'b.lot_number')
+          .andOn('a.source', '=', 'b.source');
+      })
+      .whereIn('b.supplier_id', partyIds)
+      .select(
+        'b.supplier_id',
+        'b.tender_id',
+        'b.lot_number',
+        trx.raw('coalesce(l.cpv_code, t.cpv_code) as cpv_code'),
+        't.buyer_id',
+        trx.raw('coalesce(t.auction_at, t.deadline_at, t.published_at) as at'),
+        trx.raw('coalesce(a.supplier_id = b.supplier_id, false) as won')
+      );
+
+    if (before) query.whereRaw('coalesce(t.auction_at, t.deadline_at, t.published_at) < ?', [before]);
+
+    for (const row of await query) {
+      byParty.get(row.supplier_id).push({
+        tenderId: row.tender_id,
+        lot: row.lot_number,
+        cpvCode: row.cpv_code,
+        buyerId: row.buyer_id,
+        at: row.at,
+        won: row.won,
+      });
+    }
+    return byParty;
+  }
+
   /**
    * The organization's signal bundle, loaded once per request.
    *
@@ -15,15 +81,22 @@ export default class RelevanceRepository {
    */
   static async signalsFor(organizationId, trx = db) {
     const [organization, searches] = await Promise.all([
-      trx('organizations').where({ id: organizationId }).first('type'),
+      trx('organizations').where({ id: organizationId }).first('type', 'supplier_party_id'),
       trx('saved_searches')
         .where({ organization_id: organizationId })
         .orderBy([{ column: 'created_at' }, { column: 'id' }])
         .select('id', 'name', 'cpv_codes', 'keywords', 'min_value', 'max_value'),
     ]);
 
+    // The ledger needs the claimed identity first, so it is the second round trip.
+    // No identity, no ledger: the ranking runs on what else it has, and the
+    // basis names the missing claim.
+    const partyId = organization?.supplier_party_id ?? null;
+    const ledger = partyId ? (await RelevanceRepository.ledgerFor([partyId], {}, trx)).get(partyId) : [];
+
     return {
       fields: organization?.type ?? [],
+      ledger: { partyId, items: ledger },
       savedSearches: searches.map((s) => ({
         id: s.id,
         name: s.name,

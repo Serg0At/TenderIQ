@@ -3,6 +3,7 @@ import relevance from '../../repositories/relevance.repo.js';
 import { rankTenders, basisOf, compareRanked } from '../../services/relevance.service.js';
 import { purchaseKindOf, purchaseKindLabels } from '../../libs/purchaseKinds.js';
 import { cpvPrefixesFor } from '../../libs/fields.js';
+import config from '../../configs/variables.config.js';
 import { ApiError } from '../../utils/errors.js';
 
 /** Comma-separated or repeated query params both arrive here as one list. */
@@ -143,7 +144,10 @@ export default class TenderService {
       ]);
     }
 
-    const ranked = rankTenders(rows.map(candidateOf), signals, { now });
+    const ranked = rankTenders(rows.map(candidateOf), signals, {
+      now,
+      recencyMonths: config.RELEVANCE.FULL_WEIGHT_MONTHS,
+    });
 
     const after = decodeRankCursor(page.cursor);
     const rest = after ? ranked.filter((r) => compareRanked(r, after) > 0) : ranked;

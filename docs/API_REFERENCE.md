@@ -1093,14 +1093,26 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
 
 | `code` | Meaning | Values |
 |---|---|---|
+| `won_category` | Your supplier identity won lots in this category — at this same buyer when `sameBuyer` | `level`, `cpvCode`, `lots` (lots won, at this buyer when `sameBuyer`), `sameBuyer`, `lot` |
+| `bid_category` | Your supplier identity bid in this category (won or lost — losing still means you compete there) | `level`, `cpvCode`, `lots` (lots bid, rejected bids included), `lot` |
+| `known_buyer` | You have bid at this buyer before, in another category | `lots` (lots bid there), `wins` |
 | `saved_search` | One of your saved searches matches | `searchId`, `searchName`, `match` (`cpv` \| `keyword`); for `cpv`: `level`, `covered` (the search asked for this code or a parent of it), `cpvCode`; for `keyword`: `keywords` (up to 3); `lot` |
 | `field` | The tender falls under one of your fields | `field`, `cpvCode`, `lot` |
 
 - `meta.basis` — `ranked`, or `insufficient_data` (below).
-- `meta.missing` — the signal sources this organization has not given yet, from `field` and
-  `saved_search`, so the client can offer the button that adds each.
+- `meta.missing` — the signal sources this organization has not given yet, from `field`,
+  `saved_search` and `supplier_identity` (see [Set supplier identity](#set-supplier-identity)),
+  so the client can offer the button that adds each.
 
-**Nothing to rank on.** An organization with no field and no saved search gets a successful,
+**What it ranks on**, strongest first: lots your supplier identity **won** in a similar category
+(strongest at the same buyer); lots it **bid** on in a similar category; your **saved searches**;
+your **fields**; and, weakly, a **buyer** you have bid at before. Similar means the CPV hierarchy —
+the same code, then the same group, then the same division, each weaker. Bid history comes from
+the public ledger only, so it needs a claimed supplier identity; without one the ranking runs on
+the rest. History never expires but counts less with age: full weight for 12 months, half to 36,
+a quarter beyond (`RELEVANCE_FULL_WEIGHT_MONTHS`).
+
+**Nothing to rank on.** An organization with no field, no saved search and no bid history gets a successful,
 empty answer rather than an invented order — the same shape
 [Bid performance](#bid-performance) uses for `insufficient_data`:
 
@@ -1109,7 +1121,7 @@ empty answer rather than an invented order — the same shape
   "data": [],
   "meta": {
     "basis": "insufficient_data",
-    "missing": ["field", "saved_search"],
+    "missing": ["field", "saved_search", "supplier_identity"],
     "fallbackFilters": ["field", "purchaseKind"],
     "cursor": null,
     "hasMore": false

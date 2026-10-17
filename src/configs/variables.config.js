@@ -272,6 +272,19 @@ const config = {
   },
 
   /**
+   * Relevance ranking.
+   *
+   * History never expires; it weighs less with age, in steps so a ranking can be
+   * reproduced by hand: full weight inside FULL_WEIGHT_MONTHS, half to three
+   * times that, a quarter beyond. One number because the backtest sweeps it —
+   * suppliers here bid rarely (the median one, once in two months), so a short
+   * window starves the signal rather than sharpening it.
+   */
+  RELEVANCE: {
+    FULL_WEIGHT_MONTHS: int('RELEVANCE_FULL_WEIGHT_MONTHS', 12),
+  },
+
+  /**
    * The AI layer. `API_KEY` is optional so the API and workers still boot
    * without it — the price-recommendation endpoint answers 503
    * DEPENDENCY_UNAVAILABLE instead, which is the honest failure for a feature

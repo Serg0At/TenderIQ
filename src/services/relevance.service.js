@@ -1,4 +1,4 @@
-import { bestCpvMatch, covers } from '../libs/cpv.js';
+import { bestCpvMatch, closeness, covers, CPV_LEVELS } from '../libs/cpv.js';
 import { FIELDS } from '../libs/fields.js';
 
 /**
@@ -27,8 +27,16 @@ import { FIELDS } from '../libs/fields.js';
  * A signal's strength is its weight, scaled by how close the CPV match is.
  */
 export const WEIGHTS = {
+  /** Won a lot in this category from this same buyer — the strongest single signal. */
+  wonSameBuyer: 0.9,
+  /** Won a lot in this category. */
+  won: 0.8,
+  /** Bid in this category, won or not. A loss is participation, never a penalty. */
+  bid: 0.55,
   savedSearch: 0.4,
   field: 0.25,
+  /** Bid at this buyer before, in some other category. */
+  knownBuyer: 0.15,
 };
 
 /** How much of a signal survives a weaker CPV match. */
@@ -36,6 +44,28 @@ export const CLOSENESS = { exact: 1, group: 0.7, division: 0.4 };
 
 /** A saved-search keyword hit counts like a same-group code: deliberate, but not a code. */
 export const KEYWORD_FACTOR = 0.8;
+
+/**
+ * How much repeated evidence adds: `w / (w + 0.5)` over the recency-weighted
+ * count. One recent lot gives two thirds of a signal, three give 86%; old
+ * evidence counts for less without ever counting for nothing.
+ */
+const volume = (w) => (w > 0 ? w / (w + 0.5) : 0);
+
+const MONTH_MS = 30.44 * 24 * 60 * 60 * 1000;
+
+/**
+ * Recency weight, in steps rather than a curve so a ranking can be reproduced
+ * by hand: 1 inside `fullMonths`, ½ up to three times that, ¼ beyond — never 0.
+ * History is evidence of what a supplier does; age weakens it, nothing erases it.
+ */
+export const recencyWeight = (at, now, fullMonths) => {
+  if (!at) return 0.25;
+  const months = Math.max(0, (now.getTime() - new Date(at).getTime()) / MONTH_MS);
+  if (months <= fullMonths) return 1;
+  if (months <= fullMonths * 3) return 0.5;
+  return 0.25;
+};
 
 /**
  * Score bands. A band is what a screen shows; the number is for tooling. Every
@@ -50,10 +80,26 @@ export const BANDS = [
 
 export const bandOf = (score) => BANDS.find((b) => score >= b.min).band;
 
-/** The signal sources an organization can have, in the order a client should offer them. */
+/**
+ * The signal sources an organization can have, in the order a client should
+ * offer them: whether the source is set up at all (`present`), and whether it
+ * holds anything to score with (`scorable`). They differ for the supplier
+ * identity — claimed, but with no bid in the ledger yet.
+ */
 const BASIS_SOURCES = [
-  ['field', (s) => FIELDS.some((f) => (s.fields ?? []).includes(f.id))],
-  ['saved_search', (s) => (s.savedSearches ?? []).length > 0],
+  {
+    name: 'field',
+    present: (s) => FIELDS.some((f) => (s.fields ?? []).includes(f.id)),
+  },
+  {
+    name: 'saved_search',
+    present: (s) => (s.savedSearches ?? []).length > 0,
+  },
+  {
+    name: 'supplier_identity',
+    present: (s) => Boolean(s.ledger?.partyId),
+    scorable: (s) => (s.ledger?.items ?? []).length > 0,
+  },
 ];
 
 /**
@@ -65,8 +111,9 @@ const BASIS_SOURCES = [
  * button that fixes it.
  */
 export const basisOf = (signals) => {
-  const missing = BASIS_SOURCES.filter(([, present]) => !present(signals)).map(([name]) => name);
-  return { sufficient: missing.length < BASIS_SOURCES.length, missing };
+  const missing = BASIS_SOURCES.filter((source) => !source.present(signals)).map((source) => source.name);
+  const sufficient = BASIS_SOURCES.some((source) => (source.scorable ?? source.present)(signals));
+  return { sufficient, missing };
 };
 
 const combine = (strengths) => 1 - strengths.reduce((rest, s) => rest * (1 - s), 1);
@@ -156,11 +203,116 @@ const fieldSignal = (unit, fields) => {
   return [];
 };
 
+/**
+ * The public bid ledger, indexed for scoring: each lot this organization's
+ * supplier identity bid on, with its recency weight, bucketed by CPV division
+ * so a candidate code is only ever compared with codes that could be close.
+ * Built once per ranking, never per candidate.
+ */
+const indexLedger = (ledger, now, fullMonths) => {
+  const byDivision = new Map();
+  const byBuyer = new Map();
+  for (const item of ledger?.items ?? []) {
+    const entry = { ...item, weight: recencyWeight(item.at, now, fullMonths) };
+    if (item.cpvCode) {
+      const division = String(item.cpvCode).slice(0, 2);
+      if (!byDivision.has(division)) byDivision.set(division, []);
+      byDivision.get(division).push(entry);
+    }
+    if (item.buyerId) {
+      const known = byBuyer.get(item.buyerId) ?? { lots: 0, wins: 0, weight: 0 };
+      known.lots += 1;
+      if (item.won) known.wins += 1;
+      known.weight += entry.weight;
+      byBuyer.set(item.buyerId, known);
+    }
+  }
+  return { byDivision, byBuyer };
+};
+
+/**
+ * What the ledger says about one unit's category: the strongest of "won here
+ * at this buyer", "won here" and "bid here", at whichever CPV closeness gives
+ * the most.
+ *
+ * Evidence accumulates downward — a lot matching exactly also counts at group
+ * and division level — so a supplier with one exact bid and ten in the same
+ * division is judged on whichever reading is stronger. A loss contributes to
+ * "bid here" exactly like a win: competing in a category is relevance, and
+ * whether they can win it is the intelligence layer's question. Rejected bids
+ * count too — a disqualified submission is still participation, the rule the
+ * profile and public-bid repositories already follow. No money is read.
+ */
+const categorySignal = (tender, unit, ledger) => {
+  let best = null;
+  for (const code of unit.codes) {
+    const nearby = ledger.byDivision.get(String(code).slice(0, 2)) ?? [];
+    if (!nearby.length) continue;
+
+    // Cumulative weight and raw count per level, for each kind of evidence.
+    const sums = Object.fromEntries(
+      CPV_LEVELS.map((level) => [level, { bid: [0, 0], won: [0, 0], wonSameBuyer: [0, 0] }])
+    );
+    for (const item of nearby) {
+      if (item.tenderId === tender.id) continue;
+      const level = closeness(code, item.cpvCode);
+      if (level === 'none') continue;
+      for (const at of CPV_LEVELS.slice(CPV_LEVELS.indexOf(level))) {
+        const add = (kind) => {
+          sums[at][kind][0] += item.weight;
+          sums[at][kind][1] += 1;
+        };
+        add('bid');
+        if (item.won) add('won');
+        if (item.won && item.buyerId === tender.buyerId) add('wonSameBuyer');
+      }
+    }
+
+    for (const level of CPV_LEVELS) {
+      for (const kind of ['wonSameBuyer', 'won', 'bid']) {
+        const [weight, lots] = sums[level][kind];
+        const strength = WEIGHTS[kind] * CLOSENESS[level] * volume(weight);
+        if (strength > 0 && (!best || strength > best.strength)) {
+          best = {
+            strength,
+            reason: {
+              code: kind === 'bid' ? 'bid_category' : 'won_category',
+              level,
+              cpvCode: code,
+              lots,
+              sameBuyer: kind === 'wonSameBuyer',
+              lot: unit.lot,
+            },
+          };
+        }
+      }
+    }
+  }
+  return best;
+};
+
+/**
+ * A buyer this supplier has bid at before, in another category: a relationship
+ * already built counts for a little. Skipped when the category signal already
+ * stands on a win at this buyer, which said it louder.
+ */
+const knownBuyerSignal = (tender, ledger, category) => {
+  const known = tender.buyerId ? ledger.byBuyer.get(tender.buyerId) : null;
+  if (!known || category?.reason.sameBuyer) return [];
+  return [{
+    strength: WEIGHTS.knownBuyer * volume(known.weight),
+    reason: { code: 'known_buyer', lots: known.lots, wins: known.wins },
+  }];
+};
+
 /** One tender, all its units scored, the best one kept. */
-const scoreTender = (tender, signals) => {
+const scoreTender = (tender, signals, context) => {
   let best = null;
   for (const unit of unitsOf(tender)) {
+    const category = categorySignal(tender, unit, context.ledger);
     const positives = [
+      ...(category ? [category] : []),
+      ...knownBuyerSignal(tender, context.ledger, category),
       ...savedSearchSignal(tender, unit, signals.savedSearches ?? []),
       ...fieldSignal(unit, signals.fields ?? []),
     ];
@@ -193,15 +345,18 @@ export const compareRanked = (a, b) => {
  * Rank candidate tenders for one organization.
  *
  * @param {Array}  candidates  `{ id, title, referenceCode, cpvCode, buyerId, estimatedValue, deadlineAt, lots: [{ lotNumber, codes, keywordHits }] }`
- * @param {object} signals     `{ fields, savedSearches }`
- * @param {object} options     `{ now }` — read by nothing yet; every later signal ages against it
+ * @param {object} signals     `{ fields, savedSearches, ledger: { partyId, items: [{ tenderId, cpvCode, buyerId, at, won }] } }`
+ * @param {object} options     `{ now, recencyMonths }` — the clock every signal ages against, and
+ *                             the full-weight window; both explicit so a backtest can replay a past day
  * @returns {Array} `{ tender, id, deadlineAt, score, band, reasons }`, best first
  */
-export const rankTenders = (candidates, signals, { now } = {}) => {
+export const rankTenders = (candidates, signals, { now, recencyMonths } = {}) => {
   if (!(now instanceof Date)) throw new Error('rankTenders needs an explicit `now`');
+  if (!Number.isFinite(recencyMonths) || recencyMonths <= 0) throw new Error('rankTenders needs `recencyMonths`');
+  const context = { ledger: indexLedger(signals.ledger, now, recencyMonths) };
   return candidates
-    .map((tender) => ({ tender, id: tender.id, deadlineAt: tender.deadlineAt ?? null, ...scoreTender(tender, signals) }))
+    .map((tender) => ({ tender, id: tender.id, deadlineAt: tender.deadlineAt ?? null, ...scoreTender(tender, signals, context) }))
     .sort(compareRanked);
 };
 
-export default { WEIGHTS, CLOSENESS, BANDS, bandOf, basisOf, rankTenders, compareRanked };
+export default { WEIGHTS, CLOSENESS, BANDS, bandOf, basisOf, recencyWeight, rankTenders, compareRanked };
