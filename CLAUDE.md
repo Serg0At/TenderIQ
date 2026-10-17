@@ -29,7 +29,6 @@ npm run migrate:up       # create the entire schema in one transaction
 npm run migrate:down     # DROP the entire schema — not a step-back migration
 
 docker compose up -d                       # redis + minio + bucket bootstrap
-docker compose --profile local-db up -d    # ...plus local Postgres (.env points at Neon by default)
 ```
 
 **There is no test runner.** `tests/` is empty and `devDependencies` has only nodemon. If a task
