@@ -1,5 +1,6 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
+import { significantPrefix } from '../libs/cpv.js';
 
 const TABLE = 'price_benchmarks';
 
@@ -28,7 +29,7 @@ export default class BenchmarkRepository {
     // Family match walks up the CPV hierarchy by stripping trailing zeros:
     // 33141211 -> '33141211%', 33140000 -> '3314%'. A profile for the parent
     // therefore catches its children, never the reverse.
-    const prefix = exact ? null : String(cpvCode).replace(/0+$/, '');
+    const prefix = exact ? null : significantPrefix(cpvCode);
 
     const rows = await trx
       .with('comparable', (qb) => {
@@ -125,7 +126,7 @@ export default class BenchmarkRepository {
     { cpvCode, exact = true, buyerId = null, sinceMonths = 24, limit = 10, excludeTenderId = null },
     trx = db
   ) {
-    const prefix = exact ? null : String(cpvCode).replace(/0+$/, '');
+    const prefix = exact ? null : significantPrefix(cpvCode);
 
     const inner = trx('awards as a')
       // One row per (tender, lot) before joining, so a multi-item lot cannot

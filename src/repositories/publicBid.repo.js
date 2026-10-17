@@ -1,4 +1,5 @@
 import db from '../libs/knex.js';
+import { significantPrefix } from '../libs/cpv.js';
 
 const TABLE = 'public_tender_bids';
 
@@ -240,7 +241,7 @@ export default class PublicBidRepository {
     // same rule benchmark.repo.js uses — 33141211 -> '33141211%',
     // 33140000 -> '3314%'. Kept identical on purpose: two different notions of
     // "related category" in one intelligence layer is a correctness trap.
-    const prefix = cpvCode && !exact ? String(cpvCode).replace(/0+$/, '') : null;
+    const prefix = cpvCode && !exact ? significantPrefix(cpvCode) : null;
 
     const row = await trx
       .with('lot_category', lotCategoryCte)

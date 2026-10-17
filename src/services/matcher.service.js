@@ -1,3 +1,5 @@
+import { compareCpv } from '../libs/cpv.js';
+
 /**
  * Does a tender match a saved search, and how well?
  *
@@ -7,16 +9,20 @@
  * learns to ignore is worth less than no alert stream at all.
  */
 
-/** CPV codes are hierarchical: 33141211 sits under 33140000 under 33000000. */
+/**
+ * CPV codes are hierarchical: 33141211 sits under 33140000 under 33000000. The
+ * rule itself lives in libs/cpv.js, shared with relevance; this keeps only the
+ * alert's question — the FIRST pair, in profile order, that the search covers.
+ * A profile asking for 33000000 (medical) matches 33141211, but a profile
+ * asking for 33141211 must NOT match all of 33000000.
+ */
 const cpvMatches = (tenderCodes, profileCodes) => {
   for (const wanted of profileCodes) {
-    const prefix = String(wanted).replace(/0+$/, '');
     for (const have of tenderCodes) {
       if (!have) continue;
-      if (have === wanted) return { hit: true, exact: true };
-      // A profile asking for 33000000 (medical) should match 33141211, but a
-      // profile asking for 33141211 must NOT match all of 33000000.
-      if (prefix && String(have).startsWith(prefix)) return { hit: true, exact: false };
+      const { level, covered } = compareCpv(have, wanted);
+      if (level === 'exact') return { hit: true, exact: true };
+      if (covered) return { hit: true, exact: false };
     }
   }
   return { hit: false, exact: false };

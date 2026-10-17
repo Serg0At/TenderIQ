@@ -14,14 +14,14 @@ Make the change easy, then make the easy change. This is the whole ticket.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A single module answers how closely a tender's codes match a set of wanted codes, reporting
+- [x] A single module answers how closely a tender's codes match a set of wanted codes, reporting
       the strength of the match (exact / group / division / none) rather than only a boolean.
-- [ ] It stays pure: no database, no clock, no configuration read at call time.
-- [ ] The alert matcher uses it and its behaviour is unchanged — a profile asking for a parent
+- [x] It stays pure: no database, no clock, no configuration read at call time.
+- [x] The alert matcher uses it and its behaviour is unchanged — a profile asking for a parent
       code still matches a child code, and a profile asking for a child code still does not match
       the parent.
-- [ ] No alert fires or stops firing as a result of this ticket; the matcher's threshold, weights
+- [x] No alert fires or stops firing as a result of this ticket; the matcher's threshold, weights
       and output shape are untouched.
-- [ ] Nothing else in the codebase still carries its own copy of the hierarchy rule.
+- [x] Nothing else in the codebase still carries its own copy of the hierarchy rule.
