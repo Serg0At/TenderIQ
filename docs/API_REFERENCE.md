@@ -43,6 +43,7 @@ All paths are relative to the base path **`/api/v1`**.
 
 ### Tenders (discovery)
 - [List tenders](#list-tenders) — `GET /tenders`
+- [Relevant tenders](#relevant-tenders) — `GET /tenders/relevant` (Pro+)
 - [Tender detail](#tender-detail) — `GET /tenders/:id`
 
 ### Saved searches
@@ -226,7 +227,9 @@ token.
 
 `intelligence:read` is additionally plan-gated to `pro`, `business`, `enterprise`. Sending an
 invitation is plan-gated the same way (feature key `invitations`), but only sending: every other
-`user:manage` action stays role-gated, so a downgraded organization can always shrink.
+`user:manage` action stays role-gated, so a downgraded organization can always shrink. The
+[relevant list](#relevant-tenders) is gated the same way (feature key `relevance`) on top of
+`tender:read`, while the plain tender list and its filters stay on every plan.
 
 #### The orgless state
 
@@ -1001,6 +1004,128 @@ blank or unrecognised.
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`: role lacks `tender:read`.
 - `422 VALIDATION_FAILED`: bad enum value, `page[size]` over 100, unparseable date.
+
+---
+
+## Relevant tenders
+
+The tenders this organization could still bid on, ordered by how well each fits it — best fit
+first, weakest last. The [plain list](#list-tenders) is untouched and stays newest-first for
+everyone; this is the second list a supplier chooses.
+
+Nothing is hidden: a tender that fits nothing scores `0` and sits at the bottom, not outside. The
+ordering covers every candidate, so paging to the end is a full sweep. Scored per request from the
+organization's own signals; nothing is stored, so a newly claimed field or saved search shows on
+the next request. Relevance never decides an alert — alerts are [saved-search matches](#saved-searches),
+and tuning this ranking cannot change which alerts fire.
+
+**API:**
+`GET /api/v1/tenders/relevant`
+
+**Authentication:** required (Bearer). Permission: `tender:read` (all roles). **Plan-gated** on
+the `relevance` feature: `pro`, `business`, `enterprise`. No subscription writer exists yet, so
+every organization currently reads `free` and this answers `402` for everyone.
+
+**Request data:**
+
+No request body
+
+**Query parameters:**
+
+The [List tenders](#list-tenders) filter vocabulary, unchanged: `filter[cpv]`, `filter[keyword]`,
+`filter[buyerId]`, `filter[region]`, `filter[procedure]`, `filter[minValue]`, `filter[maxValue]`,
+`filter[deadlineAfter]`, `filter[deadlineBefore]`, `filter[purchaseKind]`, `filter[field]`, plus
+`page[size]` (1–100, default 20) and `page[cursor]`.
+
+Candidates are **biddable** tenders: the current version, status `active` or `amended`, with a
+deadline still ahead **or no deadline at all**. An explicit `filter[status]` replaces that default
+entirely, deadline included. If more than 2,000 tenders match, the answer is a `422` asking for a
+narrower filter rather than a ranking of an arbitrary slice.
+
+**Ordering:** score descending, then the deadline soonest first with no deadline last, then `id`.
+The cursor encodes all three, so no tender repeats or is skipped between pages.
+
+**Response data:**
+
+Each row is the [List tenders](#list-tenders) shape plus `relevance`:
+
+```json
+{
+  "data": [
+    {
+      "id": "cm9zx4k1p0010qw8fj3k9d2p1",
+      "title": "Բժշկական պարագաների ձեռքբերում",
+      "cpvCode": "33141110",
+      "purchaseKind": "goods",
+      "status": "active",
+      "deadlineAt": "2026-09-22T11:00:00.000Z",
+      "buyer": { "id": "cm9zx4k1p0020qw8fh7v2x4m6", "name": "«Շտապ օգնություն» ՓԲԸ", "region": null },
+      "relevance": {
+        "score": 0.55,
+        "band": "moderate",
+        "reasons": [
+          {
+            "code": "saved_search", "searchId": "cm9zx…", "searchName": "Dental",
+            "match": "cpv", "level": "group", "covered": true, "cpvCode": "33141211", "lot": 10
+          },
+          { "code": "field", "field": "medical", "cpvCode": "33141211", "lot": 10 }
+        ]
+      }
+    }
+  ],
+  "meta": {
+    "basis": "ranked",
+    "missing": [],
+    "cursor": "WzAuNTUsIjIwMjYtMDktMjJUMTE6MDA6MDAuMDAwWiIsImNtOXp4…",
+    "hasMore": true
+  }
+}
+```
+
+- `relevance.band` — `strong` (score ≥ 0.6), `moderate` (≥ 0.35) or `weak`. **This is what a
+  screen shows.** A week where nothing fits reads `weak` all the way down.
+- `relevance.score` — 0 to 1 (never reaching 1), four decimals. For tooling and support; no
+  screen is expected to show it — a number out of one has no units.
+- `relevance.reasons` — strongest first, as **codes plus values**, never prose, so the client
+  writes the Armenian. A tender is scored on its **best-matching lot**, and `lot` names it
+  (`null` when the match is the tender's headline code). Empty for a tender that fits nothing.
+  `level` is how close the CPV match is: `exact`, `group` (same 3 digits) or `division` (same 2).
+
+| `code` | Meaning | Values |
+|---|---|---|
+| `saved_search` | One of your saved searches matches | `searchId`, `searchName`, `match` (`cpv` \| `keyword`); for `cpv`: `level`, `covered` (the search asked for this code or a parent of it), `cpvCode`; for `keyword`: `keywords` (up to 3); `lot` |
+| `field` | The tender falls under one of your fields | `field`, `cpvCode`, `lot` |
+
+- `meta.basis` — `ranked`, or `insufficient_data` (below).
+- `meta.missing` — the signal sources this organization has not given yet, from `field` and
+  `saved_search`, so the client can offer the button that adds each.
+
+**Nothing to rank on.** An organization with no field and no saved search gets a successful,
+empty answer rather than an invented order — the same shape
+[Bid performance](#bid-performance) uses for `insufficient_data`:
+
+```json
+{
+  "data": [],
+  "meta": {
+    "basis": "insufficient_data",
+    "missing": ["field", "saved_search"],
+    "fallbackFilters": ["field", "purchaseKind"],
+    "cursor": null,
+    "hasMore": false
+  }
+}
+```
+
+`fallbackFilters` names the [List tenders](#list-tenders) filters to offer meanwhile, which stay
+free on every plan.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `402 PLAN_UPGRADE_REQUIRED`: plan below `pro`. `details: { permission: "tender:read", feature: "relevance", plan }`.
+- `403 NO_ORGANIZATION`: orgless session.
+- `422 VALIDATION_FAILED`: a bad filter value, or more than 2,000 tenders match.
 
 ---
 
@@ -4967,6 +5092,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | POST | `/api/v1/auth/switch-org` | Re-mint against another own membership, new refresh family | Yes |
 | GET | `/api/v1/auth/me` | The token's own claims | Yes |
 | GET | `/api/v1/tenders` | Filtered, cursor-paginated tender search | Yes (`tender:read`) |
+| GET | `/api/v1/tenders/relevant` | Biddable tenders ordered by fit to this organization | Yes (`tender:read`, Pro+) |
 | GET | `/api/v1/tenders/:id` | Tender detail with lots and documents | Yes (`tender:read`) |
 | GET | `/api/v1/saved-searches` | List alert profiles | Yes (`tender:read`) |
 | POST | `/api/v1/saved-searches` | Create an alert profile | Yes (`savedsearch:write`) |

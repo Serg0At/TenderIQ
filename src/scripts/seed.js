@@ -24,7 +24,7 @@ import { logger } from '../utils/logger.js';
 const PLANS = [
   { name: 'free', priceUsd: 0, features: ['discovery', 'alerts'] },
   { name: 'starter', priceUsd: 40, features: ['discovery', 'alerts', 'deadline-tracker'] },
-  { name: 'pro', priceUsd: 115, features: ['discovery', 'alerts', 'intelligence', 'vault', 'pipeline'] },
+  { name: 'pro', priceUsd: 115, features: ['discovery', 'alerts', 'relevance', 'intelligence', 'vault', 'pipeline'] },
   { name: 'business', priceUsd: 250, features: ['everything', 'multi-user', 'priority-support'] },
   { name: 'enterprise', priceUsd: 600, features: ['everything', 'consultant-mode', 'sla'] },
 ];

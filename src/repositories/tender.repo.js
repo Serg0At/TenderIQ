@@ -189,6 +189,114 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
 };
 
 
+/** The columns every tender list selects. */
+const LIST_COLUMNS = [
+  't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
+  't.procedure_type', 't.goods_works_services', 't.status', 't.source_status', 't.estimated_value',
+  't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
+  'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region',
+];
+
+/** A tender a supplier could still submit to. See CONTEXT.md, "Biddable tender". */
+export const BIDDABLE_STATUSES = ['active', 'amended'];
+
+/**
+ * The Discovery filters, applied to a query over `tenders as t` joined to
+ * `parties as b`. One function for both lists, so every filter the plain list
+ * has, the relevant list has too, and they cannot drift.
+ *
+ * CPV matches the tender headline code OR any of its lots. That is the whole
+ * point of tender_lots: a tender whose lot 7 of 18 is a supplier's category
+ * must surface for them, and matching only `tenders.cpv_code` would silently
+ * hide it. A missed tender is the product's #1 churn cause.
+ */
+const applyDiscoveryFilters = (query, {
+  cpvCodes = [],
+  keyword = null,
+  buyerId = null,
+  region = null,
+  minValue = null,
+  maxValue = null,
+  procedureType = null,
+  status = null,
+  deadlineAfter = null,
+  deadlineBefore = null,
+  purchaseKindLabels = [],
+  cpvPrefixes = [],
+} = {}) => {
+  if (cpvCodes.length) {
+    query.where((q) =>
+      q.whereIn('t.cpv_code', cpvCodes).orWhereExists((sub) =>
+        sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereIn('l.cpv_code', cpvCodes)
+      )
+    );
+  }
+
+  if (keyword) {
+    // ILIKE rather than full-text search: Postgres ships no Armenian
+    // dictionary, so a tsvector would only tokenise, not stem — and at this
+    // corpus size a scan costs milliseconds. Revisit with a trigram index
+    // when the archive is fully seeded.
+    const like = `%${String(keyword).trim()}%`;
+    query.where((q) =>
+      q.whereILike('t.title', like).orWhereILike('t.reference_code', like).orWhereExists((sub) =>
+        sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereILike('l.name', like)
+      )
+    );
+  }
+
+  if (buyerId) query.where('t.buyer_id', buyerId);
+  if (region) query.whereILike('b.region', `%${region}%`);
+  if (procedureType) query.where('t.procedure_type', procedureType);
+  if (status) query.whereIn('t.status', Array.isArray(status) ? status : [status]);
+  if (minValue !== null) query.where('t.estimated_value', '>=', minValue);
+  if (maxValue !== null) query.where('t.estimated_value', '<=', maxValue);
+  if (deadlineAfter) query.where('t.deadline_at', '>=', deadlineAfter);
+  if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
+  if (purchaseKindLabels.length) query.whereIn('t.goods_works_services', purchaseKindLabels);
+
+  // A Field resolves to CPV prefixes, matched on the headline code OR any lot —
+  // the same reach as `cpvCodes` above, so the field filter is never a second,
+  // narrower answer to "is this tender in my category". A tender with no CPV
+  // anywhere cannot match, and that is accepted rather than guessed from text.
+  if (cpvPrefixes.length) {
+    const patterns = cpvPrefixes.map((prefix) => `${prefix}%`);
+    query.where((q) =>
+      q.whereRaw('t.cpv_code like any(?::text[])', [patterns]).orWhereExists((sub) =>
+        sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id')
+          .whereRaw('l.cpv_code like any(?::text[])', [patterns])
+      )
+    );
+  }
+  return query;
+};
+
+/**
+ * Each tender's lots, grouped by lot number, as one JSON column: the lot's
+ * distinct CPV codes, and which of `keywords` occur in its items' names.
+ *
+ * Keyword hits are computed here rather than by shipping the names: lot text
+ * averages ~3,000 characters a tender, mostly specification paragraphs, and
+ * carrying a megabyte of it per request to test a handful of substrings is the
+ * whole cost of the query. `strpos` on `lower()` is a plain substring test —
+ * the same reading the alert matcher gives a keyword — and, unlike ILIKE,
+ * treats `%` and `_` in a keyword as the characters they are.
+ */
+const lotsColumn = (trx, keywords) =>
+  trx.raw(
+    `(select coalesce(json_agg(x order by x.lot_number), '[]'::json) from (
+        select l.lot_number,
+               array_remove(array_agg(distinct l.cpv_code), null) as codes,
+               array_remove(array_agg(distinct k.word), null) as keyword_hits
+          from tender_lots l
+          left join lateral unnest(?::text[]) as k(word)
+            on k.word <> '' and strpos(lower(l.name), lower(k.word)) > 0
+         where l.tender_id = t.id
+         group by l.lot_number
+      ) x) as lots`,
+    [keywords]
+  );
+
 /**
  * Opaque cursor: the exact sort key of the last row returned.
  *
@@ -216,30 +324,11 @@ export default class TenderRepository {
   /**
    * Filtered, cursor-paginated tender search — the discovery query.
    *
-   * CPV matches the tender headline code OR any of its lots. That is the whole
-   * point of tender_lots: a tender whose lot 7 of 18 is a supplier's category
-   * must surface for them, and matching only `tenders.cpv_code` would silently
-   * hide it. A missed tender is the product's #1 churn cause.
-   *
    * Only `is_latest` rows are returned, so an amended tender appears once, at
-   * its current version.
+   * its current version. The filters themselves are `applyDiscoveryFilters`,
+   * shared with the relevance candidates.
    */
-  static async search({
-    cpvCodes = [],
-    keyword = null,
-    buyerId = null,
-    region = null,
-    minValue = null,
-    maxValue = null,
-    procedureType = null,
-    status = null,
-    deadlineAfter = null,
-    deadlineBefore = null,
-    purchaseKindLabels = [],
-    cpvPrefixes = [],
-    limit = 20,
-    cursor = null,
-  } = {}, trx = db) {
+  static async search({ limit = 20, cursor = null, ...filters } = {}, trx = db) {
     // Sort key coalesces NULL publish dates to -infinity so the row-value
     // cursor comparison stays valid instead of silently dropping them.
     const SORT = trx.raw("coalesce(t.published_at, '-infinity'::timestamp)");
@@ -247,57 +336,9 @@ export default class TenderRepository {
     const query = trx(`${TABLE} as t`)
       .join('parties as b', 'b.id', 't.buyer_id')
       .where('t.is_latest', true)
-      .select(
-        't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
-        't.procedure_type', 't.goods_works_services', 't.status', 't.source_status', 't.estimated_value',
-        't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
-        'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region'
-      );
+      .select(...LIST_COLUMNS);
 
-    if (cpvCodes.length) {
-      query.where((q) =>
-        q.whereIn('t.cpv_code', cpvCodes).orWhereExists((sub) =>
-          sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereIn('l.cpv_code', cpvCodes)
-        )
-      );
-    }
-
-    if (keyword) {
-      // ILIKE rather than full-text search: Postgres ships no Armenian
-      // dictionary, so a tsvector would only tokenise, not stem — and at this
-      // corpus size a scan costs milliseconds. Revisit with a trigram index
-      // when the archive is fully seeded.
-      const like = `%${String(keyword).trim()}%`;
-      query.where((q) =>
-        q.whereILike('t.title', like).orWhereILike('t.reference_code', like).orWhereExists((sub) =>
-          sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereILike('l.name', like)
-        )
-      );
-    }
-
-    if (buyerId) query.where('t.buyer_id', buyerId);
-    if (region) query.whereILike('b.region', `%${region}%`);
-    if (procedureType) query.where('t.procedure_type', procedureType);
-    if (status) query.whereIn('t.status', Array.isArray(status) ? status : [status]);
-    if (minValue !== null) query.where('t.estimated_value', '>=', minValue);
-    if (maxValue !== null) query.where('t.estimated_value', '<=', maxValue);
-    if (deadlineAfter) query.where('t.deadline_at', '>=', deadlineAfter);
-    if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
-    if (purchaseKindLabels.length) query.whereIn('t.goods_works_services', purchaseKindLabels);
-
-    // A Field resolves to CPV prefixes, matched on the headline code OR any lot —
-    // the same reach as `cpvCodes` above, so the field filter is never a second,
-    // narrower answer to "is this tender in my category". A tender with no CPV
-    // anywhere cannot match, and that is accepted rather than guessed from text.
-    if (cpvPrefixes.length) {
-      const patterns = cpvPrefixes.map((prefix) => `${prefix}%`);
-      query.where((q) =>
-        q.whereRaw('t.cpv_code like any(?::text[])', [patterns]).orWhereExists((sub) =>
-          sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id')
-            .whereRaw('l.cpv_code like any(?::text[])', [patterns])
-        )
-      );
-    }
+    applyDiscoveryFilters(query, filters);
 
     const after = decodeCursor(cursor);
     if (after) {
@@ -314,6 +355,40 @@ export default class TenderRepository {
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     return { rows: page, cursor: page.length ? encodeCursor(page[page.length - 1]) : null, hasMore };
+  }
+
+  /**
+   * The tenders relevance orders: every match for the Discovery filters, with
+   * their lots (codes, and which of `keywords` their names contain), unpaged — the ranking is computed over the whole set per
+   * request and paged afterwards.
+   *
+   * By default only BIDDABLE tenders: current, active or amended, and with a
+   * deadline still ahead or none at all — a notice missing its deadline is not
+   * silently dropped. An explicit status filter from the caller replaces that
+   * default entirely, deadline included, since asking for `closed` means asking
+   * for tenders whose deadline has passed.
+   *
+   * Returns `{ rows, overflow }`: `overflow` is true when more than `cap`
+   * tenders matched, and then `rows` is empty. Ranking a truncated set would
+   * present the best of an arbitrary slice as the best of everything.
+   */
+  static async findRankable({ biddableAt, cap, keywords = [], ...filters }, trx = db) {
+    const query = trx(`${TABLE} as t`)
+      .join('parties as b', 'b.id', 't.buyer_id')
+      .where('t.is_latest', true)
+      .select(...LIST_COLUMNS, lotsColumn(trx, keywords));
+
+    applyDiscoveryFilters(query, filters);
+
+    if (!filters.status) {
+      query
+        .whereIn('t.status', BIDDABLE_STATUSES)
+        .andWhere((q) => q.whereNull('t.deadline_at').orWhere('t.deadline_at', '>', biddableAt));
+    }
+
+    const rows = await query.limit(cap + 1);
+    if (rows.length > cap) return { rows: [], overflow: true };
+    return { rows, overflow: false };
   }
 
   /** Full detail for one tender, including its lots. */

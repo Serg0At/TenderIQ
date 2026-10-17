@@ -12,6 +12,19 @@ const router = Router();
 router.use(authenticate, authorize('tender:read'));
 
 router.get('/', validate(tenderQuerySchema, 'query'), TenderController.list);
+
+/**
+ * The relevant list. Before `/:id`, or "relevant" would be read as a tender id.
+ * The same `tender:read` every role holds, plus the `relevance` plan gate: the
+ * ranking reads intelligence data (the public ledger, win history) and is sold
+ * from `pro`. The two filters it leans on stay free on the plain list.
+ */
+router.get(
+  '/relevant',
+  authorize('tender:read', { planGate: 'relevance' }),
+  validate(tenderQuerySchema, 'query'),
+  TenderController.relevant
+);
 router.get('/:id', TenderController.detail);
 
 export default router;

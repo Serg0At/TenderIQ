@@ -92,6 +92,9 @@ export const rolesActableBy = (actorRole) => ROLES.filter((role) => canActOn(act
 export const PLAN_GATED = {
   'intelligence:read': ['pro', 'business', 'enterprise'],
   invitations: ['pro', 'business', 'enterprise'],
+  // The relevant list rides on `tender:read`, which every plan has for the plain
+  // list, so — like invitations — it is gated by feature key, not permission.
+  relevance: ['pro', 'business', 'enterprise'],
 };
 
 export const roleHas = (role, permission) => (PERMISSIONS[role] ?? []).includes(permission);

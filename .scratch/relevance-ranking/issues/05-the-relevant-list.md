@@ -26,32 +26,32 @@ supplier identity is told so, in the shape `/tracked-tenders/performance` alread
 
 **Blocked by:** 02 (field list), 04 (shared CPV matching).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A supplier can read a list of biddable tenders ordered by fit: best first, weakest last,
+- [x] A supplier can read a list of biddable tenders ordered by fit: best first, weakest last,
       nothing excluded for scoring low.
-- [ ] Biddable means current and still open — a tender with no deadline is included, and an
+- [x] Biddable means current and still open — a tender with no deadline is included, and an
       explicit status filter from the caller wins over the default.
-- [ ] Equally-ranked tenders are ordered by which closes soonest, with no-deadline last, and then
+- [x] Equally-ranked tenders are ordered by which closes soonest, with no-deadline last, and then
       by identifier so the order is stable.
-- [ ] Cursor paging works across the full ordering, with the existing page-size default and cap;
+- [x] Cursor paging works across the full ordering, with the existing page-size default and cap;
       no tender is repeated or skipped between pages.
-- [ ] Every Discovery filter composes with the ranking, including the two from tickets 01 and 03.
-- [ ] Each row carries a band — strong, moderate or weak — and the numeric score; no screen is
+- [x] Every Discovery filter composes with the ranking, including the two from tickets 01 and 03.
+- [x] Each row carries a band — strong, moderate or weak — and the numeric score; no screen is
       expected to show the number.
-- [ ] Each row carries reasons as stable codes plus values, never English prose, and a reason that
+- [x] Each row carries reasons as stable codes plus values, never English prose, and a reason that
       matched on a lot names that lot.
-- [ ] A tender is scored on its best-matching lot, not an average across lots.
-- [ ] An organization with no basis to rank on receives a successful, empty response naming the
+- [x] A tender is scored on its best-matching lot, not an average across lots.
+- [x] An organization with no basis to rank on receives a successful, empty response naming the
       basis as insufficient and listing what is missing, so the client can offer the right buttons.
-- [ ] The list is scoped to the caller's organization, gated on tender reading, and plan-gated on a
+- [x] The list is scoped to the caller's organization, gated on tender reading, and plan-gated on a
       new relevance entitlement from `pro` upward. Until a subscription writer exists every
       organization reads `free`, so this answers "upgrade required" for everyone — knowingly, as
       with invitations.
-- [ ] The scoring rule is a pure function with no database, queue or clock of its own, and scores
+- [x] The scoring rule is a pure function with no database, queue or clock of its own, and scores
       are computed per request with nothing stored.
-- [ ] Alerts are provably unaffected: the matcher's threshold, weights and output are untouched.
-- [ ] Measured against the live database: the candidate set matches the biddable tenders actually
+- [x] Alerts are provably unaffected: the matcher's threshold, weights and output are untouched.
+- [x] Measured against the live database: the candidate set matches the biddable tenders actually
       present, and the response is inside the 1.5s P95 budget without a cache.
-- [ ] `docs/API_REFERENCE.md` documents the endpoint, the response shape and the insufficient-basis
+- [x] `docs/API_REFERENCE.md` documents the endpoint, the response shape and the insufficient-basis
       answer.

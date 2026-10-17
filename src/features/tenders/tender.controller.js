@@ -7,6 +7,11 @@ export default class TenderController {
     return paginated(res, rows, { cursor, hasMore });
   }
 
+  static async relevant(req, res) {
+    const { rows, meta } = await TenderService.relevant(req.user.organizationId, req.query);
+    return ok(res, rows, meta);
+  }
+
   static async detail(req, res) {
     return ok(res, await TenderService.detail(req.params.id));
   }
