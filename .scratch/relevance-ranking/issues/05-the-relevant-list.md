@@ -51,7 +51,11 @@ supplier identity is told so, in the shape `/tracked-tenders/performance` alread
 - [x] The scoring rule is a pure function with no database, queue or clock of its own, and scores
       are computed per request with nothing stored.
 - [x] Alerts are provably unaffected: the matcher's threshold, weights and output are untouched.
-- [x] Measured against the live database: the candidate set matches the biddable tenders actually
+- [ ] Measured against the live database: the candidate set matches the biddable tenders actually
       present, and the response is inside the 1.5s P95 budget without a cache.
 - [x] `docs/API_REFERENCE.md` documents the endpoint, the response shape and the insufficient-basis
       answer.
+
+> P95 not yet measured where it counts: ~20 ms server-side execution and ~2 ms ranking, but
+> wall-clock from a development machine to Neon us-east-2 was 3–9 s, all network. Measure from
+> the deployed API before ticking.

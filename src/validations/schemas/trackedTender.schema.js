@@ -10,6 +10,7 @@ const STATUSES = ['considering', 'preparing', 'submitted', 'won', 'lost', 'dropp
  * field; the constraint is what guarantees no other writer — a worker, a
  * script, a future admin tool — can put an unknown status in the column.
  */
+
 /**
  * The relevance a row of the relevant list showed, handed back verbatim when a
  * tender is tracked from that list. Verified against its signature in the
@@ -26,6 +27,7 @@ const shownRelevanceSchema = Joi.object({
   tracking: Joi.any().strip(),
 });
 
+/** Starting a pursuit. */
 export const trackTenderSchema = Joi.object({
   tenderId: Joi.string().trim().max(40).required(),
   // A tender can be tracked straight into `preparing`, but not into a settled

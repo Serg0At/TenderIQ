@@ -36,7 +36,11 @@ export const WEIGHTS = {
   bid: 0.55,
   /** The team pursued a similar tender — what it is actually working on. */
   pursued: 0.55,
-  savedSearch: 0.4,
+  /**
+   * A saved search is a claim, and a claim counts for less than the record: a
+   * covering match (0.33) stays under a single recent exact bid (≈0.37).
+   */
+  savedSearch: 0.33,
   field: 0.25,
   /** Bid at this buyer before, in some other category. */
   knownBuyer: 0.15,
@@ -243,11 +247,8 @@ const indexLedger = (ledger, now, fullMonths) => {
       byDivision.get(division).push(entry);
     }
     if (item.buyerId) {
-      const known = byBuyer.get(item.buyerId) ?? { lots: 0, wins: 0, weight: 0 };
-      known.lots += 1;
-      if (item.won) known.wins += 1;
-      known.weight += entry.weight;
-      byBuyer.set(item.buyerId, known);
+      if (!byBuyer.has(item.buyerId)) byBuyer.set(item.buyerId, []);
+      byBuyer.get(item.buyerId).push(entry);
     }
   }
   return { byDivision, byBuyer };
@@ -319,7 +320,7 @@ const categorySignal = (tender, unit, ledger) => {
  * saying "not for us"; every other state — including `lost`, which is having
  * competed — is the team saying "this is our kind of work".
  */
-const isPursued = (item) => item.status !== 'dropped' && item.goNoGo !== 'no_go';
+export const isPursued = (item) => item.status !== 'dropped' && item.goNoGo !== 'no_go';
 
 /** The pipeline, aged and split into the two directions it pushes. */
 const indexPipeline = (pipeline, now, fullMonths) => {
@@ -367,20 +368,25 @@ const resemblance = (tender, unit, items, weight, code) => {
 };
 
 /**
- * A buyer this supplier has bid at before, in another category: a relationship
- * already built counts for a little. Skipped when the category signal already
- * stands on a win at this buyer, which said it louder.
+ * A buyer this supplier has bid at before, in ANOTHER category: a relationship
+ * already built counts for a little. Only lots no closer than a different
+ * division to this unit count — a same-category lot at this buyer is already
+ * evidence for the category signal, and counting it here too would score one
+ * bid twice.
  */
-const knownBuyerSignal = (tender, ledger, category) => {
-  const known = tender.buyerId ? ledger.byBuyer.get(tender.buyerId) : null;
-  if (!known || category?.reason.sameBuyer) return [];
+const knownBuyerSignal = (tender, unit, ledger) => {
+  const atBuyer = tender.buyerId ? ledger.byBuyer.get(tender.buyerId) ?? [] : [];
+  const elsewhere = atBuyer.filter(
+    (item) => item.tenderId !== tender.id && unit.codes.every((code) => closeness(code, item.cpvCode) === 'none')
+  );
+  if (!elsewhere.length) return [];
   return [{
-    strength: WEIGHTS.knownBuyer * volume(known.weight),
-    reason: { code: 'known_buyer', lots: known.lots, wins: known.wins },
+    strength: WEIGHTS.knownBuyer * volume(elsewhere.reduce((sum, item) => sum + item.weight, 0)),
+    reason: { code: 'known_buyer', lots: elsewhere.length, wins: elsewhere.filter((item) => item.won).length },
   }];
 };
 
-const hasAnyCode = (tender) => Boolean(tender.cpvCode) || (tender.lots ?? []).some((lot) => lot.codes?.length);
+export const hasAnyCode = (tender) => Boolean(tender.cpvCode) || (tender.lots ?? []).some((lot) => lot.codes?.length);
 
 /** What a tender is about, in words: the title, plus lot names when loaded. Never the reference code — it names a procedure, not a purchase. */
 const textOf = (tender) => tender.text ?? tender.title ?? '';
@@ -426,7 +432,7 @@ const scoreTender = (tender, signals, context) => {
     const positives = [
       ...(category ? [category] : []),
       ...(pursued ? [pursued] : []),
-      ...knownBuyerSignal(tender, context.ledger, category),
+      ...knownBuyerSignal(tender, unit, context.ledger),
       ...savedSearchSignal(tender, unit, signals.savedSearches ?? []),
       ...fieldSignal(unit, signals.fields ?? []),
       ...textSignal(tender, context.text),
@@ -465,9 +471,9 @@ const scoreTender = (tender, signals, context) => {
  */
 export const compareRanked = (a, b) => {
   if (a.score !== b.score) return b.score - a.score;
-  const da = a.deadlineAt ? new Date(a.deadlineAt).getTime() : Number.POSITIVE_INFINITY;
-  const dbb = b.deadlineAt ? new Date(b.deadlineAt).getTime() : Number.POSITIVE_INFINITY;
-  if (da !== dbb) return da - dbb;
+  const closesA = a.deadlineAt ? new Date(a.deadlineAt).getTime() : Number.POSITIVE_INFINITY;
+  const closesB = b.deadlineAt ? new Date(b.deadlineAt).getTime() : Number.POSITIVE_INFINITY;
+  if (closesA !== closesB) return closesA - closesB;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 };
 

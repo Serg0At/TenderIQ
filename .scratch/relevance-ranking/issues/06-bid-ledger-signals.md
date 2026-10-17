@@ -48,4 +48,8 @@ has bid on one tender. That is a data problem, resolved in ticket 10, not a reas
       two counting rules the profile and public-bid repositories already follow.
 - [x] Reading a tenant's ranking never exposes another tenant's private data; every ledger signal
       is drawn from public award and bid records only.
-- [x] Still inside the 1.5s P95 budget with the ledger queries added.
+- [ ] Still inside the 1.5s P95 budget with the ledger queries added.
+
+> P95 not yet measured where it counts: ~20 ms server-side execution and ~2 ms ranking, but
+> wall-clock from a development machine to Neon us-east-2 was 3–9 s, all network. Measure from
+> the deployed API before ticking.

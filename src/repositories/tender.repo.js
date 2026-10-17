@@ -362,11 +362,10 @@ export default class TenderRepository {
    * their lots (codes, and which of `keywords` their names contain), unpaged — the ranking is computed over the whole set per
    * request and paged afterwards.
    *
-   * By default only BIDDABLE tenders: current, active or amended, and with a
-   * deadline still ahead or none at all — a notice missing its deadline is not
-   * silently dropped. An explicit status filter from the caller replaces that
-   * default entirely, deadline included, since asking for `closed` means asking
-   * for tenders whose deadline has passed.
+   * Only BIDDABLE tenders: current, with a deadline still ahead or none at all
+   * — a notice missing its deadline is not silently dropped — and, by default,
+   * active or amended. An explicit status filter from the caller replaces the
+   * status default; the deadline guard always holds.
    *
    * Returns `{ rows, overflow }`: `overflow` is true when more than `cap`
    * tenders matched, and then `rows` is empty. Ranking a truncated set would
@@ -380,11 +379,11 @@ export default class TenderRepository {
 
     applyDiscoveryFilters(query, filters);
 
-    if (!filters.status) {
-      query
-        .whereIn('t.status', BIDDABLE_STATUSES)
-        .andWhere((q) => q.whereNull('t.deadline_at').orWhere('t.deadline_at', '>', biddableAt));
-    }
+    // Biddable always means the deadline is still ahead (or absent). An explicit
+    // status filter only narrows WHICH open statuses count; it never reaches
+    // past a deadline — the list is "tenders I could still bid on".
+    if (!filters.status) query.whereIn('t.status', BIDDABLE_STATUSES);
+    query.andWhere((q) => q.whereNull('t.deadline_at').orWhere('t.deadline_at', '>', biddableAt));
 
     const rows = await query.limit(cap + 1);
     if (rows.length > cap) return { rows: [], overflow: true };

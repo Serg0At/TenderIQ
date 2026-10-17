@@ -1,6 +1,6 @@
 import tenders from '../../repositories/tender.repo.js';
 import relevance from '../../repositories/relevance.repo.js';
-import { rankTenders, basisOf, compareRanked } from '../../services/relevance.service.js';
+import { rankTenders, basisOf, compareRanked, isPursued, hasAnyCode } from '../../services/relevance.service.js';
 import { purchaseKindOf, purchaseKindLabels } from '../../libs/purchaseKinds.js';
 import { cpvPrefixesFor } from '../../libs/fields.js';
 import config from '../../configs/variables.config.js';
@@ -48,12 +48,12 @@ const TEXT_PROFILE_SIZE = 300;
  * organization bid on (public ledger) or pursued, most recent first.
  */
 const withTextFallback = async (candidates, signals) => {
-  const uncoded = candidates.filter((c) => !c.cpvCode && !c.lots.some((l) => l.codes.length));
+  const uncoded = candidates.filter((c) => !hasAnyCode(c));
   if (!uncoded.length) return { candidates, signals };
 
   const recent = [
     ...signals.ledger.items.map((i) => ({ id: i.tenderId, at: i.at })),
-    ...signals.pipeline.filter((p) => p.status !== 'dropped' && p.goNoGo !== 'no_go').map((p) => ({ id: p.tenderId, at: p.at })),
+    ...signals.pipeline.filter(isPursued).map((p) => ({ id: p.tenderId, at: p.at })),
   ].sort((a, b) => new Date(b.at ?? 0) - new Date(a.at ?? 0));
   const profileIds = [...new Set(recent.map((r) => r.id))].slice(0, TEXT_PROFILE_SIZE);
   if (!profileIds.length) return { candidates, signals };

@@ -1,7 +1,7 @@
 import { closeDb } from '../libs/knex.js';
 import tenders from '../repositories/tender.repo.js';
 import relevance from '../repositories/relevance.repo.js';
-import { rankTenders, WEIGHTS, CLOSENESS, BANDS } from '../services/relevance.service.js';
+import { rankTenders, hasAnyCode, WEIGHTS, CLOSENESS, BANDS } from '../services/relevance.service.js';
 
 /**
  * Would the relevant list have put a supplier's real bids near the top?
@@ -27,12 +27,15 @@ import { rankTenders, WEIGHTS, CLOSENESS, BANDS } from '../services/relevance.se
  * Run by hand; prints numbers; asserts nothing. Not a test.
  *
  * Usage:
- *   node src/scripts/backtestRelevance.js [--cutoff=2026-08-15] [--months=6,12,24] [--min-history=3]
+ *   node src/scripts/backtestRelevance.js [--cutoff=2026-08-15] [--months=6,12,24] [--min-history=3] [--lag-days=7]
  *
  *   --cutoff       the replay date; default: the median auction date in the ledger
  *   --months       full-weight windows to sweep (RELEVANCE_FULL_WEIGHT_MONTHS)
  *   --min-history  ledger lots before the cut-off for a supplier to count as
  *                  rankable; those below are reported separately, never averaged in
+ *   --lag-days     how long after its auction a lot's ledger and award become
+ *                  public; history is read only up to cut-off minus this, so a
+ *                  result published after the cut-off cannot leak into it
  */
 
 const args = Object.fromEntries(
@@ -44,6 +47,7 @@ const args = Object.fromEntries(
 
 const monthsSwept = String(args.months ?? '6,12,24').split(',').map(Number).filter((n) => n > 0);
 const minHistory = args['min-history'] ? Number(args['min-history']) : 3;
+const lagDays = args['lag-days'] !== undefined ? Number(args['lag-days']) : 7;
 
 /** The candidate shape `rankTenders` reads, as the relevant list builds it. */
 const candidateOf = (row) => ({
@@ -109,16 +113,18 @@ const run = async () => {
   // Who really bid on what was biddable at the cut-off: the targets.
   const targetsByParty = await relevance.biddersOn([...candidateIds]);
   const partyIds = [...targetsByParty.keys()];
-  const histories = await relevance.ledgerFor(partyIds, { before: cutoff });
+  const knownBy = new Date(cutoff.getTime() - lagDays * 24 * 60 * 60 * 1000);
+  const histories = await relevance.ledgerFor(partyIds, { before: knownBy });
 
   // The text fallback reads titles: load them once for every tender involved.
-  const uncoded = candidates.filter((c) => !c.cpvCode && !c.lots.some((l) => l.codes.length));
+  const uncoded = candidates.filter((c) => !hasAnyCode(c));
   const historyIds = new Set([...histories.values()].flat().map((i) => i.tenderId));
   const texts = uncoded.length ? await relevance.textFor([...uncoded.map((c) => c.id), ...historyIds]) : new Map();
   const ranked = candidates.map((c) => (texts.has(c.id) && uncoded.includes(c) ? { ...c, text: texts.get(c.id) } : c));
 
   const n = candidates.length;
   console.log(`cut-off ${cutoff.toISOString()} — ${n} tenders biddable, ${uncoded.length} with no CPV`);
+  console.log(`history: ledger lots auctioned before ${knownBy.toISOString()} (${lagDays}-day publication lag)`);
   console.log(`${partyIds.length} suppliers bid on at least one of them`);
   console.log(`weights ${JSON.stringify(WEIGHTS)}`);
   console.log(`closeness ${JSON.stringify(CLOSENESS)}  bands ${JSON.stringify(BANDS)}\n`);
