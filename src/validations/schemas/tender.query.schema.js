@@ -1,4 +1,5 @@
 import Joi from 'joi';
+import { PURCHASE_KIND_CODES } from '../../libs/purchaseKinds.js';
 
 /**
  * Discovery filters, per FR-DISC-1.
@@ -27,6 +28,12 @@ export const tenderQuerySchema = Joi.object({
     maxValue: Joi.number().min(0),
     deadlineAfter: Joi.date().iso(),
     deadlineBefore: Joi.date().iso(),
+    // Validated against the codes, so a typo is a 422 rather than an empty
+    // list that reads as "nothing of that kind exists".
+    purchaseKind: Joi.alternatives(
+      Joi.array().items(Joi.string().valid(...PURCHASE_KIND_CODES)),
+      Joi.string().valid(...PURCHASE_KIND_CODES)
+    ),
   }).default({}),
   page: Joi.object({
     size: Joi.number().integer().min(1).max(100).default(20),

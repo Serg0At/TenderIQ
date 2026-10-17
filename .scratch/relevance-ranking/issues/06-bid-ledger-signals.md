@@ -1,0 +1,51 @@
+# 06 — Rank on what the supplier actually bids on
+
+**What to build:** The ranking stops relying on what a supplier typed and starts reading what they
+did. A medical consumables supplier who has never configured a saved search opens the list and
+finds their categories at the top, because the public bid ledger already records forty tenders
+they bid on and six they won.
+
+Three signals, strongest first: a category they have **won** in — strongest of all at the same
+buyer; a category they have **bid** in; and a **buyer they are known at**, even when the category
+is new. Signals add with diminishing returns, so a tender matching several beats one matching a
+single strong signal.
+
+A **loss does not count against a tender.** Losing a category means competing in it, which is
+relevance; whether they can win it is the intelligence layer's separate question. Burying the
+categories a supplier fights hardest in would be exactly backwards.
+
+Old history fades rather than disappearing: full weight recently, less further back, in steps so a
+ranking can be reproduced by hand. The boundary is one configuration value, because ticket 11's
+backtest will sweep it rather than anyone guessing — suppliers bid rarely here, so a short window
+starves the signal instead of sharpening it.
+
+This needs the organization's **supplier identity**, the human-claimed party it bids as. Without
+it there is no way to ask "did we bid on this", so an organization that has not claimed one keeps
+ranking on the signals from ticket 05, with the absence reported in the missing-signals list
+rather than silently ignored.
+
+Expect this to look weak against today's two months of data — the median supplier in the ledger
+has bid on one tender. That is a data problem, resolved in ticket 10, not a reason to re-tune.
+
+**Blocked by:** 05.
+
+**Status:** ready-for-agent
+
+- [ ] A tender in a category the organization has won in ranks above one in a category it has only
+      bid in, which ranks above one at a merely familiar buyer.
+- [ ] Winning at the same buyer in the same category is the strongest single signal available.
+- [ ] A loss never lowers a tender's rank.
+- [ ] Category closeness uses the shared CPV rule from ticket 04, so an exact code counts for more
+      than a shared division.
+- [ ] Recent history outweighs old history, in steps, with the boundary held in configuration and
+      used nowhere else by hard-coded literal.
+- [ ] History is never discarded by age — an old bid counts less, not zero.
+- [ ] Reasons name the evidence and its scale, enough for a client to write "you won 3 lots at
+      this buyer" without inventing anything.
+- [ ] An organization with no supplier identity still receives a ranking from its other signals,
+      and the response names the missing identity.
+- [ ] Participation counts include rejected bids and money statistics exclude them, matching the
+      two counting rules the profile and public-bid repositories already follow.
+- [ ] Reading a tenant's ranking never exposes another tenant's private data; every ledger signal
+      is drawn from public award and bid records only.
+- [ ] Still inside the 1.5s P95 budget with the ledger queries added.

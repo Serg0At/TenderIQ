@@ -235,6 +235,7 @@ export default class TenderRepository {
     status = null,
     deadlineAfter = null,
     deadlineBefore = null,
+    purchaseKindLabels = [],
     limit = 20,
     cursor = null,
   } = {}, trx = db) {
@@ -247,7 +248,7 @@ export default class TenderRepository {
       .where('t.is_latest', true)
       .select(
         't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
-        't.procedure_type', 't.status', 't.source_status', 't.estimated_value',
+        't.procedure_type', 't.goods_works_services', 't.status', 't.source_status', 't.estimated_value',
         't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
         'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region'
       );
@@ -281,6 +282,7 @@ export default class TenderRepository {
     if (maxValue !== null) query.where('t.estimated_value', '<=', maxValue);
     if (deadlineAfter) query.where('t.deadline_at', '>=', deadlineAfter);
     if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
+    if (purchaseKindLabels.length) query.whereIn('t.goods_works_services', purchaseKindLabels);
 
     const after = decodeCursor(cursor);
     if (after) {

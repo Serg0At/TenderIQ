@@ -1,4 +1,5 @@
 import tenders from '../../repositories/tender.repo.js';
+import { purchaseKindOf, purchaseKindLabels } from '../../libs/purchaseKinds.js';
 import { ApiError } from '../../utils/errors.js';
 
 /** Comma-separated or repeated query params both arrive here as one list. */
@@ -31,6 +32,7 @@ export default class TenderService {
       maxValue: f.maxValue ?? null,
       deadlineAfter: f.deadlineAfter ?? null,
       deadlineBefore: f.deadlineBefore ?? null,
+      purchaseKindLabels: purchaseKindLabels(toList(f.purchaseKind)),
       limit: page.size ?? 20,
       cursor: page.cursor || null,
     });
@@ -56,6 +58,7 @@ export default class TenderService {
       referenceCode: row.reference_code,
       cpvCode: row.cpv_code,
       procedureType: row.procedure_type,
+      purchaseKind: purchaseKindOf(row.goods_works_services),
       status: row.status,
       sourceStatus: row.source_status,
       estimatedValue: row.estimated_value === null ? null : Number(row.estimated_value),

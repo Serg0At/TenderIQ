@@ -938,12 +938,15 @@ No request body
 - `filter[maxValue]` (optional): number ≥ 0.
 - `filter[deadlineAfter]` (optional): ISO-8601 date.
 - `filter[deadlineBefore]` (optional): ISO-8601 date.
+- `filter[purchaseKind]` (optional): one or several of `goods`, `works`, `services` — the
+  source's own label on every tender (Ապրանք / Աշխատանք / Ծառայություն). Anything else is a
+  `422`, not an empty list.
 - `page[size]` (optional): 1–100, default 20.
 - `page[cursor]` (optional): opaque cursor from a previous `meta.cursor`, max 200 chars.
 
 Undeclared query parameters are stripped by validation and never reach the repository.
 
-Example: `GET /api/v1/tenders?filter[status]=active&filter[cpv]=45000000&page[size]=20`
+Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=services&page[size]=20`
 
 **Response data:**
 
@@ -957,6 +960,7 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[cpv]=45000000&page[si
       "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
       "cpvCode": "45000000",
       "procedureType": "e_auction",
+      "purchaseKind": "works",
       "status": "active",
       "sourceStatus": "Ընթացիկ",
       "estimatedValue": 12750000,
@@ -980,6 +984,8 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[cpv]=45000000&page[si
 
 `estimatedValue` is `null` when unknown; `deadlineAt` and `auctionAt` are nullable — some
 notices carry neither.
+`purchaseKind` is `goods`, `works` or `services`, and `null` on the rare row whose label is
+blank or unrecognised.
 
 **Errors:**
 
@@ -1017,6 +1023,7 @@ No request body
     "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
     "cpvCode": "45000000",
     "procedureType": "e_auction",
+    "purchaseKind": "works",
     "status": "active",
     "sourceStatus": "Ընթացիկ",
     "estimatedValue": 12750000,

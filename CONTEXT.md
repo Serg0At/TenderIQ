@@ -68,3 +68,36 @@ _Avoid_: TIN, VAT number, Company number, Registration number
 The `parties` row an organization bids as — a deliberate human claim from a search, never
 inferred from a name or derived from the ՀՎՀՀ. Its absence is why win/loss can be unknown.
 _Avoid_: Supplier match, Party link, Company profile
+
+### Discovery
+
+**Saved search**:
+One organization's standing description of tenders it wants to hear about — keywords, CPV
+codes and a value range, under a name. The input to alerts, and one input to relevance.
+_Avoid_: Profile, Search profile, Subscription, Watch
+
+**Match**:
+A tender clearing one saved search's threshold. Binary, and the only thing that decides
+whether an alert fires.
+_Avoid_: Relevance, Hit, Fit
+
+**Relevance**:
+How well one biddable tender fits one organization, graded and drawn from several signals — its
+saved searches, its pursuit history and its public bid history. Orders a list; never decides an
+alert, and never hides a tender.
+_Avoid_: Match, Recommendation, Score (alone), Suitability
+
+**Biddable tender**:
+A tender an organization could still submit to — active or amended, with a deadline not yet
+passed or no deadline at all. The only tenders relevance orders.
+_Avoid_: Open tender, Live tender, Current tender
+
+**Field**:
+The industry an organization works in, chosen from a fixed list rather than typed. A weak
+relevance signal and a discovery filter. `organizations.type` in code.
+_Avoid_: Type, Vertical, Industry, Sector, Category
+
+**Purchase kind**:
+Whether a tender buys goods, works or services, as the source labels it (Ապրանք, Աշխատանք,
+Ծառայություն). A property of the tender, never of the organization.
+_Avoid_: Procedure type, Tender type, Field, Category
