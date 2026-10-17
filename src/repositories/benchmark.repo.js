@@ -35,6 +35,7 @@ export default class BenchmarkRepository {
       .with('comparable', (qb) => {
         qb.select(
           'a.amount',
+          'a.net_amount',
           'a.estimated_value',
           // Carried so the aggregate below can count how many distinct
           // procurements the sample actually represents.
@@ -67,9 +68,18 @@ export default class BenchmarkRepository {
          * carries the count that distinguishes them.
          */
         trx.raw('count(distinct tender_id)::int as distinct_tenders'),
-        trx.raw('min(amount)::numeric as min_price'),
-        trx.raw('percentile_cont(0.5) within group (order by amount)::numeric as median_price'),
-        trx.raw('max(amount)::numeric as max_price'),
+        /**
+         * Price levels WITHOUT VAT; the discount below stays gross.
+         *
+         * A benchmark answers "what wins", and the auction ranks on the net
+         * value. About three quarters of bids carry 20% VAT, so a gross median
+         * mixes two price levels a fifth apart, and the recommendation built
+         * on it would tell a non-VAT bidder to bid 20% too high. The budget is
+         * gross, so the discount is gross against gross.
+         */
+        trx.raw('min(net_amount)::numeric as min_price'),
+        trx.raw('percentile_cont(0.5) within group (order by net_amount)::numeric as median_price'),
+        trx.raw('max(net_amount)::numeric as max_price'),
         // Discount is only meaningful where the buyer published an estimate,
         // so rows without one are excluded from that average rather than
         // counted as a 0% discount.
@@ -165,6 +175,7 @@ export default class BenchmarkRepository {
         'supplier.name as supplier_name',
         'a.lot_number',
         'a.amount',
+        'a.net_amount',
         'a.estimated_value',
         'a.currency',
         trx.raw('coalesce(l.cpv_code, t.cpv_code) as cpv_code'),

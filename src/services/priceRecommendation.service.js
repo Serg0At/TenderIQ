@@ -63,7 +63,9 @@ RULES
 6. Never assert or imply that a buyer favours a supplier, that a specification was written for a particular bidder, or that any procurement was improper. Repeat wins have ordinary explanations. You may state counts and shares as facts; you may not characterise them as misconduct.
 7. Write for a supplier deciding what to bid tomorrow. Be concrete and brief. No preamble.
 
-CURRENCY: all amounts are Armenian dram (AMD).`;
+CURRENCY: all amounts are Armenian dram (AMD).
+
+VAT: award prices ("wonAt", and the benchmark's min/median/max) EXCLUDE VAT — they are the auction value bidders are ranked on, and your recommended range is on the same basis. Budgets ("budget", "estimatedValue") INCLUDE VAT. The two are not directly comparable, so never set a price against a budget yourself; discounts in the packet are already computed on a consistent basis.`;
 
 /**
  * The shape the model must return. Also the Joi schema that checks it did.
@@ -173,7 +175,8 @@ export default class PriceRecommendationService {
         : null,
       comparables: comparables.map((c) => ({
         publishedAt: c.published_at,
-        wonAt: num(c.amount),
+        // Without VAT, on the benchmark's basis; the budget beside it is gross.
+        wonAt: num(c.net_amount),
         budget: num(c.estimated_value),
         bidderCount: c.bidder_count,
         cpvCode: c.cpv_code,
@@ -306,6 +309,8 @@ export default class PriceRecommendationService {
       status: 'ok',
       ...value,
       currency: 'AMD',
+      // The range is an auction value: what a bidder enters, before VAT.
+      vat: 'excluded',
       basis: evidence.benchmark.basis,
       sampleSize: evidence.benchmark.sampleSize,
       distinctTenders: evidence.benchmark.distinctTenders,

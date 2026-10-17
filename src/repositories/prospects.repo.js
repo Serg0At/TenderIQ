@@ -67,13 +67,16 @@ export const listProspectCandidates = async (
        * AMD instead of 3 million, a 107,000x error that fed straight into
        * value-density scoring.
        *
+       * Without VAT, so a VAT payer and a non-payer are on one scale; the
+       * gross figure includes 20% that is not the supplier's revenue.
+       *
        * The win/loss counts above deliberately do NOT filter: being rejected
        * is still participation, and still a loss.
        */
-      trx.raw(`sum(b.final_offer_price) filter (where b.status = 'accepted')::numeric as total_final_value`),
-      trx.raw(`percentile_cont(0.5) within group (order by b.final_offer_price) filter (where b.status = 'accepted')::numeric as median_final_value`),
-      trx.raw(`min(b.final_offer_price) filter (where b.status = 'accepted')::numeric as min_final_value`),
-      trx.raw(`max(b.final_offer_price) filter (where b.status = 'accepted')::numeric as max_final_value`),
+      trx.raw(`sum(b.final_offer_net) filter (where b.status = 'accepted')::numeric as total_final_value`),
+      trx.raw(`percentile_cont(0.5) within group (order by b.final_offer_net) filter (where b.status = 'accepted')::numeric as median_final_value`),
+      trx.raw(`min(b.final_offer_net) filter (where b.status = 'accepted')::numeric as min_final_value`),
+      trx.raw(`max(b.final_offer_net) filter (where b.status = 'accepted')::numeric as max_final_value`),
       trx.raw('min(t.published_at) as first_tender_published_at'),
       trx.raw('max(t.published_at) as last_tender_published_at'),
       // Titles + goods/works/services labels for the last N tenders this
@@ -108,7 +111,7 @@ export const getProspectBidHistory = async (supplierId, { sinceMonths = 24 } = {
       'b.rank',
       'b.status',
       'b.budget_price',
-      'b.final_offer_price',
+      'b.final_offer_net',
       't.published_at',
       't.deadline_at'
     )
@@ -152,14 +155,14 @@ export const getProofSheetData = async (supplierId, { sinceMonths = 24 } = {}, t
       't.reference_code',
       'buyer.name as buyer_name',
       'lost.lot_number',
-      'lost.final_offer_price as our_final_price',
-      'won.final_offer_price as rival_final_price',
+      'lost.final_offer_net as our_final_price',
+      'won.final_offer_net as rival_final_price',
       'rival.name as rival_supplier_name',
       't.published_at',
       't.deadline_at',
       trx.raw(
-        `case when lost.final_offer_price is not null and won.final_offer_price is not null and won.final_offer_price <> 0
-              then round(((lost.final_offer_price - won.final_offer_price) / won.final_offer_price * 100)::numeric, 1)
+        `case when lost.final_offer_net is not null and won.final_offer_net is not null and won.final_offer_net <> 0
+              then round(((lost.final_offer_net - won.final_offer_net) / won.final_offer_net * 100)::numeric, 1)
               else null end as pct_above_winner`
       )
     )

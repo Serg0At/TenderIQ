@@ -102,3 +102,19 @@ _Avoid_: Type, Vertical, Industry, Sector, Category
 Whether a tender buys goods, works or services, as the source labels it (Ապրանք, Աշխատանք,
 Ծառայություն). A property of the tender, never of the organization.
 _Avoid_: Procedure type, Tender type, Field, Category
+
+### Intelligence
+
+**Net price**:
+An offer's value **without VAT** — the figure the auction ranks bidders on, what a supplier
+enters, and the basis for every comparison between bidders: the gap from the winner, a lot's
+price range, benchmark prices, the price recommendation, an organization's own bid. `*_net` in
+code.
+_Avoid_: Price (unqualified), Value, Bid amount
+
+**Gross price**:
+An offer's price **with VAT** — what the buyer pays, and the basis for every comparison with the
+buyer's budget, which is itself gross: discount %, the over-budget check, buyer spend.
+`*_price` and `awards.amount` in code. A non-VAT payer's net and gross prices are equal, so
+comparing gross prices across bidders puts a VAT-paying winner up to 20% above a rival it beat.
+_Avoid_: Final price, Total

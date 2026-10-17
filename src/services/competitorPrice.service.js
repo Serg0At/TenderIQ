@@ -44,8 +44,10 @@ const band = (bidderCount) => {
 };
 
 /**
- * Percent below the buyer's published budget. Null rather than zero when there
- * is no budget to compare against — a missing figure is not a 0% discount, and
+ * Percent below the buyer's published budget. Takes the price WITH VAT, because
+ * the budget includes it and the source checks bids against it gross. Null
+ * rather than zero when there is no budget to compare against — a missing
+ * figure is not a 0% discount, and
  * averaging those in is how a discount statistic quietly becomes meaningless.
  */
 const discountPct = (price, budget) => {
@@ -55,7 +57,11 @@ const discountPct = (price, budget) => {
   return Math.round(((b - p) / b) * 1000) / 10;
 };
 
-/** Percent above the winning price. 0 for the winner itself. */
+/**
+ * Percent above the winning price. 0 for the winner itself. Takes prices
+ * WITHOUT VAT: the auction ranks on them, and on the gross figure a VAT-paying
+ * winner reads up to 20% dearer than a non-payer it beat.
+ */
 const gapPct = (price, winning) => {
   const p = Number(price);
   const w = Number(winning);
@@ -217,6 +223,7 @@ export default class CompetitorPriceService {
       const award = awardByLot.get(lotNumber) ?? null;
       const budget = num(stats.budget_price ?? award?.estimated_value);
       const winningPrice = num(award?.amount);
+      const winningNet = num(award?.net_amount);
 
       const rows = ledger.filter((b) => b.lot_number === lotNumber);
       const visible = includeRejected ? rows : rows.filter((b) => b.status === 'accepted');
@@ -242,6 +249,7 @@ export default class CompetitorPriceService {
               name: award.supplier_name,
               region: award.supplier_region ?? null,
               price: winningPrice,
+              netPrice: winningNet,
               discountPct: discountPct(winningPrice, budget),
               awardedAt: award.awarded_at,
             }
@@ -255,6 +263,7 @@ export default class CompetitorPriceService {
         // Money spread over ACCEPTED bids only. Rejected submissions carry
         // real but absurd figures — one was 6,666,600,000,000 AMD against a
         // 75,000 budget — and including them destroys any price statistic.
+        // Without VAT, like the gap from the winner.
         priceRange:
           stats.accepted_count > 0
             ? { low: num(stats.lowest_accepted), high: num(stats.highest_accepted) }
@@ -271,7 +280,9 @@ export default class CompetitorPriceService {
           // flag says that happened rather than leaving it looking absent.
           initialOffer: opening.value,
           initialOfferUnreliable: opening.unreliable,
+          initialOfferNet: opening.value === null ? null : num(b.initial_offer_net),
           finalOffer: num(b.final_offer_price),
+          finalOfferNet: num(b.final_offer_net),
           vatPct: b.vat_pct === null ? null : Number(b.vat_pct),
           // Verbatim from the source's own participant-status column, never
           // inferred. A supplier reading this is entitled to know that a low
@@ -279,7 +290,7 @@ export default class CompetitorPriceService {
           status: b.status,
           isWinner: b.is_winner === true,
           discountPct: discountPct(b.final_offer_price, budget),
-          gapFromWinnerPct: gapPct(b.final_offer_price, winningPrice),
+          gapFromWinnerPct: gapPct(b.final_offer_net, winningNet),
           applicationUrl: b.application_url,
           };
         }),

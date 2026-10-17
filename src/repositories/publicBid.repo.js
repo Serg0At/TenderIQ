@@ -87,7 +87,9 @@ export default class PublicBidRepository {
         'b.rank',
         'b.budget_price',
         'b.initial_offer_price',
+        'b.initial_offer_net',
         'b.final_offer_price',
+        'b.final_offer_net',
         'b.vat_pct',
         'b.status',
         'b.currency',
@@ -100,7 +102,8 @@ export default class PublicBidRepository {
         { column: 'b.lot_number' },
         // NULLS LAST: an unranked bid is not a leading bid.
         { column: 'b.rank', order: 'asc', nulls: 'last' },
-        { column: 'b.final_offer_price', order: 'asc' },
+        // Net, because that is what the auction ranks on.
+        { column: 'b.final_offer_net', order: 'asc' },
       ]);
   }
 
@@ -142,10 +145,12 @@ export default class PublicBidRepository {
         'b.rank',
         'b.status',
         'b.final_offer_price',
+        'b.final_offer_net',
         'b.budget_price',
         'b.currency',
         'a.supplier_id as award_supplier_id',
         'a.amount as award_amount',
+        'a.net_amount as award_net_amount',
         trx.raw('coalesce(a.supplier_id = b.supplier_id, false) as is_winner')
       )
       .orderBy('b.lot_number');
@@ -165,6 +170,7 @@ export default class PublicBidRepository {
         'p.name as supplier_name',
         'p.region as supplier_region',
         'a.amount',
+        'a.net_amount',
         'a.estimated_value',
         'a.currency',
         'a.awarded_at',
@@ -205,12 +211,13 @@ export default class PublicBidRepository {
         // the same figure, so max() is just a way to pick it up through the
         // GROUP BY rather than an aggregate with meaning.
         trx.raw('max(b.budget_price)::numeric as budget_price'),
-        // Money: accepted only.
+        // Money: accepted only, and without VAT — this is the spread bidders
+        // competed across, and a VAT payer's gross price would widen it by 20%.
         trx.raw(
-          `min(b.final_offer_price) filter (where b.status = 'accepted')::numeric as lowest_accepted`
+          `min(b.final_offer_net) filter (where b.status = 'accepted')::numeric as lowest_accepted`
         ),
         trx.raw(
-          `max(b.final_offer_price) filter (where b.status = 'accepted')::numeric as highest_accepted`
+          `max(b.final_offer_net) filter (where b.status = 'accepted')::numeric as highest_accepted`
         )
       )
       .orderBy('b.lot_number');

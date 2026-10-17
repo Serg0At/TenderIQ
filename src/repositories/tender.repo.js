@@ -130,7 +130,9 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
         supplier_id: supplierId,
         budget_price: lot.estimatedValue,
         initial_offer_price: bid.initialPrice,
+        initial_offer_net: bid.initialValue,
         final_offer_price: bid.finalPrice,
+        final_offer_net: bid.finalValue,
         vat_pct: bid.finalVatPercent,
         // The source leaves the cell blank for a bid that stood; only a
         // rejection is spelled out.
@@ -165,6 +167,7 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
           lot_number: lot.lotNumber,
           supplier_id: supplierId,
           amount: bid.finalPrice,
+          net_amount: bid.finalValue,
           estimated_value: lot.estimatedValue,
           currency,
           awarded_at: awardedAt ?? null,
@@ -477,11 +480,11 @@ export default class TenderRepository {
       // DISTINCT ON keeps the first row per (tender, lot) after ordering by
       // rank — Postgres doing the winner selection in one pass.
       const inserted = await trx.raw(
-        `INSERT INTO awards (id, tender_id, lot_number, supplier_id, amount, estimated_value, currency, awarded_at, status, source)
+        `INSERT INTO awards (id, tender_id, lot_number, supplier_id, amount, net_amount, estimated_value, currency, awarded_at, status, source)
          SELECT DISTINCT ON (b.tender_id, b.lot_number)
                 substr(md5(random()::text || b.id), 1, 24),
                 b.tender_id, b.lot_number, b.supplier_id,
-                b.final_offer_price, b.budget_price, b.currency,
+                b.final_offer_price, b.final_offer_net, b.budget_price, b.currency,
                 t.auction_at, 'awarded', b.source
            FROM public_tender_bids b
            JOIN tenders t ON t.id = b.tender_id

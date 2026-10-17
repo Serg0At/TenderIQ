@@ -761,6 +761,15 @@ decision that has already been made.
   next sweep retries.
 - **A win comes from `awards`, never from `rank = 1`** — the same rule the ingestion layer
   learned the hard way. The source ranks rejected submissions too.
+- **Every offer has two prices, and each question uses one.** The ledger publishes the value
+  without VAT (`*_net`, `awards.net_amount`) and the price with it (`*_price`, `awards.amount`).
+  The auction ranks on net — 0 rank inversions across the corpus on net, 590 on gross — so
+  anything comparing bidders, or telling a supplier what to bid, uses net: the gap from the
+  winner, price ranges, benchmark prices, the recommendation, `bids.price`/`winning_price`. The
+  budget is gross and the source rejects an offer whose *gross* exceeds it, so anything
+  compared with the budget uses gross: discount %, the opening-offer check, buyer spend. Only
+  the gross figure was stored until 2026-10-17, which put a VAT-paying winner up to 20% above
+  rivals it beat; found by cross-checking HayTender, which shows net.
 - **`sample_size` is not sample independence.** Awards are per lot, so one multi-lot procurement
   can clear `MIN_COMPARABLES` alone, and most categories that pass draw from only a handful of
   distinct tenders. `price_benchmarks.distinct_tenders` carries the real figure; anything that

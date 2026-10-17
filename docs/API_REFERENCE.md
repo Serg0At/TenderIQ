@@ -1511,7 +1511,9 @@ No request body
 
 `relevance` is what the [relevant list](#relevant-tenders) showed when the tender was tracked from
 it, recorded once and never recomputed — `null` when it was tracked from anywhere else.
-`bid` is `null` when no draft exists. `gapVsWinner` is computed, not stored:
+`bid` is `null` when no draft exists. `price` is the auction value **without VAT** — what the
+organization enters in the auction and what it is ranked on — and `winningPrice` is resolved on
+the same basis. `gapVsWinner` is computed, not stored:
 `(price - winningPrice) / winningPrice`, and `null` unless both are known and the winner's
 price is positive. `outcome` is `won`, `lost`, `not_found` or `null` — `not_found` means the
 public ledger does not list this organization, which is a real outcome and not an error.
@@ -3977,6 +3979,10 @@ the client can say "3 of 5 needed" rather than issue a bare refusal.
 confidence, **not `sampleSize`** — awards are per lot, so one multi-lot procurement can clear
 the threshold alone.
 
+`minPrice`, `medianPrice` and `maxPrice` are winning prices **without VAT** — the auction value,
+so VAT payers and non-payers sit on one scale. `avgDiscountPct` compares the VAT-inclusive
+winning price with the VAT-inclusive budget.
+
 **Errors:**
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
@@ -4061,20 +4067,23 @@ Settled tender:
           "name": "«Շինարար» ՍՊԸ",
           "region": "Երևան",
           "price": 3810000,
+          "netPrice": 3175000,
           "discountPct": 10.4,
           "awardedAt": "2026-07-18T00:00:00.000Z"
         },
         "outcome": "awarded",
-        "priceRange": { "min": 3810000, "max": 4180000 },
+        "priceRange": { "low": 3175000, "high": 3480000 },
         "bids": [
           {
             "supplierId": "cm9zx4k1p0100qw8fn2j5l8w1",
             "name": "«Շինարար» ՍՊԸ",
             "region": "Երևան",
             "rank": 1,
-            "initialOffer": 4250000,
+            "initialOffer": 4200000,
             "initialOfferUnreliable": false,
+            "initialOfferNet": 3500000,
             "finalOffer": 3810000,
+            "finalOfferNet": 3175000,
             "vatPct": 20,
             "status": "accepted",
             "isWinner": true,
@@ -4115,6 +4124,12 @@ Tender not yet settled (no public bid ledger):
 ```
 
 - `status`: `ok` or `no_public_bids`.
+- **Two prices per offer.** `finalOffer`, `initialOffer` and `winner.price` include VAT;
+  `finalOfferNet`, `initialOfferNet` and `winner.netPrice` do not. The budget includes VAT and
+  the source checks bids against it gross, so `discountPct` is computed on the VAT-inclusive
+  price. The auction ranks on the net value, so `gapFromWinnerPct` and `priceRange` use it —
+  on the gross figure a VAT-paying winner reads up to 20% dearer than a non-payer it beat.
+  `initialOfferNet` is null whenever `initialOffer` is.
 - `competition`: a band derived from `bidderCount` (`sole` when exactly one bidder).
 - `outcome`: `awarded` or `no_accepted_bid`. **A win comes from `awards`, never from
   `rank = 1`** — the source ranks rejected submissions too, which is why `isWinner` and
@@ -4174,6 +4189,7 @@ Three distinct `status` values are possible.
     "rationale": "Recent awards in this category settled 6–11% below budget...",
     "risks": ["Only 9 distinct procurements support this range."],
     "currency": "AMD",
+    "vat": "excluded",
     "basis": "exact_cpv",
     "sampleSize": 34,
     "distinctTenders": 9,
@@ -4224,6 +4240,10 @@ The exact fields inside the model-produced half (`recommendedLow`, `recommendedH
 schema-validated before use, and a range falling outside the observed `minPrice`/`maxPrice` is
 **rejected, not clamped** — silently trimming it would hide that the model went outside its
 evidence. `cached: true` appears only on a cache hit.
+
+The range is **without VAT** (`vat: "excluded"`): it is an auction value, the figure bidders are
+ranked on, and it is drawn from benchmark prices on the same basis. `estimatedValue` and each
+comparable's `budget` include VAT, so the two are not compared directly.
 
 **`insufficient_data`** — too few comparables to support any recommendation:
 

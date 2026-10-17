@@ -55,7 +55,8 @@ function up(pg) {
       table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
       table.integer('lot_number');
       table.string('supplier_id').references('id').inTable('parties').onDelete('SET NULL');
-      table.decimal('amount', 18, 2);
+      table.decimal('amount', 18, 2);               // with VAT — what the buyer pays; compare to estimated_value
+      table.decimal('net_amount', 18, 2);           // without VAT — what won the auction; compare to other bids
       table.decimal('estimated_value', 18, 2);
       table.string('currency').notNullable().defaultTo('AMD');
       table.timestamp('awarded_at');
@@ -80,9 +81,14 @@ function up(pg) {
       table.integer('lot_number').notNullable();
       table.string('supplier_id').references('id').inTable('parties').onDelete('SET NULL');
       table.integer('rank');                        // "Զբաղեցրած տեղ" — 1 = lot winner
-      table.decimal('budget_price', 18, 2);         // "Նախահաշվային գին"
-      table.decimal('initial_offer_price', 18, 2);  // "Նախնական առաջարկ — Գին"
-      table.decimal('final_offer_price', 18, 2);    // "Վերջին առաջարկ — Գին", the benchmark figure
+      // Two prices per offer, because they answer different questions. The budget includes
+      // VAT and is checked against `*_price`; the auction ranks on `*_net`. Comparing a VAT
+      // payer's `_price` with a non-payer's puts the winner 20% above a bidder it beat.
+      table.decimal('budget_price', 18, 2);         // "Նախահաշվային գին", with VAT
+      table.decimal('initial_offer_price', 18, 2);  // "Նախնական առաջարկ — Գին", with VAT
+      table.decimal('initial_offer_net', 18, 2);    // the same offer's value cell, without VAT
+      table.decimal('final_offer_price', 18, 2);    // "Վերջին առաջարկ — Գին", with VAT
+      table.decimal('final_offer_net', 18, 2);      // the same offer's value cell, without VAT — what ranks
       table.float('vat_pct');
       // 'accepted' | 'rejected', mapped from "Մասնակցի կարգավիճակ" (blank on
       // the source page = accepted). Left a string, like every other status
@@ -300,7 +306,7 @@ function up(pg) {
       // it, and carrying both would mean two cascade paths for one relationship.
       table.string('tracked_tender_id').notNullable().unique();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
-      table.decimal('price', 18, 2);
+      table.decimal('price', 18, 2);                // without VAT — the auction value entered
       table.integer('lot_number');
       table.string('currency').notNullable().defaultTo('AMD');
       table.text('notes');
@@ -311,7 +317,8 @@ function up(pg) {
       table.string('outcome');
       table.timestamp('outcome_resolved_at');
       // Copied, not joined: public_tender_bids is replaced wholesale on re-normalize, so a
-      // stored "we lost by 4%" must not move because a parser improved later.
+      // stored "we lost by 4%" must not move because a parser improved later. Without VAT,
+      // like `price`, so the gap compares like with like.
       table.decimal('winning_price', 18, 2);
       table.timestamp('created_at').defaultTo(pg.fn.now());
       table.timestamp('updated_at').defaultTo(pg.fn.now());

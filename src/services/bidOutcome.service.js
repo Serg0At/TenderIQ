@@ -52,7 +52,9 @@ export default class BidOutcomeService {
     if (!scoped.length) return { outcome: 'not_found', winningPrice: null };
 
     const won = scoped.find((e) => e.is_winner === true);
-    if (won) return { outcome: 'won', winningPrice: money(won.award_amount ?? won.final_offer_price) };
+    // Without VAT: `bids.price` is the auction value the organisation entered,
+    // and the stored gap compares the two.
+    if (won) return { outcome: 'won', winningPrice: money(won.award_net_amount ?? won.final_offer_net) };
 
     /**
      * We bid and did not win. The winning price is the award amount on the lot
@@ -60,8 +62,8 @@ export default class BidOutcomeService {
      * award join, so a multi-lot tender reports the lot we lost rather than
      * whichever lot happened to be cheapest.
      */
-    const withAward = scoped.find((e) => e.award_amount !== null && e.award_amount !== undefined);
-    return { outcome: 'lost', winningPrice: money(withAward?.award_amount ?? null) };
+    const withAward = scoped.find((e) => e.award_net_amount !== null && e.award_net_amount !== undefined);
+    return { outcome: 'lost', winningPrice: money(withAward?.award_net_amount ?? null) };
   }
 
   /**
