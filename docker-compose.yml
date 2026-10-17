@@ -5,8 +5,7 @@
 # automatically, so the credentials below stay in sync with what the app loads
 # through src/configs/variables.config.js.
 #
-#   docker compose up -d                       # redis + minio (+ bucket bootstrap)
-#   docker compose --profile local-db up -d    # ...plus Postgres, instead of Neon
+#   docker compose up -d              # redis + minio (+ bucket bootstrap)
 
 services:
   redis:
@@ -25,31 +24,6 @@ services:
       - redis-data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
-  # Local Postgres, opt-in: .env points at Neon by default. To use this one, set
-  # PSQL_HOST=127.0.0.1, PSQL_PORT to the published port below and PSQL_SSL to
-  # empty, then `npm run migrate:up && npm run seed`. The credentials are the
-  # app's own PSQL_* values, so the two cannot disagree. Published on 5433 by
-  # default, because a Postgres installed on the host usually holds 5432.
-  # 15 or newer: the schema uses `ON DELETE SET NULL (column)`.
-  postgres:
-    image: postgres:17-alpine
-    container_name: tenderiq-postgres
-    restart: unless-stopped
-    profiles: ['local-db']
-    environment:
-      POSTGRES_USER: ${PSQL_USER:-tenderiq}
-      POSTGRES_PASSWORD: ${PSQL_PASSWORD:-tenderiq}
-      POSTGRES_DB: ${PSQL_DATABASE:-tenderiq}
-    ports:
-      - '${PSQL_LOCAL_PORT:-5433}:5432'
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 10s
       timeout: 3s
       retries: 5
@@ -95,5 +69,4 @@ services:
 volumes:
   redis-data:
   minio-data:
-  postgres-data:
 
