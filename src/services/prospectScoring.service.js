@@ -20,12 +20,12 @@
 // (Armenian, sometimes Russian) sampled from the supplier's own bid history
 // — never the supplier's own name.
 //
-// cpv_code is always null in the live schema today (never parsed — see
-// mapArmepsDetail in workers/normalizer.js, which sets cpvCode: null because
-// the code lives only inside the invitation ZIP), so this is keyword matching
-// over free text, not real CPV classification. That is a materially weaker
-// signal than CPV would be and should be replaced once CPV parsing exists;
-// treat `vertical` below as a best-effort label, not a fact.
+// This is keyword matching over free text, not CPV classification. CPV is
+// parsed now, from the invitation ZIP, but unevenly: nearly every current
+// tender carries a code on at least one lot, while the archive — which is most
+// of a supplier's history — mostly does not (profile.repo.js: roughly a third).
+// Text still reaches every tender, so it stays; treat `vertical` below as a
+// best-effort label, not a fact. libs/fields.js is the CPV-based mapping.
 
 const VERTICAL_KEYWORDS = {
   construction: {

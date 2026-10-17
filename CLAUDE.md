@@ -225,7 +225,7 @@ POST   /auth/register          { email, password, displayName }  -> 201, no toke
 POST   /auth/verify-email      { token }
 POST   /auth/login             { email, password }  -> session + organizations[] (possibly empty)
 POST   /auth/switch-org        { organizationId }   -> re-mint against another membership
-POST   /organizations          { name, type? }      -> organization + a fresh session for it
+POST   /organizations          { name, fields? }    -> organization + a fresh session for it
 
 GET    /organization/members              roster; every member reads it
 PATCH  /organization/members/:userId      role change — four roles, never owner
@@ -252,7 +252,7 @@ POST   /invitations/:id/{accept,decline}
   blurred client would be decoration. The gating lives in the null claims. `authenticate` itself
   refuses an orgless token with `NO_ORGANIZATION`, so a route that authenticates and forgets to
   authorize still denies it; the allowlist is explicit and greppable — the routes mounted on
-  `authenticateOrgless`: `POST /organizations`, `/invitations` (list, accept, decline),
+  `authenticateOrgless`: `POST /organizations`, `GET /fields` (its picker), `/invitations` (list, accept, decline),
   `POST /auth/switch-org` (the way out for a second device still holding an orgless session) and
   `GET /auth/me`. `POST /auth/refresh` and `/auth/logout` take no bearer token. An orgless refresh
   stays orgless even if a membership has appeared since — moving into a tenant is `switch-org`.
@@ -524,8 +524,34 @@ Where reference docs say "Prisma client", read "Knex instance"; where they say "
 ## Current state
 
 Ingestion, the HTTP API, discovery, the intelligence layer, the **bid pipeline**, the **AI
-checklist** and the **document vault** all run, and so do **multi-user organizations** (F-05).
-Billing — the rest of phase 5 — and phase 6 (post-award) do not exist.
+checklist** and the **document vault** all run, and so do **multi-user organizations** (F-05)
+and **relevance ranking** (FR-DISC-4). Billing — the rest of phase 5 — and phase 6 (post-award)
+do not exist.
+
+**Relevance ranking** (`GET /tenders/relevant`, spec and tickets in `.scratch/relevance-ranking/`,
+ADR 0003) — what building it decided, beyond the spec:
+
+- **Relevance is not a Match.** `services/relevance.service.js#rankTenders` is pure and reads
+  nothing the alert pipeline reads; the matcher and `MATCH_THRESHOLD` share only `libs/cpv.js`.
+  Tuning relevance weights can never change which alerts fire.
+- **One CPV rule, two questions.** `libs/cpv.js` answers the matcher's *covers* (directional) and
+  relevance's *closeness* (exact / group / division). Its `significantPrefix` strips a division's
+  own trailing zero, so a saved search for 30000000 covers every 3x division — kept, because
+  fixing it changes which alerts fire; it wants its own ticket.
+- **Fields are `organizations.type`, a `text[]` of ids from `libs/fields.js`, ≤ 3.** That constant
+  is the only definition of each field's CPV prefixes and refuses to load if two overlap. There is
+  no `other`: optional fields mean "none of these" is choosing none.
+- **No basis, no order.** With no field, saved search, bid history or pursuit, the endpoint answers
+  `basis: 'insufficient_data'` and `missing`, never a ranking of zeroes.
+- **What was shown is signed, not stored.** Each row carries an HMAC (`libs/relevanceReceipt.js`,
+  `relevance:` domain prefix) over its score and reasons; `POST /tracked-tenders` records them only
+  if the signature verifies for that org and tender. Nothing is written per page view.
+- **Keyword hits are computed in SQL**, not by shipping lot names (~3,000 chars a tender, ~85% of
+  the payload). The ranking query is ~20 ms server-side; from a developer machine to Neon the
+  wall-clock is network.
+- **The backtest is the verification**, not a test: `npm run relevance:backtest`. Before the
+  archive backfill it showed 44% of real bids in the top 10 for suppliers with history (random
+  6%); re-run it after ticket 10 to settle `RELEVANCE_FULL_WEIGHT_MONTHS`.
 
 **Team tasks were cut**, not deferred — the assignment/due-date feature was built and then
 removed as unnecessary. Do not rebuild it from the reference spec's `product/Feature List.md`
