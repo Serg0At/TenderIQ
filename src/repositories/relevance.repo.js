@@ -75,6 +75,27 @@ export default class RelevanceRepository {
   }
 
   /**
+   * Title and lot names of public tenders, for word overlap: a Map of id → text.
+   *
+   * Each item name is cut to its first 300 characters. The item's name comes
+   * first and the specification paragraph after it, and it is the specification
+   * that makes lot text average ~3,000 characters a tender; the words that say
+   * what is being bought are at the front.
+   */
+  static async textFor(tenderIds, trx = db) {
+    if (!tenderIds.length) return new Map();
+    const rows = await trx('tenders as t')
+      .whereIn('t.id', tenderIds)
+      .select(
+        't.id',
+        trx.raw(
+          `concat_ws(' ', t.title, (select string_agg(left(l.name, 300), ' ') from tender_lots l where l.tender_id = t.id)) as text`
+        )
+      );
+    return new Map(rows.map((row) => [row.id, row.text]));
+  }
+
+  /**
    * Everything this organization is tracking, with each tender's CPV codes —
    * headline and every lot — and when the team last acted on it.
    *

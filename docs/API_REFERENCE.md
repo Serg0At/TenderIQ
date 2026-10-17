@@ -1098,6 +1098,7 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
 | `bid_category` | Your supplier identity bid in this category (won or lost — losing still means you compete there) | `level`, `cpvCode`, `lots` (lots bid, rejected bids included), `lot` |
 | `known_buyer` | You have bid at this buyer before, in another category | `lots` (lots bid there), `wins` |
 | `pursued_similar` | Your team is pursuing, or has pursued, similar tenders | `level`, `cpvCode`, `tenders`, `lot` |
+| `text_overlap` | **Tentative.** The tender has no CPV code anywhere, and its title shares distinctive words with tenders you bid on or pursued. Never outweighs a code match | `terms` (up to 3 shared words), `share` (0–1, how much of its distinctive vocabulary is characteristic of yours), `lot` (`null`) |
 | `dropped_similar` | **Lowers the score.** Your team dropped, or marked no-go, similar tenders. Always listed last | `level`, `cpvCode`, `tenders`, `lot` |
 | `saved_search` | One of your saved searches matches | `searchId`, `searchName`, `match` (`cpv` \| `keyword`); for `cpv`: `level`, `covered` (the search asked for this code or a parent of it), `cpvCode`; for `keyword`: `keywords` (up to 3); `lot` |
 | `field` | The tender falls under one of your fields | `field`, `cpvCode`, `lot` |

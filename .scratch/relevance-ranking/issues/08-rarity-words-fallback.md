@@ -21,16 +21,16 @@ guess from text must never outweigh the code the invitation states outright.
 
 **Blocked by:** 05.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A biddable tender with no CPV code anywhere still receives a score and reasons rather than
+- [x] A biddable tender with no CPV code anywhere still receives a score and reasons rather than
       a silent zero.
-- [ ] Word rarity is computed from the corpus, so boilerplate contributes nothing and distinctive
+- [x] Word rarity is computed from the corpus, so boilerplate contributes nothing and distinctive
       terms dominate.
-- [ ] Words are normalised enough that Armenian case endings do not prevent a match.
-- [ ] A text-based match scores below an equivalent CPV match, and its reason is distinguishable
+- [x] Words are normalised enough that Armenian case endings do not prevent a match.
+- [x] A text-based match scores below an equivalent CPV match, and its reason is distinguishable
       so a client can word it more tentatively.
-- [ ] The rarity logic is a separate pure module, usable and inspectable on its own.
-- [ ] Tenders that do have CPV codes are ranked exactly as before this ticket.
-- [ ] Still inside the 1.5s P95 budget — rarity data is prepared once per request at most, never
+- [x] The rarity logic is a separate pure module, usable and inspectable on its own.
+- [x] Tenders that do have CPV codes are ranked exactly as before this ticket.
+- [x] Still inside the 1.5s P95 budget — rarity data is prepared once per request at most, never
       per candidate pair.

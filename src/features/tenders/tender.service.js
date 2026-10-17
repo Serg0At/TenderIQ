@@ -38,6 +38,32 @@ const filtersOf = (f = {}) => ({
  */
 const MAX_RANKABLE = 2000;
 
+/** Most recent tenders the text fallback compares against; enough to characterise a supplier. */
+const TEXT_PROFILE_SIZE = 300;
+
+/**
+ * The text fallback's inputs, loaded only when some candidate has no CPV code
+ * anywhere — 1 in 150 today — and only then: the profile is the tenders the
+ * organization bid on (public ledger) or pursued, most recent first.
+ */
+const withTextFallback = async (candidates, signals) => {
+  const uncoded = candidates.filter((c) => !c.cpvCode && !c.lots.some((l) => l.codes.length));
+  if (!uncoded.length) return { candidates, signals };
+
+  const recent = [
+    ...signals.ledger.items.map((i) => ({ id: i.tenderId, at: i.at })),
+    ...signals.pipeline.filter((p) => p.status !== 'dropped' && p.goNoGo !== 'no_go').map((p) => ({ id: p.tenderId, at: p.at })),
+  ].sort((a, b) => new Date(b.at ?? 0) - new Date(a.at ?? 0));
+  const profileIds = [...new Set(recent.map((r) => r.id))].slice(0, TEXT_PROFILE_SIZE);
+  if (!profileIds.length) return { candidates, signals };
+
+  const texts = await relevance.textFor([...uncoded.map((c) => c.id), ...profileIds]);
+  return {
+    candidates: candidates.map((c) => (texts.has(c.id) && uncoded.includes(c) ? { ...c, text: texts.get(c.id) } : c)),
+    signals: { ...signals, textProfile: profileIds.map((id) => texts.get(id)).filter(Boolean) },
+  };
+};
+
 /** The filters a client can use by hand when there is nothing to rank on yet. */
 const FALLBACK_FILTERS = ['field', 'purchaseKind'];
 
@@ -144,7 +170,8 @@ export default class TenderService {
       ]);
     }
 
-    const ranked = rankTenders(rows.map(candidateOf), signals, {
+    const prepared = await withTextFallback(rows.map(candidateOf), signals);
+    const ranked = rankTenders(prepared.candidates, prepared.signals, {
       now,
       recencyMonths: config.RELEVANCE.FULL_WEIGHT_MONTHS,
     });

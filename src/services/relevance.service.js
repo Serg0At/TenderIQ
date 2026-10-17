@@ -1,5 +1,6 @@
 import { bestCpvMatch, closeness, covers, CPV_LEVELS } from '../libs/cpv.js';
 import { FIELDS } from '../libs/fields.js';
+import { termsOf, buildRarity, buildProfile, overlap } from './termRarity.service.js';
 
 /**
  * Relevance: how well each biddable tender fits one organization.
@@ -39,6 +40,13 @@ export const WEIGHTS = {
   field: 0.25,
   /** Bid at this buyer before, in some other category. */
   knownBuyer: 0.15,
+  /**
+   * Word overlap with tenders the organization bid on or pursued, for a tender
+   * with no CPV code at all. Scaled by the overlap share, so at most 0.25 —
+   * under a single exact bid (≈0.37): a guess from text must never outweigh a
+   * code the invitation states outright.
+   */
+  text: 0.25,
   /**
    * The team dropped, or marked no-go, a similar tender. A PENALTY, applied as
    * score × (1 − penalty): it can push a tender into the weak band, and can
@@ -372,6 +380,43 @@ const knownBuyerSignal = (tender, ledger, category) => {
   }];
 };
 
+const hasAnyCode = (tender) => Boolean(tender.cpvCode) || (tender.lots ?? []).some((lot) => lot.codes?.length);
+
+/** What a tender is about, in words: the title, plus lot names when loaded. Never the reference code — it names a procedure, not a purchase. */
+const textOf = (tender) => tender.text ?? tender.title ?? '';
+
+/**
+ * Word rarity for this ranking, prepared once: only when some candidate has no
+ * code to rank on and there is a profile to compare it with. The corpus is every
+ * candidate plus the profile documents, so boilerplate common to this week's
+ * tenders weighs nothing.
+ */
+const prepareText = (candidates, profile) => {
+  if (!profile?.length || candidates.every(hasAnyCode)) return null;
+  const profileDocs = profile.map(termsOf);
+  const candidateDocs = new Map(candidates.map((t) => [t.id, termsOf(textOf(t))]));
+  return {
+    rarity: buildRarity([...candidateDocs.values(), ...profileDocs]),
+    candidateDocs,
+    profile: buildProfile(profileDocs),
+  };
+};
+
+/**
+ * The fallback for a tender with no CPV code anywhere: how much of its
+ * distinctive vocabulary the organization's own tenders share. Its reason is a
+ * code of its own so a client can word it more tentatively than a code match.
+ */
+const textSignal = (tender, text) => {
+  if (!text || hasAnyCode(tender)) return [];
+  const { share, terms } = overlap(text.candidateDocs.get(tender.id), text.profile, text.rarity);
+  if (share <= 0) return [];
+  return [{
+    strength: WEIGHTS.text * share,
+    reason: { code: 'text_overlap', terms: terms.slice(0, 3), share: Math.round(share * 100) / 100, lot: null },
+  }];
+};
+
 /** One tender, all its units scored, the best one kept. */
 const scoreTender = (tender, signals, context) => {
   let best = null;
@@ -384,6 +429,7 @@ const scoreTender = (tender, signals, context) => {
       ...knownBuyerSignal(tender, context.ledger, category),
       ...savedSearchSignal(tender, unit, signals.savedSearches ?? []),
       ...fieldSignal(unit, signals.fields ?? []),
+      ...textSignal(tender, context.text),
     ];
     const lifted = combine(positives.map((p) => p.strength));
 
@@ -430,7 +476,9 @@ export const compareRanked = (a, b) => {
  *
  * @param {Array}  candidates  `{ id, title, referenceCode, cpvCode, buyerId, estimatedValue, deadlineAt, lots: [{ lotNumber, codes, keywordHits }] }`
  * @param {object} signals     `{ fields, savedSearches, ledger: { partyId, items: [{ tenderId, cpvCode, buyerId, at, won }] },
- *                             pipeline: [{ trackedTenderId, tenderId, status, goNoGo, at, codes }] }`
+ *                             pipeline: [{ trackedTenderId, tenderId, status, goNoGo, at, codes }],
+ *                             textProfile: [string] — titles and lot names of tenders bid on or pursued;
+ *                             needed only when a candidate has no code, and its `text` then too }`
  * @param {object} options     `{ now, recencyMonths }` — the clock every signal ages against, and
  *                             the full-weight window; both explicit so a backtest can replay a past day
  * @returns {Array} `{ tender, id, deadlineAt, score, band, reasons, tracking }`, best first
@@ -441,6 +489,7 @@ export const rankTenders = (candidates, signals, { now, recencyMonths } = {}) =>
   const context = {
     ledger: indexLedger(signals.ledger, now, recencyMonths),
     pipeline: indexPipeline(signals.pipeline, now, recencyMonths),
+    text: prepareText(candidates, signals.textProfile),
   };
   return candidates
     .map((tender) => ({ tender, id: tender.id, deadlineAt: tender.deadlineAt ?? null, ...scoreTender(tender, signals, context) }))
