@@ -236,6 +236,7 @@ export default class TenderRepository {
     deadlineAfter = null,
     deadlineBefore = null,
     purchaseKindLabels = [],
+    cpvPrefixes = [],
     limit = 20,
     cursor = null,
   } = {}, trx = db) {
@@ -283,6 +284,20 @@ export default class TenderRepository {
     if (deadlineAfter) query.where('t.deadline_at', '>=', deadlineAfter);
     if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
     if (purchaseKindLabels.length) query.whereIn('t.goods_works_services', purchaseKindLabels);
+
+    // A Field resolves to CPV prefixes, matched on the headline code OR any lot —
+    // the same reach as `cpvCodes` above, so the field filter is never a second,
+    // narrower answer to "is this tender in my category". A tender with no CPV
+    // anywhere cannot match, and that is accepted rather than guessed from text.
+    if (cpvPrefixes.length) {
+      const patterns = cpvPrefixes.map((prefix) => `${prefix}%`);
+      query.where((q) =>
+        q.whereRaw('t.cpv_code like any(?::text[])', [patterns]).orWhereExists((sub) =>
+          sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id')
+            .whereRaw('l.cpv_code like any(?::text[])', [patterns])
+        )
+      );
+    }
 
     const after = decodeCursor(cursor);
     if (after) {

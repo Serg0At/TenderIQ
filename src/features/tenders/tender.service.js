@@ -1,5 +1,6 @@
 import tenders from '../../repositories/tender.repo.js';
 import { purchaseKindOf, purchaseKindLabels } from '../../libs/purchaseKinds.js';
+import { cpvPrefixesFor } from '../../libs/fields.js';
 import { ApiError } from '../../utils/errors.js';
 
 /** Comma-separated or repeated query params both arrive here as one list. */
@@ -33,6 +34,7 @@ export default class TenderService {
       deadlineAfter: f.deadlineAfter ?? null,
       deadlineBefore: f.deadlineBefore ?? null,
       purchaseKindLabels: purchaseKindLabels(toList(f.purchaseKind)),
+      cpvPrefixes: cpvPrefixesFor(toList(f.field)),
       limit: page.size ?? 20,
       cursor: page.cursor || null,
     });

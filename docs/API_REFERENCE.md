@@ -945,6 +945,11 @@ No request body
 - `filter[purchaseKind]` (optional): one or several of `goods`, `works`, `services` — the
   source's own label on every tender (Ապրանք / Աշխատանք / Ծառայություն). Anything else is a
   `422`, not an empty list.
+- `filter[field]` (optional): one or several [field](#list-fields) ids — repeat the parameter
+  for several; any of them matches. Resolved to the field's CPV prefixes and matched against the
+  headline code **or any lot**, like `filter[cpv]`, so a tender whose lot 7 of 18 is medical is
+  returned for `medical`. A tender with no CPV code anywhere matches no field. An unknown id is a
+  `422`.
 - `page[size]` (optional): 1–100, default 20.
 - `page[cursor]` (optional): opaque cursor from a previous `meta.cursor`, max 200 chars.
 

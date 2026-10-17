@@ -15,14 +15,14 @@ exactly that reason; this must not be a second, narrower answer.
 
 **Blocked by:** 02 — the field list and its CPV mapping.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The tender list accepts a field filter and returns tenders whose headline code or any lot
+- [x] The tender list accepts a field filter and returns tenders whose headline code or any lot
       code falls under that field.
-- [ ] An unknown field is a validation failure, not an empty result.
-- [ ] A tender whose only matching code sits on a lot is returned — verified against a real
+- [x] An unknown field is a validation failure, not an empty result.
+- [x] A tender whose only matching code sits on a lot is returned — verified against a real
       multi-lot tender in the live database.
-- [ ] The filter composes with every existing Discovery filter and with cursor paging.
-- [ ] Tenders with no CPV code anywhere are absent from a field-filtered result, and that is
+- [x] The filter composes with every existing Discovery filter and with cursor paging.
+- [x] Tenders with no CPV code anywhere are absent from a field-filtered result, and that is
       understood and accepted rather than papered over with a text guess.
-- [ ] `docs/API_REFERENCE.md` documents the filter.
+- [x] `docs/API_REFERENCE.md` documents the filter.

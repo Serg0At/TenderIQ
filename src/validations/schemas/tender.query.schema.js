@@ -1,5 +1,6 @@
 import Joi from 'joi';
 import { PURCHASE_KIND_CODES } from '../../libs/purchaseKinds.js';
+import { FIELD_IDS } from '../../libs/fields.js';
 
 /**
  * Discovery filters, per FR-DISC-1.
@@ -33,6 +34,12 @@ export const tenderQuerySchema = Joi.object({
     purchaseKind: Joi.alternatives(
       Joi.array().items(Joi.string().valid(...PURCHASE_KIND_CODES)),
       Joi.string().valid(...PURCHASE_KIND_CODES)
+    ),
+    // A Field from GET /fields, or several (any of them matches). Unknown is a
+    // 422 for the same reason as purchaseKind.
+    field: Joi.alternatives(
+      Joi.array().items(Joi.string().valid(...FIELD_IDS)),
+      Joi.string().valid(...FIELD_IDS)
     ),
   }).default({}),
   page: Joi.object({
