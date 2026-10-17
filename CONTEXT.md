@@ -93,8 +93,9 @@ passed or no deadline at all. The only tenders relevance orders.
 _Avoid_: Open tender, Live tender, Current tender
 
 **Field**:
-The industry an organization works in, chosen from a fixed list rather than typed. A weak
-relevance signal and a discovery filter. `organizations.type` in code.
+An industry an organization works in, chosen from a fixed list rather than typed — up to three
+per organization, each covering a set of CPV divisions or groups. A weak relevance signal and a
+discovery filter. `organizations.type` in code; the list is `src/libs/fields.js`.
 _Avoid_: Type, Vertical, Industry, Sector, Category
 
 **Purchase kind**:

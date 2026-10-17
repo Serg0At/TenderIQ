@@ -113,10 +113,22 @@ export default class OrganizationRepository {
     return rows;
   }
 
-  static async createWithOwner({ name, type = null, userId }, trx = db) {
+  /** `fields` lands in `organizations.type`, the column's name since before it held Fields. */
+  static async createWithOwner({ name, fields = [], userId }, trx = db) {
     const id = createId();
-    await trx('organizations').insert({ id, name, type, created_by: userId });
+    await trx('organizations').insert({ id, name, type: fields, created_by: userId });
     return id;
+  }
+
+  /** The organization's own settings, as its members read them. */
+  static async findSettings(organizationId, trx = db) {
+    return trx('organizations').where({ id: organizationId }).first('id', 'name', 'type');
+  }
+
+  /** Replace the organization's Fields. Scoped by id from the session's token, never from a path. */
+  static async updateFields(organizationId, fields, trx = db) {
+    const updated = await trx('organizations').where({ id: organizationId }).update({ type: fields });
+    return updated > 0;
   }
 
   /**

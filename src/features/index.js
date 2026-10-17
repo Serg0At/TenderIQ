@@ -2,6 +2,7 @@ import { Router } from 'express';
 import authRoutes from './auth/auth.routes.js';
 import organizationRoutes, {
   currentOrganizationRoutes,
+  fieldRoutes,
 } from './organizations/organization.routes.js';
 import tenderRoutes from './tenders/tender.routes.js';
 import savedSearchRoutes from './savedSearches/savedSearch.routes.js';
@@ -46,6 +47,7 @@ router.get('/health', async (_req, res) => {
 
 router.use('/auth', authRoutes);
 router.use('/organizations', organizationRoutes);
+router.use('/fields', fieldRoutes);
 router.use('/tenders', tenderRoutes);
 router.use('/saved-searches', savedSearchRoutes);
 router.use('/tracked-tenders', trackedTenderRoutes);

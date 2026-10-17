@@ -1,11 +1,29 @@
 import Joi from 'joi';
 import { ASSIGNABLE_ROLES } from '../../libs/permissions.js';
+import { FIELD_IDS, MAX_FIELDS } from '../../libs/fields.js';
+
+/**
+ * An organization's Fields: ids from the fixed list, at most three, no repeats.
+ * A value off the list or a fourth entry is a 422 — the column holds ids the
+ * filter and the ranking can resolve, never free text.
+ */
+const fields = Joi.array().items(Joi.string().valid(...FIELD_IDS)).max(MAX_FIELDS).unique();
 
 export const createOrganizationSchema = Joi.object({
   name: Joi.string().trim().min(2).max(200).required(),
-  // Free text today (IT, construction, medical…); nothing branches on it.
-  type: Joi.string().trim().max(100).allow(null),
+  // Optional, so founding an organization stays one screen.
+  fields: fields.default([]),
 }).required();
+
+/**
+ * Changing the organization's settings. Fields only today; `.min(1)` so an
+ * empty body is a 422 rather than a write that changes nothing.
+ */
+export const updateOrganizationSchema = Joi.object({
+  fields,
+})
+  .min(1)
+  .required();
 
 export const rosterQuerySchema = Joi.object({
   page: Joi.object({
@@ -47,6 +65,7 @@ export const deleteOrganizationSchema = Joi.object({
 export default {
   deleteOrganizationSchema,
   createOrganizationSchema,
+  updateOrganizationSchema,
   rosterQuerySchema,
   changeRoleSchema,
   transferOwnershipSchema,

@@ -72,7 +72,10 @@ All paths are relative to the base path **`/api/v1`**.
 - [Delete checklist item](#delete-checklist-item) — `DELETE /tracked-tenders/checklist/items/:itemId`
 
 ### Organization
+- [List fields](#list-fields) — `GET /fields`
 - [Create organization](#create-organization) — `POST /organizations`
+- [Get organization](#get-organization) — `GET /organization`
+- [Update organization](#update-organization) — `PATCH /organization`
 - [List members](#list-members) — `GET /organization/members`
 - [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
 - [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
@@ -232,7 +235,8 @@ removed from their last organization; the API does not distinguish them — hold
 whose claims carry `org`, `role` and `plan` as `null`. Every endpoint behind a permission answers
 `403 NO_ORGANIZATION`, refused at token verification itself. The allowlist is explicit —
 the routes mounted on `authenticateOrgless` ([src/middlewares/auth.js](src/middlewares/auth.js)):
-[Create organization](#create-organization), [the invitations addressed to the caller](#list-my-invitations),
+[Create organization](#create-organization), [List fields](#list-fields) (the picker on that
+screen), [the invitations addressed to the caller](#list-my-invitations),
 [Switch organization](#switch-organization) (the way out for a second device still holding an
 orgless session), and [Current user](#current-user). [Refresh](#refresh-session) and
 [Log out](#log-out) take no bearer token. The client's locked screen
@@ -2099,6 +2103,50 @@ No response body
 
 ## Organization
 
+## List fields
+
+The fixed list an organization's **fields** — the industries it works in — are chosen from.
+Each carries the CPV prefixes it covers: a 2-digit division, or a 3-digit group where a division
+is split between two fields. The same list drives `filter[field]` on the tender lists and the
+field signal in [Relevant tenders](#relevant-tenders), so "what counts as medical" has one answer.
+
+Ids only: the client writes the names. There is no `other` — fields are optional, so "none of
+these" is choosing none.
+
+**API:**
+`GET /api/v1/fields`
+
+**Authentication:** required (Bearer). **Orgless allowed** — the first screen that needs this
+list is founding an organization. No permission check.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+```json
+{
+  "data": [
+    { "id": "furniture", "cpvPrefixes": ["391", "392", "393", "395", "397"] },
+    { "id": "medical", "cpvPrefixes": ["33", "85"] },
+    { "id": "chemicals_cleaning", "cpvPrefixes": ["24", "398"] }
+  ]
+}
+```
+
+Sixteen entries today: `furniture`, `it_telecom`, `medical`, `fuel_energy`, `electrical`,
+`construction`, `vehicles_transport`, `professional_services`, `industrial_machinery`,
+`laboratory`, `chemicals_cleaning`, `office_stationery`, `food_catering`,
+`facilities_security`, `education_leisure`, `textiles_workwear`. Ids are stable; their prefixes
+may be refined.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+
+---
+
 ## Create organization
 
 Founds an organization, makes the caller its **owner** in the same transaction, and returns a
@@ -2120,12 +2168,14 @@ role in.
 ```json
 {
   "name": "Shinarar LLC",
-  "type": "construction"
+  "fields": ["construction"]
 }
 ```
 
 - `name` (**required**): trimmed, 2–200 chars.
-- `type` (optional): free text, max 100 chars, or `null`.
+- `fields` (optional): up to **3** distinct ids from [List fields](#list-fields). Default `[]`.
+  Optional so founding stays one screen; it can be changed afterwards with
+  [Update organization](#update-organization).
 
 **Response data:**
 
@@ -2162,9 +2212,78 @@ the create would found a second one.
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 EMAIL_UNVERIFIED`: address not confirmed.
-- `422 VALIDATION_FAILED`: missing or short `name`.
+- `422 VALIDATION_FAILED`: missing or short `name`; a field id not on the list, a repeat, or a
+  fourth field.
 - `429 QUOTA_EXCEEDED`: "An account can create at most 3 organizations." `details: { limit, created }`.
 - `429 RATE_LIMITED`: more than 10 creations/hour for this user.
+
+---
+
+## Get organization
+
+The organization this session is acting in, with its fields.
+
+**API:**
+`GET /api/v1/organization`
+
+**Authentication:** required (Bearer). Permission: `tender:read` (every member).
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0001qw8f6b3n2v8y",
+    "name": "Shinarar LLC",
+    "fields": ["construction", "electrical"]
+  }
+}
+```
+
+`fields` is `[]`, never `null`, when none are claimed.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`: orgless session.
+
+---
+
+## Update organization
+
+Change the organization's settings — its **fields**, today. The list is replaced whole, not
+merged: send what is ticked, and `[]` clears it. The change is visible on the next read.
+
+**API:**
+`PATCH /api/v1/organization`
+
+**Authentication:** required (Bearer). Permission: `org:manage` (owner, admin). Acts on the
+session's own organization only — there is no id in the path to point elsewhere.
+
+**Request data:**
+
+```json
+{
+  "fields": ["construction", "electrical"]
+}
+```
+
+- `fields`: up to **3** distinct ids from [List fields](#list-fields).
+
+**Response data:**
+
+`200 OK` — the organization as [Get organization](#get-organization) returns it.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: role lacks `org:manage`.
+- `403 NO_ORGANIZATION`: orgless session.
+- `422 VALIDATION_FAILED`: empty body; a field id not on the list, a repeat, or a fourth field.
 
 ---
 
@@ -4864,7 +4983,10 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | PATCH | `/api/v1/tracked-tenders/checklist/items/:itemId` | Tick off / edit / clear review flag | Yes (`bid:write`) |
 | PATCH | `/api/v1/tracked-tenders/checklist/items/:itemId/document` | Attach or detach a vault document | Yes (`bid:write`) |
 | DELETE | `/api/v1/tracked-tenders/checklist/items/:itemId` | Delete a checklist item | Yes (`bid:write`) |
+| GET | `/api/v1/fields` | The fixed field list and the CPV prefixes each covers | Yes (orgless allowed) |
 | POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
+| GET | `/api/v1/organization` | The session's organization and its fields | Yes (`tender:read`) |
+| PATCH | `/api/v1/organization` | Replace the organization's fields | Yes (`org:manage`) |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |

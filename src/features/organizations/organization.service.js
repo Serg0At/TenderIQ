@@ -7,8 +7,12 @@ import AuthService from '../auth/auth.service.js';
 import { roleHas, canActOn, canGrant, rolesActableBy } from '../../libs/permissions.js';
 import AnnouncementService from '../../services/announcement.service.js';
 import VaultDocumentService from '../vault/vaultDocument.service.js';
+import { FIELDS } from '../../libs/fields.js';
 import { ApiError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
+
+/** The organization's settings as a client sees them. `type` goes out under its real name. */
+const presentSettings = (row) => ({ id: row.id, name: row.name, fields: row.type ?? [] });
 
 /**
  * How many organizations one account may found.
@@ -198,7 +202,7 @@ export default class OrganizationService {
    * organization still exists, appears in the next login's `organizations`,
    * and `switch-org` is the way into it — a retry here would found a second.
    */
-  static async create(userId, { name, type = null }) {
+  static async create(userId, { name, fields = [] }) {
     const user = await users.findById(userId);
     if (!user) throw ApiError.unauthenticated();
 
@@ -214,13 +218,39 @@ export default class OrganizationService {
       }
 
       await organizations.ensureRoles(trx);
-      const id = await organizations.createWithOwner({ name, type, userId: user.id }, trx);
+      const id = await organizations.createWithOwner({ name, fields, userId: user.id }, trx);
       await organizations.addMember({ userId: user.id, organizationId: id, role: 'owner' }, trx);
       return id;
     });
 
     logger.info(`[organizations] ${organizationId} created by user ${user.id}`);
     return AuthService.sessionFor(user, organizationId);
+  }
+
+  /** The organization this session acts in. Every member reads it. */
+  static async settings(organizationId) {
+    const row = await organizations.findSettings(organizationId);
+    if (!row) throw ApiError.notFound('Organization');
+    return presentSettings(row);
+  }
+
+  /**
+   * Change the organization's settings — its Fields, today.
+   *
+   * `org:manage` at the gate, so owner and admin. The list is replaced whole,
+   * not merged: a picker submits what is ticked, and a merge could never untick.
+   */
+  static async updateSettings(organizationId, { fields }) {
+    if (fields !== undefined) {
+      const updated = await organizations.updateFields(organizationId, fields);
+      if (!updated) throw ApiError.notFound('Organization');
+    }
+    return OrganizationService.settings(organizationId);
+  }
+
+  /** The field list a picker offers. Ids and their CPV prefixes; the client writes the names. */
+  static fields() {
+    return FIELDS.map(({ id, cpvPrefixes }) => ({ id, cpvPrefixes }));
   }
 
   /**

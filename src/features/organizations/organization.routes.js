@@ -10,6 +10,7 @@ import {
   changeRoleSchema,
   transferOwnershipSchema,
   deleteOrganizationSchema,
+  updateOrganizationSchema,
 } from '../../validations/schemas/organization.schema.js';
 
 const router = Router();
@@ -38,6 +39,16 @@ router.post('/', createLimit, validate(createOrganizationSchema), OrganizationCo
 export const currentOrganizationRoutes = Router();
 
 currentOrganizationRoutes.use(authenticate);
+
+// The organization's settings. Every member reads them; changing them is `org:manage`, the
+// permission for organization settings — owner and admin.
+currentOrganizationRoutes.get('/', authorize('tender:read'), OrganizationController.settings);
+currentOrganizationRoutes.patch(
+  '/',
+  authorize('org:manage'),
+  validate(updateOrganizationSchema),
+  OrganizationController.updateSettings
+);
 
 // Every member reads the roster, a viewer included: `tender:read`, not `user:manage`.
 currentOrganizationRoutes.get(
@@ -95,5 +106,14 @@ currentOrganizationRoutes.post(
   validate(transferOwnershipSchema),
   OrganizationController.transferOwnership
 );
+
+/**
+ * The Field list a picker offers. On the orgless allowlist, because the first
+ * screen that needs it is founding an organization — before there is a tenant
+ * to read it from. Static data, but behind a token like everything else.
+ */
+export const fieldRoutes = Router();
+
+fieldRoutes.get('/', authenticateOrgless, OrganizationController.fields);
 
 export default router;

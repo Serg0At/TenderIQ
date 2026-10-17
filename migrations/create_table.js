@@ -196,7 +196,10 @@ function up(pg) {
     .createTable('organizations', table => {
       table.string('id').primary();
       table.string('name').notNullable();
-      table.string('type'); // IT, construction, medical...
+      // The organization's Fields: ids from src/libs/fields.js, at most three (CHECK in
+      // indexes()). An array like saved_searches.cpv_codes, and never NULL — "no field
+      // claimed" is the empty list, so readers have one shape to handle.
+      table.specificType('type', 'text[]').notNullable().defaultTo('{}');
       table.string('created_by').notNullable().references('id').inTable('users').onDelete('RESTRICT');
       // The party this tenant bids AS. `awards` and `public_tender_bids` identify a bidder by
       // parties.id, so without this column there is no way to ask "did we win this" and bid
@@ -617,6 +620,10 @@ async function indexes(pg) {
   // rows, and one of them would be wrong. Partial so the column can stay NULL until claimed.
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS organizations_supplier_party_uq
      ON organizations (supplier_party_id) WHERE supplier_party_id IS NOT NULL`);
+  // Three fields, not more: past that the list matches everything and ranks nothing. The ids
+  // themselves are validated against the code list, which a CHECK could only duplicate.
+  await pg.raw(`ALTER TABLE organizations ADD CONSTRAINT organizations_type_max_chk
+     CHECK (cardinality(type) <= 3)`);
 
   await pg.raw(`CREATE INDEX IF NOT EXISTS tracked_tenders_org_status_idx
      ON tracked_tenders (organization_id, status)`);
