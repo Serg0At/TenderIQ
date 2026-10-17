@@ -75,6 +75,37 @@ export default class RelevanceRepository {
   }
 
   /**
+   * Who bid on these tenders, from the public ledger: a Map of party id →
+   * the tender ids it bid on. For the backtest, these are the real bids a
+   * replayed ranking is graded against.
+   */
+  static async biddersOn(tenderIds, trx = db) {
+    const byParty = new Map();
+    if (!tenderIds.length) return byParty;
+    const rows = await trx('public_tender_bids')
+      .whereIn('tender_id', tenderIds)
+      .whereNotNull('supplier_id')
+      .distinct('supplier_id', 'tender_id');
+    for (const row of rows) {
+      if (!byParty.has(row.supplier_id)) byParty.set(row.supplier_id, []);
+      byParty.get(row.supplier_id).push(row.tender_id);
+    }
+    return byParty;
+  }
+
+  /** The median moment a bid in the ledger was made — the backtest's default cut-off. */
+  static async medianLedgerDate(trx = db) {
+    const row = await trx('public_tender_bids as b')
+      .join('tenders as t', 't.id', 'b.tender_id')
+      .first(
+        trx.raw(
+          'percentile_disc(0.5) within group (order by coalesce(t.auction_at, t.deadline_at, t.published_at)) as at'
+        )
+      );
+    return row?.at ? new Date(row.at) : null;
+  }
+
+  /**
    * Title and lot names of public tenders, for word overlap: a Map of id → text.
    *
    * Each item name is cut to its first 300 characters. The item's name comes

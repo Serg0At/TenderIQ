@@ -23,18 +23,18 @@ or the feature is reconsidered, before a customer ever sees it.
 
 **Blocked by:** 06, 07, 10.
 
-**Status:** ready-for-agent
+**Status:** in-progress — script built and run once before the backfill; findings in `../backtest-findings.md` are provisional until ticket 10 lands and the sweep is re-run
 
-- [ ] The script replays the ranking for a supplier at a past date using only data available
+- [x] The script replays the ranking for a supplier at a past date using only data available
       before that date — no leakage of later bids, awards or pursuits into the signals.
-- [ ] It reports where that supplier's real subsequent bids landed in the ranking, as a position
+- [x] It reports where that supplier's real subsequent bids landed in the ranking, as a position
       distribution rather than a single pass/fail.
-- [ ] It runs across many suppliers and reports an aggregate, so one unusual company cannot carry
+- [x] It runs across many suppliers and reports an aggregate, so one unusual company cannot carry
       the verdict.
-- [ ] It sweeps the recency-window configuration and reports the ranking quality at each setting.
-- [ ] It reuses the production ranking function unchanged — a second copy of the scoring rule
+- [x] It sweeps the recency-window configuration and reports the ranking quality at each setting.
+- [x] It reuses the production ranking function unchanged — a second copy of the scoring rule
       would measure something that is not shipped.
-- [ ] Suppliers with too little history are reported separately rather than averaged in, since
+- [x] Suppliers with too little history are reported separately rather than averaged in, since
       their ranking was never going to be meaningful.
 - [ ] The findings, including the chosen recency window and the weights as they stood, are written
       into the feature folder.

@@ -17,8 +17,10 @@
     "migrate:up": "node migrations/create_table.js",
     "migrate:down": "node migrations/drop_table.js",
     "documents:backfill": "node src/scripts/backfillDocuments.js",
+    "relevance:backtest": "Replay the relevance ranking at a past cut-off for every supplier in the ledger and report where their real bids landed (--cutoff, --months, --min-history). Prints numbers, asserts nothing.",
     "checklist:try": "node src/scripts/tryChecklist.js",
-    "telegram:webhook": "node src/scripts/telegramWebhook.js"
+    "telegram:webhook": "node src/scripts/telegramWebhook.js",
+    "relevance:backtest": "node src/scripts/backtestRelevance.js"
   },
   "scriptsDescriptions": {
     "worker": "Run the BullMQ worker process that consumes the fetch, normalize and document queues.",

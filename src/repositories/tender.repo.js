@@ -391,6 +391,22 @@ export default class TenderRepository {
     return { rows, overflow: false };
   }
 
+  /**
+   * The tenders that were biddable at a past moment `at`, with their lots — for
+   * the relevance backtest. Statuses have moved on since, so "biddable then" is
+   * read from dates alone: published by `at`, deadline still ahead of it. A
+   * tender with no deadline is left out here, since there is no telling whether
+   * it was still open; the live list keeps them.
+   */
+  static async findBiddableAsOf(at, trx = db) {
+    return trx(`${TABLE} as t`)
+      .join('parties as b', 'b.id', 't.buyer_id')
+      .where('t.is_latest', true)
+      .andWhere('t.published_at', '<=', at)
+      .andWhere('t.deadline_at', '>', at)
+      .select(...LIST_COLUMNS, lotsColumn(trx, []));
+  }
+
   /** Full detail for one tender, including its lots. */
   static async findDetail(id, trx = db) {
     const tender = await trx(`${TABLE} as t`)
