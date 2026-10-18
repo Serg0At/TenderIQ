@@ -17,6 +17,7 @@
     "migrate:up": "node migrations/create_table.js",
     "migrate:down": "node migrations/drop_table.js",
     "documents:backfill": "node src/scripts/backfillDocuments.js",
+    "documents:manifests": "node src/scripts/backfillDocumentManifests.js",
     "checklist:try": "node src/scripts/tryChecklist.js",
     "telegram:webhook": "node src/scripts/telegramWebhook.js",
     "relevance:backtest": "node src/scripts/backtestRelevance.js"
@@ -30,6 +31,7 @@
     "normalize:replay": "Requeue the latest stored detail payload for every tender, re-normalizing from storage after a parser fix.",
     "scheduler": "Upsert the repeatable sweep and refresh schedules into Redis and exit — a deploy step, not a daemon.",
     "documents:backfill": "Fetch the invitation archive for tenders that never got one, filling in CPV codes and buyer tax IDs.",
+    "documents:manifests": "List the files inside every stored invitation archive that has no manifest yet. Reads storage only (each ZIP's central directory), never the source.",
     "telegram:webhook": "Register or clear the Telegram webhook URL with the Bot API (--set <url> | --delete | --info).",
     "relevance:backtest": "Replay the relevance ranking at a past cut-off for every supplier in the ledger and report where their real bids landed (--cutoff, --months, --min-history). Prints numbers, asserts nothing.",
     "checklist:try": "Run the AI checklist extractor against one invitation archive and print the result. No database, storage or queue — for prompt iteration."

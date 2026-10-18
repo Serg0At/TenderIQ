@@ -428,6 +428,26 @@ export default class TenderRepository {
 
 
   /**
+   * Stored documents whose file list was never taken — every row written
+   * before `manifest` existed, and any whose archive could not be listed.
+   * Keyset by id so a long run can resume, and so a row that fails again is
+   * passed over rather than re-selected forever.
+   */
+  static async findDocumentsWithoutManifest({ afterId = null, limit = 100 } = {}, trx = db) {
+    const query = trx('tender_documents').whereNull('manifest').orderBy('id').limit(limit);
+    if (afterId) query.where('id', '>', afterId);
+    return query.select('id', 'tender_id', 'storage_key');
+  }
+
+  /** Fills a blank only: a listed archive never changes, so neither does its list. */
+  static async setDocumentManifest(id, manifest, trx = db) {
+    return trx('tender_documents')
+      .where({ id })
+      .whereNull('manifest')
+      .update({ manifest: JSON.stringify(manifest) });
+  }
+
+  /**
    * Tenders whose invitation archive was never fetched.
    *
    * The document stage is triggered by the normalizer, and only when a tender
@@ -512,7 +532,16 @@ export default class TenderRepository {
    * so this is the only path that can ever populate them. One transaction, so
    * a tender never shows a CPV whose source document was not recorded.
    */
-  static async applyInvitationFacts({ source = 'armeps', sourceId, url, storageKey, taxId, cpvCode, lots = [] }) {
+  static async applyInvitationFacts({
+    source = 'armeps',
+    sourceId,
+    url,
+    storageKey,
+    taxId,
+    cpvCode,
+    lots = [],
+    manifest = null,
+  }) {
     return db.transaction(async (trx) => {
       const tender = await trx(TABLE).where({ source_id: sourceId }).first();
       if (!tender) return { skipped: 'unknown_tender' };
@@ -567,6 +596,9 @@ export default class TenderRepository {
           storage_key: storageKey,
           kind: 'invitation',
           parsed: true,
+          // Serialised by hand: knex hands a JS array to node-postgres as a
+          // Postgres array literal, which jsonb rejects.
+          manifest: manifest ? JSON.stringify(manifest) : null,
         })
         .onConflict(['tender_id', 'storage_key'])
         .ignore();

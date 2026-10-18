@@ -3,6 +3,8 @@ import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, tenderDocKey, tenderDocTextKey } from '../libs/storage/index.js';
 import { fetchDocument, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
 import { parseInvitation } from '../libs/adapters/source/armeps/invitation.parser.js';
+import { bufferSource } from '../libs/adapters/archive/zip.js';
+import TenderDocumentService from '../services/tenderDocument.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import { sha256 } from '../utils/hash.js';
@@ -111,6 +113,18 @@ export const handleTenderDocuments = async (job, token) => {
     });
   }
 
+  // The archive's file list, for the tender page. Taken here, from bytes
+  // already in memory, so no page view ever has to read the archive. A
+  // failure is logged and recorded as NULL ("unlisted") rather than failing
+  // the job: CPV and tax ID are worth more than the list, and the manifest
+  // backfill can retry from storage without a re-download.
+  let manifest = null;
+  try {
+    manifest = await TenderDocumentService.manifestOf(bufferSource(bytes));
+  } catch (error) {
+    log.warn(`invitation archive could not be listed: ${error.message}`);
+  }
+
   const facts = await tenders.applyInvitationFacts({
     source,
     sourceId: `${source}:${sourceId}`,
@@ -119,6 +133,7 @@ export const handleTenderDocuments = async (job, token) => {
     taxId: parsed.taxId,
     cpvCode: parsed.dominantCpv,
     lots: parsed.lots,
+    manifest,
   });
 
   // Rows parsed but not one usable lot number means the first column of the
@@ -155,6 +170,7 @@ export const handleTenderDocuments = async (job, token) => {
     lots: parsed.lots.length,
     cpvCodes: parsed.cpvCodes.length,
     taxId: Boolean(parsed.taxId),
+    files: manifest?.length ?? null,
     ...facts,
   };
 };

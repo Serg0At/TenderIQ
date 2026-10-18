@@ -23,6 +23,16 @@ export const create = () => {
       return fs.readFile(resolve(key));
     },
 
+    /**
+     * An object, or one byte range of it, as a stream. `end` is inclusive,
+     * matching the S3 driver. Opened before returning, so a missing object
+     * rejects here rather than erroring later mid-stream.
+     */
+    async stream(key, { start, end } = {}) {
+      const handle = await fs.open(resolve(key));
+      return handle.createReadStream({ start, end, autoClose: true });
+    },
+
     async head(key) {
       try {
         const stat = await fs.stat(resolve(key));

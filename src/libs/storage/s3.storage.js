@@ -64,6 +64,23 @@ export const create = () => {
       return streamToBuffer(result.Body);
     },
 
+    /**
+     * An object, or one byte range of it, as a stream.
+     *
+     * Exists for serving one file out of a stored tender archive. get() buffers
+     * the whole object, and an archive is up to 60 MB; reading a ZIP needs only
+     * its central directory and then the one entry asked for, so a ranged read
+     * keeps a download's memory flat and its transfer the size of the file.
+     * `end` is inclusive, as in an HTTP Range header.
+     */
+    async stream(key, { start, end } = {}) {
+      const range = start === undefined ? undefined : `bytes=${start}-${end ?? ''}`;
+      const result = await client.send(
+        new GetObjectCommand({ Bucket: STORAGE.BUCKET, Key: key, ...(range ? { Range: range } : {}) })
+      );
+      return result.Body;
+    },
+
     async head(key) {
       try {
         const result = await client.send(
