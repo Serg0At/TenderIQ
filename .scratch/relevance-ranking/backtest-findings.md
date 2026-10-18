@@ -53,9 +53,11 @@ Identical at a full-weight window of 6, 12 and 24 months.
   two lots. This is why the live endpoint asks for a field or saved search rather than inventing
   an order, and it is the case those two signals exist for — which this backtest cannot measure,
   since ledger suppliers have neither.
-- **The recency window is undecided.** Every lot in the corpus is under three months old, so
-  every setting weighs every lot at 1 and the three runs are the same run. 12 months stays the
-  default until the backfill gives the sweep something to separate.
+- **The recency window is undecided by data.** Every lot in the corpus is under three months old,
+  so every setting weighs every lot at 1 and the three runs are the same run. On 2026-10-18 the
+  default moved 12 → **24 months** by reasoning instead: buyers procure on a yearly budget, so a
+  supplier's bid on last year's round of a tender is the best evidence for this year's round, and
+  12 halved it exactly then. Re-check with the sweep once the archive is loaded.
 - The saved-search weight was lowered 0.4 → 0.33 in review, not on this run's evidence: the
   spec ranks a typed claim below the bid record, and 0.4 put one covering search above a single
   recent exact bid. The backtest does not exercise saved searches. Otherwise no weight was

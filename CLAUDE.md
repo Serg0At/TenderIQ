@@ -550,7 +550,11 @@ ADR 0003) — what building it decided, beyond the spec:
   wall-clock is network.
 - **The backtest is the verification**, not a test: `npm run relevance:backtest`. Before the
   archive backfill it showed 44% of real bids in the top 10 for suppliers with history (random
-  6%); re-run it after ticket 10 to settle `RELEVANCE_FULL_WEIGHT_MONTHS`.
+  6%); re-run it after ticket 10 to check `RELEVANCE_FULL_WEIGHT_MONTHS`.
+- **Full weight lasts 24 months, by reasoning, not measurement.** Buyers procure on a yearly
+  budget, so last year's bid is evidence for this year's round of the same tender; at 12 it
+  was halved exactly then. Two months of ledger cannot separate windows — the backtest re-checks
+  it once the archive exists.
 
 **Team tasks were cut**, not deferred — the assignment/due-date feature was built and then
 removed as unnecessary. Do not rebuild it from the reference spec's `product/Feature List.md`

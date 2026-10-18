@@ -1125,8 +1125,8 @@ before. Pushing the other way, tenders similar to ones your team **dropped** or 
 score lower — they can fall into `weak`, never out of the list. A loss is never a penalty. Similar means the CPV hierarchy —
 the same code, then the same group, then the same division, each weaker. Bid history comes from
 the public ledger only, so it needs a claimed supplier identity; without one the ranking runs on
-the rest. Bid and pursuit history never expire but count less with age: full weight for 12 months, half
-to 36, a quarter beyond (`RELEVANCE_FULL_WEIGHT_MONTHS`).
+the rest. Bid and pursuit history never expire but count less with age: full weight for 24 months — two
+yearly procurement rounds — half to 72, a quarter beyond (`RELEVANCE_FULL_WEIGHT_MONTHS`).
 
 **Nothing to rank on.** An organization with no field, no saved search, no bid history and no
 pursuit gets a successful,

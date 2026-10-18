@@ -279,9 +279,17 @@ const config = {
    * times that, a quarter beyond. One number because the backtest sweeps it —
    * suppliers here bid rarely (the median one, once in two months), so a short
    * window starves the signal rather than sharpening it.
+   *
+   * 24, not 12: public buyers here procure on a yearly budget, so the same
+   * buyer tends to tender the same supplies once a year. At 12 months a bid on
+   * last year's round fell to half weight exactly as this year's round opened —
+   * the one tender it is most evidence for. 24 keeps the last two yearly rounds
+   * at full weight. Chosen by that reasoning, not measured: two months of
+   * ledger cannot separate windows; the backtest re-checks it once the archive
+   * is loaded.
    */
   RELEVANCE: {
-    FULL_WEIGHT_MONTHS: int('RELEVANCE_FULL_WEIGHT_MONTHS', 12),
+    FULL_WEIGHT_MONTHS: int('RELEVANCE_FULL_WEIGHT_MONTHS', 24),
   },
 
   /**
