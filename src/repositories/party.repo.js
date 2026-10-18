@@ -4,13 +4,25 @@ import { sha256 } from '../utils/hash.js';
 
 const TABLE = 'parties';
 
-/** Trailing punctuation and quote styles vary run to run; the entity does not. */
-const normalizeName = (raw) =>
-  String(raw ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .replace(/^["'«]+|["'»]+$/g, '')
-    .trim();
+/**
+ * A party's name as the source publishes it, whitespace collapsed and nothing
+ * else. The guillemets are part of an Armenian legal name — «Երևանի ավտոբուս»
+ * ՓԲԸ — and usually sit in the middle of it, so stripping a leading « and a
+ * trailing » (which this once did, to unwrap names quoted whole) cut one half
+ * of the pair and stored `Երևանի ավտոբուս» ՓԲԸ`.
+ */
+const normalizeName = (raw) => String(raw ?? '').trim().replace(/\s+/g, ' ');
+
+/** Every quotation mark the source has been seen to use, in any style. */
+const QUOTES = /["'«»„“”‘’]/g;
+
+/**
+ * What a buyer's identity is derived from: the name with every quotation mark
+ * removed, lowercased. Quoting is how a name is typeset, not which entity it
+ * names, so `«X» ՓԲԸ`, `"X" ՓԲԸ` and the half-stripped `X» ՓԲԸ` stored before
+ * the fix above are all one buyer.
+ */
+export const identityKey = (raw) => normalizeName(String(raw ?? '').replace(QUOTES, '')).toLowerCase();
 
 /**
  * Every party gets a deterministic `source_id`, which turns identity into a
@@ -25,7 +37,7 @@ const normalizeName = (raw) =>
  * names, which silently merges distinct entities and is far worse.
  */
 export const buyerSourceId = (source, name) =>
-  `${source}:buyer:${sha256(normalizeName(name).toLowerCase()).slice(0, 16)}`;
+  `${source}:buyer:${sha256(identityKey(name)).slice(0, 16)}`;
 
 export const supplierSourceId = (source, sourceId) => `${source}:bo:${sourceId}`;
 
@@ -91,6 +103,37 @@ export default class PartyRepository {
     if (!partyId || !taxId) return false;
     const updated = await trx(TABLE).where({ id: partyId }).whereNull('tax_id').update({ tax_id: taxId });
     return updated > 0;
+  }
+
+  /**
+   * Re-derive every buyer's `source_id` from its stored name, for when the
+   * identity rule itself changes. Without it, the next ingest of a buyer whose
+   * key moved would create a second row and split its tenders across two.
+   *
+   * A buyer whose new key already belongs to another row is left alone and
+   * reported, not merged: two rows that now look like one entity need a person
+   * to decide, and a merge moves every tender, award and profile pointing at it.
+   */
+  static async rekeyBuyers({ source }, trx = db) {
+    const buyers = await trx(TABLE)
+      .whereIn('role', ['buyer', 'both'])
+      .andWhere('source_id', 'like', `${source}:buyer:%`)
+      .select('id', 'source_id', 'name');
+
+    const rekeyed = [];
+    const collisions = [];
+    for (const buyer of buyers) {
+      const next = buyerSourceId(source, buyer.name);
+      if (next === buyer.source_id) continue;
+      const taken = await trx(TABLE).where({ source_id: next }).first('id');
+      if (taken) {
+        collisions.push({ id: buyer.id, name: buyer.name, holder: taken.id });
+        continue;
+      }
+      await trx(TABLE).where({ id: buyer.id }).update({ source_id: next });
+      rekeyed.push(buyer.id);
+    }
+    return { checked: buyers.length, rekeyed: rekeyed.length, collisions };
   }
 
   static async findBySourceId(sourceId, trx = db) {

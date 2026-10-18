@@ -28,6 +28,15 @@ export default class SourcePayloadRepository {
     }
   }
 
+  /** The newest stored payload of every ref under a prefix (`detail:`), one row each. */
+  static async latestByPrefix(prefix) {
+    return db(TABLE)
+      .distinctOn('source', 'ref')
+      .where('ref', 'like', `${prefix}%`)
+      .orderBy([{ column: 'source' }, { column: 'ref' }, { column: 'fetched_at', order: 'desc' }])
+      .select('source', 'ref', 'storage_key');
+  }
+
   static async findLatestByRef(source, ref) {
     return await db(TABLE).where({ source, ref }).orderBy('fetched_at', 'desc').first();
   }
