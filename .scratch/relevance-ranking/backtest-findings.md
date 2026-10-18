@@ -62,6 +62,26 @@ Identical at a full-weight window of 6, 12 and 24 months.
   changed on the strength of this run: two months of ledger is enough to show the
   rule beats random by a wide margin, not enough to tune it.
 
+## Second run — 2026-10-18, fresh live import
+
+Same script and weights, against a new live import of the board (1,135 tenders published
+2026-08-12 → 2026-10-17, 19,594 bids, party names corrected). Default cut-off 2026-09-18, history
+up to 2026-09-11 (7-day lag), 174 tenders biddable then, 324 suppliers graded.
+
+| Group | Suppliers | Real bids | In top 10 | In top 20 | Median position | MRR |
+|---|---|---|---|---|---|---|
+| Rankable (≥ 3 lots) | 132 | 472 | **40.7%** (random 5.7%) | **65.9%** (random 11.5%) | **8.0%** (random 50%) | 0.353 |
+| Thin (< 3 lots) | 192 | 302 | 9.9% (random 5.7%) | 17.5% (random 11.5%) | 50.3% (random 50%) | 0.072 |
+
+The first run's reading holds on a different window: about seven times random for suppliers with
+history, near random without. The 6/12/24-month sweep is again identical — two months of history
+cannot separate the windows.
+
+The live endpoint was also checked at today's date on this import: all 267 biddable tenders
+returned over 6 pages with no repeat or gap, ordering held, nothing non-biddable leaked in, ~107 ms
+a page through the full API on a local Postgres, and the top rows' `won_category` counts matched
+the ledger exactly.
+
 ## Still to do
 
 - Re-run after ticket 10 loads the archive; record the sweep, and whether a longer window lifts
