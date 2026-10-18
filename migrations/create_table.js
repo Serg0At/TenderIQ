@@ -162,6 +162,9 @@ function up(pg) {
       table.string('storage_key').notNullable();
       table.string('kind').notNullable();
       table.boolean('parsed').notNullable().defaultTo(false);
+      // The files inside the stored archive, listed once at ingest so a tender page never
+      // reads the archive to show them. NULL means not listed yet, never "no files".
+      table.jsonb('manifest');
       // Lets the database arbitrate the concurrent-insert race instead of a
       // read-then-insert, which two jobs can both pass. Same principle as
       // source_payloads.
