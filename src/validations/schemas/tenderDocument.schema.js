@@ -33,4 +33,11 @@ export const tenderDocumentManifestSchema = Joi.array()
   .unique((a, b) => a.index === b.index)
   .required();
 
-export default { tenderDocumentManifestSchema };
+/** `GET /tenders/:id/documents/:documentId/files/:index` — the index arrives as a string. */
+export const tenderDocumentFileParamsSchema = Joi.object({
+  id: Joi.string().max(64).required(),
+  documentId: Joi.string().max(64).required(),
+  index: Joi.number().integer().min(0).max(65535).required(),
+});
+
+export default { tenderDocumentManifestSchema, tenderDocumentFileParamsSchema };

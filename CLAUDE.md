@@ -803,6 +803,13 @@ decision that has already been made.
   human who adds a requirement the model missed must not lose it, or they stop correcting it —
   and a manual item carries `confidence: null` / `evidence: null` rather than a fabricated 1.0,
   so a person's assertion stays distinguishable from an extraction.
+- **A tender's invitation files are listed and downloadable one by one**, always from our
+  stored ZIP — never fetched from the source on a click. The list is taken once at ingest into
+  `tender_documents.manifest` (`npm run documents:manifests` fills old rows from storage); a
+  download streams one entry out of the stored ZIP with ranged reads
+  (`libs/adapters/archive/zip.js`), so memory stays flat and nothing is extracted to its own
+  object. `files: null` with `availability` `unlisted`/`not_stored` is how the API says "we
+  don't know", never `[]`. `language` comes from the filename only — `null` rather than a guess.
 - **The document vault (phase 4d) is built.** `/vault-documents` serves the certificate
   library; `vault.expiry` sweeps daily for lapsing documents, lapsed ones and
   abandoned uploads.

@@ -4,6 +4,7 @@ import { authenticate } from '../../middlewares/auth.js';
 import { authorize } from '../../middlewares/authorize.js';
 import { validate } from '../../middlewares/validate.js';
 import { tenderQuerySchema } from '../../validations/schemas/tender.query.schema.js';
+import { tenderDocumentFileParamsSchema } from '../../validations/schemas/tenderDocument.schema.js';
 
 const router = Router();
 
@@ -26,5 +27,19 @@ router.get(
   TenderController.relevant
 );
 router.get('/:id', TenderController.detail);
+
+/**
+ * One file out of a tender's stored invitation archive. `tender:read` and no
+ * plan gate: it is the published tender itself, and a supplier who cannot
+ * read the invitation cannot bid. The file is identified by its position in
+ * the archive rather than its name — the archive at a content-hash key never
+ * changes, so the index is stable, and a name is source text that may hold
+ * anything.
+ */
+router.get(
+  '/:id/documents/:documentId/files/:index',
+  validate(tenderDocumentFileParamsSchema, 'params'),
+  TenderController.documentFile
+);
 
 export default router;

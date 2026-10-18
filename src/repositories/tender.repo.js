@@ -420,12 +420,25 @@ export default class TenderRepository {
 
     const [lots, documents] = await Promise.all([
       trx('tender_lots').where({ tender_id: id }).orderBy('lot_number').select('lot_number', 'cpv_code', 'name'),
-      trx('tender_documents').where({ tender_id: id }).select('kind', 'url', 'parsed'),
+      trx('tender_documents').where({ tender_id: id }).orderBy('id').select('id', 'kind', 'url', 'parsed', 'manifest'),
     ]);
 
     return { ...tender, lots, documents };
   }
 
+
+  /**
+   * One stored document of one tender, for serving a file out of it.
+   *
+   * Scoped by BOTH ids, so a document id paired with the wrong tender is a
+   * miss — the route names a tender, and a file must not be reachable under a
+   * tender it does not belong to.
+   */
+  static async findDocument(tenderId, documentId, trx = db) {
+    return trx('tender_documents')
+      .where({ id: documentId, tender_id: tenderId })
+      .first('id', 'tender_id', 'kind', 'storage_key', 'manifest');
+  }
 
   /**
    * Stored documents whose file list was never taken — every row written

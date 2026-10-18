@@ -45,6 +45,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [List tenders](#list-tenders) — `GET /tenders`
 - [Relevant tenders](#relevant-tenders) — `GET /tenders/relevant` (Pro+)
 - [Tender detail](#tender-detail) — `GET /tenders/:id`
+- [Download a tender file](#download-a-tender-file) — `GET /tenders/:id/documents/:documentId/files/:index`
 
 ### Saved searches
 - [List saved searches](#list-saved-searches) — `GET /saved-searches`
@@ -1160,7 +1161,7 @@ free on every plan.
 
 ## Tender detail
 
-One tender with its lots, documents and buyer tax id.
+One tender with its lots, documents (and the files inside them) and buyer tax id.
 
 **API:**
 `GET /api/v1/tenders/:id`
@@ -1207,7 +1208,18 @@ No request body
       { "lotNumber": 1, "cpvCode": "45233120", "name": "Ճանապարհային ծածկ" }
     ],
     "documents": [
-      { "kind": "invitation", "url": "https://eauction.armeps.am/...", "parsed": true }
+      {
+        "id": "cm9zx4k1p0040qw8fa1b2c3d4",
+        "kind": "invitation",
+        "url": "https://eauction.armeps.am/...",
+        "parsed": true,
+        "availability": "stored",
+        "files": [
+          { "index": 0, "name": "hraver.docx", "path": "hraver.docx", "ext": "docx", "sizeBytes": 212526, "language": "hy" },
+          { "index": 1, "name": "hraver_ru.docx", "path": "hraver_ru.docx", "ext": "docx", "sizeBytes": 176221, "language": "ru" },
+          { "index": 2, "name": "lot_1_i_texnikakan_bnutagir.xlsx", "path": "lot_1_i_texnikakan_bnutagir.xlsx", "ext": "xlsx", "sizeBytes": 45736, "language": null }
+        ]
+      }
     ]
   }
 }
@@ -1216,11 +1228,93 @@ No request body
 `buyer.taxId` (ՀՎՀՀ) is populated only for buyers, and only when the invitation archive was
 parsed. `cpvCode` is `null` for most of the corpus — CPV lives inside the invitation ZIP.
 
+**Documents and their files.** Each document is an archive the tender published; `files` lists
+what is inside it, each downloadable on its own through
+[Download a tender file](#download-a-tender-file). Every file is served from our stored copy
+of the archive — never fetched from the source on click. `availability` says whether there is
+anything to list:
+
+| `availability` | Meaning | `id` | `files` |
+|---|---|---|---|
+| `stored` | We hold the archive and know its contents. | set | array (may legitimately be `[]` only for an empty archive) |
+| `unlisted` | We hold the archive but have not listed it yet. | set | `null` |
+| `not_stored` | The tender names an archive we do not hold — not fetched yet, or refused (e.g. over the 60 MB download cap). `url` still points at the source. | `null` | `null` |
+
+`files` is `null` rather than `[]` whenever the contents are unknown, so "no files" is never
+shown for a tender that has them. A tender that names no invitation archive at all has
+`documents: []`.
+
+- `index` — the file's position in the archive; it is what the download URL takes, and it is
+  stable because a stored archive never changes.
+- `name` / `path` — the entry's name as published (decoded from the archive's own encoding;
+  `path` differs from `name` only for entries in a folder). Nested `.zip` / `.rar` entries are
+  listed as files and not unpacked.
+- `sizeBytes` — uncompressed size.
+- `language` — `hy`, `ru` or `en` when the filename says so (`_HY`, `_ru`, `hayeren`, …), `null`
+  when it does not. Never guessed from content. armeps's `hraver.docx` is known to be the
+  Armenian invitation and is tagged `hy`; per-lot specifications are often bilingual and stay
+  `null`.
+
 **Errors:**
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`.
 - `404 NOT_FOUND`: "Tender not found."
+
+---
+
+## Download a tender file
+
+One file out of a tender's stored invitation archive, as bytes. Public procurement data: gated
+like the tender detail and by nothing else — no plan, no organization scoping.
+
+**API:**
+`GET /api/v1/tenders/:id/documents/:documentId/files/:index`
+
+**Authentication:** required (Bearer). Permission: `tender:read`.
+
+**Path parameters:**
+
+- `id`: the tender's CUID2 id.
+- `documentId`: a document `id` from that tender's detail (`documents[].id`).
+- `index`: a file's `index` from that document's `files` — an integer, `0`-based.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+Not an envelope: a `200` whose body is the file itself.
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+Content-Length: 212526
+Content-Disposition: attachment; filename="hraver.docx"; filename*=UTF-8''hraver.docx
+Cache-Control: private, max-age=3600
+```
+
+The real name travels in `filename*` (RFC 5987, UTF-8), so Armenian and Russian names arrive
+intact; `filename` carries an ASCII stand-in for clients that do not read it. Always
+`attachment`. The content type is chosen from the extension (`application/octet-stream` when
+unknown).
+
+The file is streamed out of the stored archive, so a failure after the headers are sent can only
+cut the body short — compare the received length with `Content-Length`. Every refusal below
+happens before any byte is sent and arrives in the normal `{ error }` envelope.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`.
+- `404 NOT_FOUND`: "Document not found." — no such document, or it belongs to a different tender.
+- `404 NOT_FOUND`: "File not found." — no file at that index, or the document is `unlisted`.
+- `409 CONFLICT`: the entry cannot be served (`details.reason`: `unsupported` — encrypted or an
+  unknown compression method; `too_large` — declares over 200 MB; `corrupt`). None occur in the
+  stored corpus today.
+- `422 VALIDATION_FAILED`: `index` is not a non-negative integer.
+- `503 DEPENDENCY_UNAVAILABLE`: object storage is unreachable, or the stored archive is missing.
 
 ---
 
@@ -5163,6 +5257,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | GET | `/api/v1/tenders` | Filtered, cursor-paginated tender search | Yes (`tender:read`) |
 | GET | `/api/v1/tenders/relevant` | Biddable tenders ordered by fit to this organization | Yes (`tender:read`, Pro+) |
 | GET | `/api/v1/tenders/:id` | Tender detail with lots and documents | Yes (`tender:read`) |
+| GET | `/api/v1/tenders/:id/documents/:documentId/files/:index` | One file from the stored invitation archive, streamed | Yes (`tender:read`) |
 | GET | `/api/v1/saved-searches` | List alert profiles | Yes (`tender:read`) |
 | POST | `/api/v1/saved-searches` | Create an alert profile | Yes (`savedsearch:write`) |
 | PATCH | `/api/v1/saved-searches/:id` | Update an alert profile | Yes (`savedsearch:write`) |

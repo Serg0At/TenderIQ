@@ -6,6 +6,7 @@ import { cpvPrefixesFor } from '../../libs/fields.js';
 import config from '../../configs/variables.config.js';
 import { signRelevance } from '../../libs/relevanceReceipt.js';
 import { ApiError } from '../../utils/errors.js';
+import TenderDocumentService from '../../services/tenderDocument.service.js';
 
 /** Comma-separated or repeated query params both arrive here as one list. */
 const toList = (value) => {
@@ -208,6 +209,14 @@ export default class TenderService {
   }
 
   /**
+   * One file from a tender's stored invitation archive. Public procurement
+   * data, so gated like the detail page and nothing more — no plan, no tenant.
+   */
+  static async documentFile(tenderId, documentId, index) {
+    return TenderDocumentService.openFile(tenderId, documentId, index);
+  }
+
+  /**
    * Source column names never reach the client: the wire shape is camelCase and
    * stable, so renaming a column stays an internal change.
    */
@@ -239,7 +248,7 @@ export default class TenderService {
       invitationUrl: row.invitation_url,
       version: row.version,
       lots: (row.lots ?? []).map((l) => ({ lotNumber: l.lot_number, cpvCode: l.cpv_code, name: l.name })),
-      documents: (row.documents ?? []).map((d) => ({ kind: d.kind, url: d.url, parsed: d.parsed })),
+      documents: TenderDocumentService.present(row),
     };
   }
 }
