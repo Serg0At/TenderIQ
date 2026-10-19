@@ -12,6 +12,7 @@ import { RateLimitedError } from '../utils/rateLimiter.js';
 import { logger } from '../utils/logger.js';
 import { handleTenderDocuments } from './documents.js';
 import { gnumnerBoard, parkUntilConsumerExists } from './gnumner.js';
+import { handleArmepsDetail, handleArmepsDocuments, armepsRefresher } from './armeps.js';
 import { sweepBoard, readListingPage } from './listingChain.js';
 
 /**
@@ -168,48 +169,68 @@ export const handleTenderDetail = async (job, token) => {
 };
 
 /**
- * Re-check tenders whose auction has passed but which have not settled.
+ * The e-auction refresh: tenders whose auction has passed but which have not
+ * settled, re-read as plain `tender.detail` jobs.
+ */
+const eauctionRefresher = {
+  find: ({ refreshWindowDays, maxRefreshBatch }) =>
+    tenders.findNeedingRefresh({ source: EAUCTION, windowDays: refreshWindowDays, limit: maxRefreshBatch }),
+  job: (tender, bucket) => {
+    // findNeedingRefresh already constrains source_id to this source's prefix.
+    const sourceId = tender.source_id.slice(`${EAUCTION}:`.length);
+    return {
+      name: JOB.TENDER_DETAIL,
+      data: { source: EAUCTION, sourceId, reason: 'refresh' },
+      opts: { jobId: `${EAUCTION}-refresh-${sourceId}-${bucket}`, priority: PRIORITY.LIVE },
+    };
+  },
+};
+
+/**
+ * Per source: which tenders the refresh re-reads, and the job that does it.
+ * The two questions differ — e-auction asks "what has resolved?" after the
+ * auction, armeps.am "what has moved?" before the deadline — and the rest is
+ * shared.
+ */
+const REFRESHERS = {
+  eauction: eauctionRefresher,
+  armeps: armepsRefresher,
+};
+
+/**
+ * Re-check a source's unsettled tenders.
  *
  * The counterpart to the listing sweep. That one answers "what is new?" by
- * walking the board; this one answers "what has resolved?" by asking the
- * database — the only way to reach a tender that finished long after it fell
- * off the first page.
+ * walking the board; this one asks the database — the only way to reach a
+ * tender that changed long after it fell off the first page, or one whose
+ * source has no listing at all.
  *
- * It enqueues plain `tender.detail` jobs, so everything downstream is shared:
- * same rate budget, same content-hash dedupe (an unchanged page costs one
- * request and writes nothing), same normalize path.
+ * It enqueues the source's ordinary detail jobs, so everything downstream is
+ * shared: same rate budget, same content-hash dedupe (an unchanged page costs
+ * one request and writes nothing), same normalize path.
  */
 const handleRefreshSweep = async (job) => {
   const { source } = job.data;
+  const refresher = REFRESHERS[source];
+  if (!refresher) throw new UnrecoverableError(`no refresh for source "${source}"`);
   const sourceConfig = getSourceConfig(source);
   const log = logger.child({ job: JOB.TENDER_REFRESH, source });
 
-  const stale = await tenders.findNeedingRefresh({
-    source,
-    windowDays: sourceConfig.refreshWindowDays,
-    limit: sourceConfig.maxRefreshBatch,
-  });
+  const stale = await refresher.find(sourceConfig);
 
   if (!stale.length) {
-    log.info('nothing awaiting results');
+    log.info('nothing to re-check');
     return { queued: 0 };
   }
 
   // One re-check per tender per hour at most. Without this, an overlapping run
   // would queue the same tender twice and pay for it out of the rate budget.
   const bucket = Math.floor(Date.now() / (60 * 60 * 1000));
-  const prefix = `${source}:`;
 
   let queued = 0;
   for (const tender of stale) {
-    // findNeedingRefresh already constrains source_id to this source's prefix.
-    const sourceId = tender.source_id.slice(prefix.length);
-
-    await ingestFetchQueue.add(
-      JOB.TENDER_DETAIL,
-      { source, sourceId, reason: 'refresh' },
-      { jobId: `${source}-refresh-${sourceId}-${bucket}`, priority: PRIORITY.LIVE }
-    );
+    const { name, data, opts } = refresher.job(tender, bucket);
+    await ingestFetchQueue.add(name, data, opts);
     queued += 1;
   }
 
@@ -247,6 +268,9 @@ export const processIngestFetch = async (job, token) => {
     case JOB.LISTING_PAGE:
       return readListingPage(job, token, boardFor(job));
     case JOB.ARMEPS_DETAIL:
+      return handleArmepsDetail(job, token);
+    case JOB.ARMEPS_DOCUMENTS:
+      return handleArmepsDocuments(job, token);
     case JOB.PAPER_INVITATION:
       return parkUntilConsumerExists(job, token);
     case JOB.TENDER_DETAIL:

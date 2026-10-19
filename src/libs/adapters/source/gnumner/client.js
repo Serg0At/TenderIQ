@@ -1,4 +1,4 @@
-import { getSourceConfig } from '../../../../configs/sources.config.js';
+import { getSourceConfig, hostOf } from '../../../../configs/sources.config.js';
 import { fetchPage } from '../../../../utils/http.js';
 import { acquire, RateLimitedError } from '../../../../utils/rateLimiter.js';
 import { parseListing } from './listing.parser.js';
@@ -19,6 +19,16 @@ export const listingUrl = (listingPath, page = 1) => {
   return page <= 1 ? `${baseUrl}${listingPath}` : `${baseUrl}${listingPath}${page}`;
 };
 
+/**
+ * What the pure listing parser classifies links against, from the sources
+ * config: relative hrefs resolve against gnumner's base, and an absolute one
+ * is ARMEPS, e-auction or gnumner's own upload by its host.
+ */
+export const listingContext = () => ({
+  baseUrl: getSourceConfig(SOURCE).baseUrl,
+  hosts: { gnumner: hostOf(SOURCE), armeps: hostOf('armeps'), eauction: hostOf('eauction') },
+});
+
 /** Politeness gate, in order: rate limit, then HTTP. */
 export const fetchListing = async (listingPath, page = 1) => {
   const config = getSourceConfig(SOURCE);
@@ -29,9 +39,9 @@ export const fetchListing = async (listingPath, page = 1) => {
 
   // No conditional GET: the site sends neither ETag nor Last-Modified.
   const response = await fetchPage(url);
-  const { items, blocksSeen, skipped, hasNextPage } = parseListing(response.body);
+  const { items, blocksSeen, skipped, hasNextPage } = parseListing(response.body, listingContext());
 
   return { url, items, blocksSeen, skipped, hasNextPage, response };
 };
 
-export default { listingUrl, fetchListing };
+export default { listingUrl, listingContext, fetchListing };

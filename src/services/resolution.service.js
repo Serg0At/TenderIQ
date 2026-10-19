@@ -191,7 +191,8 @@ const TERMINAL = new Set(['awarded', 'cancelled']);
  * for downstream, and it is answerable from the deadline alone. Degrade, do
  * not discard: a tender lost over one unrecognised label is a missed tender.
  *
- * Status only moves forward from `current`.
+ * Status only moves forward from `current`, with one exception: a `closed`
+ * that only the deadline ever said reopens when the deadline moves ahead.
  */
 export const deriveStatus = ({ submissionChannel, links = [], current = null, deadlineAt = null }, now) => {
   const owners = STATUS_OWNERS[submissionChannel];
@@ -207,7 +208,17 @@ export const deriveStatus = ({ submissionChannel, links = [], current = null, de
     const open = links.find(
       (l) => owners.open.includes(l.source) && l.status && !TERMINAL.has(l.status)
     );
-    next = open?.status ?? (deadlineAt && new Date(deadlineAt).getTime() < now.getTime() ? 'closed' : 'active');
+    if (open) next = open.status;
+    else {
+      const ahead = !(deadlineAt && new Date(deadlineAt).getTime() < now.getTime());
+      // A `closed` read off the deadline is not an event the source announced,
+      // only what the deadline said at the time — so a deadline that has since
+      // moved into the future reopens it. armeps.am states no status at all,
+      // and an extension caught after the old deadline passed must not leave
+      // a biddable tender closed.
+      if (ahead && current === 'closed') return 'active';
+      next = ahead ? 'active' : 'closed';
+    }
   }
 
   if (!current || !(current in STEP)) return next;

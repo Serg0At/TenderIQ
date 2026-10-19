@@ -23,6 +23,8 @@ export const normalizedTenderSchema = Joi.object({
     .valid(...PROCEDURE_TYPES)
     .required(),
   goodsWorksServices: Joi.string().trim().allow(null),
+  // A code derived from the source's label (`lowest_price`), never free text.
+  evaluationMethod: Joi.string().pattern(/^[a-z0-9_]+$/).allow(null),
   status: Joi.string()
     .valid(...TENDER_STATUSES)
     .required(),

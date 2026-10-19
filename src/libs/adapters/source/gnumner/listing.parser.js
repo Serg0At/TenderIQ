@@ -1,7 +1,11 @@
 import * as cheerio from 'cheerio';
 
 /**
- * Pure HTML -> data. No network, no database, no config, no clock.
+ * Pure HTML -> data. No network, no database, no clock, and no config of its
+ * own: the base URL and the hosts it classifies against are passed in, built
+ * from the sources config by the client, as eauction's `parseDetail(html,
+ * { baseUrl })` already does. So `SOURCE_GNUMNER_BASE` really changes how
+ * relative links resolve and which host counts as gnumner's own.
  *
  * Verified against the live announcement listings on 2026-10-19:
  *   https://gnumner.minfin.am/hy/page/gnanshman_harcman_haytararutyun_ev_hraver/  (quotation)
@@ -17,9 +21,9 @@ import * as cheerio from 'cheerio';
  *
  * There is no per-notice id page. What identifies a notice is where its link
  * points, so that is what `classify` reads:
- *   - armeps.am …/listContractDocuments.do?resourceId=N  → an ARMEPS tender
- *   - eauction.armeps.am …/tender_details/tmid/<uuid>     → an e-auction (counted only)
- *   - /website/images/… on gnumner itself                 → an uploaded file: paper
+ *   - <armeps host> …/listContractDocuments.do?resourceId=N  → an ARMEPS tender
+ *   - <eauction host> …/tender_details/tmid/<uuid>          → an e-auction (counted only)
+ *   - /website/images/… on <gnumner host>                   → an uploaded file: paper
  *
  * The listing is a multi-year archive sorted newest-first by publish
  * datetime, which is what the sweep's depth control rests on (see
@@ -28,7 +32,6 @@ import * as cheerio from 'cheerio';
  * eventually will.
  */
 
-const BASE = 'https://gnumner.minfin.am';
 const AM_UTC_OFFSET = '+04:00';
 const DATETIME_RE = /(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}(?::\d{2})?)/g;
 
@@ -85,30 +88,32 @@ const TMID_RE = /\/tmid\/([0-9a-f-]{36})/i;
  * Where a link points decides what the notice is. Unknown targets come back
  * as `other` and are counted by the caller — a new kind of link appearing is a
  * coverage question, not something to drop quietly.
+ *
+ * `hosts` is `{ gnumner, armeps, eauction }`, each without `www.`.
  */
-export const classify = (href) => {
+export const classify = (href, { baseUrl, hosts }) => {
   let url;
   try {
-    url = new URL(href, BASE);
+    url = new URL(href, baseUrl);
   } catch {
     return { kind: 'other', url: href };
   }
 
   const host = url.hostname.replace(/^www\./, '');
 
-  if (host === 'armeps.am') {
+  if (host === hosts.armeps) {
     const resourceId = url.searchParams.get('resourceId');
     if (resourceId && /^\d+$/.test(resourceId)) {
       return { kind: 'armeps', externalId: resourceId, url: url.toString() };
     }
   }
 
-  if (host === 'eauction.armeps.am') {
+  if (host === hosts.eauction) {
     const tmid = url.pathname.match(TMID_RE);
     if (tmid) return { kind: 'eauction', externalId: tmid[1].toLowerCase(), url: url.toString() };
   }
 
-  if (host === 'gnumner.minfin.am' && url.pathname.startsWith('/website/images/')) {
+  if (host === hosts.gnumner && url.pathname.startsWith('/website/images/')) {
     // Uploaded files keep their original name with every non-ASCII character
     // turned into a space, so paths like "/original/   --26_42   .zip" are
     // real. The path is the identity; the URL class has already encoded it.
@@ -129,7 +134,7 @@ export const classify = (href) => {
   return { kind: 'other', url: url.toString() };
 };
 
-export const parseListing = (html) => {
+export const parseListing = (html, { baseUrl, hosts }) => {
   const $ = cheerio.load(html);
   const blocks = $('div.tender');
   const seen = new Set();
@@ -153,7 +158,7 @@ export const parseListing = (html) => {
       return;
     }
 
-    const target = classify(href.trim());
+    const target = classify(href.trim(), { baseUrl, hosts });
     // The same ARMEPS link is sometimes listed twice in a row, identically.
     const identity = `${target.kind}:${target.externalId ?? target.url}`;
     if (seen.has(identity)) {

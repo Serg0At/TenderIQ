@@ -23,6 +23,8 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
+| `gnumner` | HTML scrape of the announcement listings | `*/5 * * * *` sweep | discovery only: `armeps.detail` / `paper.invitation` jobs and a `gnumner` link on each tender |
+| `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
 | `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
 
@@ -163,6 +165,47 @@ job fails loudly rather than silently returning nothing.
 
 Raw payloads are **kept forever**. When a parser improves, normalization is replayed from
 storage — no re-crawl of the source.
+
+### 4b. ARMEPS detail — `armeps.detail` and `armeps.documents`
+
+armeps.am has no listing, so a CfT page is fetched only by `resourceId`: from a gnumner notice
+(the job carries the notice as `discovery`), or from the refresh. Code:
+`libs/adapters/source/armeps/` (client, pure `cft.parser.js`, `observation.js`, pure
+`documents.js`) and `workers/armeps.js`.
+
+1. A page that is not a CfT — the site answers an unknown or non-public id with a 200 carrying
+   its "you must log in" home page — is **not stored**; the job fails and the failed set is the
+   record.
+2. **The stored page is canonical, not byte-for-byte.** Every response carries a fresh
+   `jsessionid` in its links, a clock, a server-side pager key, and (across days) a calendar and
+   a "Last update" date. `canonicalPage` removes exactly those, and that is what is hashed *and*
+   stored, so the key's hash is still the sha256 of the bytes behind it and an unchanged tender
+   writes nothing. Ref `detail:{resourceId}`, so replay and reindex treat it like any detail page.
+3. The normalizer resolves the observation (role `detail`, creates the tender), then resolves the
+   gnumner notice it carried (role `discovery`, a pointer to the `resourceId`) onto that tender:
+   one tender, two links, never two records. A notice for a page already stored is linked by the
+   detail handler itself, since no normalize runs.
+4. The page states no status. armeps.am owns "open" and the deadline for the ARMEPS channel, so
+   status comes from the deadline (`active` → `closed`); awarded and cancelled are PPCM's and
+   gnumner's (ADR 0004). Because a deadline passing changes no page, a refresh that finds the
+   page unchanged re-runs normalize over the stored copy (hourly id), and a `closed` that only
+   the deadline said reopens when the deadline moves ahead. Documents are queued only for a
+   newly stored page or a changed tender, never for a replay or a refresh re-normalize.
+5. **Documents are one ZIP** (`downloadCftResourceItems.do`), queued on every normalize under a
+   job id carrying the document table's fingerprint — an addendum adds a row without moving any
+   field the amendment check reads. The archive is generated per download, with fresh entry
+   timestamps and a generated "List of Contract Documents" PDF, so its identity is the hash of
+   the buyer's files (path, CRC, size), which names the stored object and dedupes
+   `source_payloads` (ref `documents:{resourceId}`). File languages come from the page's own
+   HY/EN/RU column. Lots come from the `c4t_*.xml` Tender Structure XML; a tender bought as one
+   contract (`num-of-lots="0"`) gets no lots rather than an invented lot 1.
+
+**Refresh.** `tender.refresh` is per source. For armeps it re-reads every unsettled ARMEPS tender
+whose deadline is ahead or within `refreshWindowDays` behind, stalest link first, as
+`armeps.detail` jobs with ids `armeps-refresh-{resourceId}-{hour}` — never `armeps-detail-…`,
+so a refresh cannot swallow a discovery. The scheduler registers no sweep for a source without a
+listing and removes any `sweep-{source}` left over (e-auction's key was `armeps` until
+2026-10-19).
 
 ### 5. Document download — `document.download`
 

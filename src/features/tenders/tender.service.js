@@ -231,6 +231,7 @@ export default class TenderService {
       procedureType: row.procedure_type,
       submissionChannel: row.submission_channel,
       purchaseKind: purchaseKindOf(row.goods_works_services),
+      evaluationMethod: row.evaluation_method ?? null,
       status: row.status,
       sourceStatus: row.source_status,
       estimatedValue: row.estimated_value === null ? null : Number(row.estimated_value),

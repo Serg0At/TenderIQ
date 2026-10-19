@@ -582,8 +582,10 @@ decision that has already been made.
 - **Working:** `source.sweep` (watermark chain) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
   hourly. `backfill.js` seeds the historical archive on its own queue and process.
-- **Single source today:** `eauction` = eauction.armeps.am, reverse auctions only (`procedure_type`
-  is always `e_auction`). **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
+- **Two submission channels today:** `eauction` = eauction.armeps.am, reverse auctions only
+  (`procedure_type` always `e_auction`), and **ARMEPS** — gnumner discovers it, armeps.am's CfT
+  page creates it (`armeps` source, `procedure_type` `open`/`quotation` from the page; ticket 05).
+  Paper is not built yet. **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
   paper — assembled from four sources.** gnumner discovers ARMEPS and paper tenders, armeps.am
   details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
   is one run, never a procedure code; every source a tender came from is a link on it
@@ -598,6 +600,18 @@ decision that has already been made.
   production a missed tender will raise an operator alert (a later feature, live ingestion only).
   The e-auction source key was `armeps` until 2026-10-19 and is now `eauction`, so that `armeps`
   can mean armeps.am. Research and verification: `.scratch/procurement-sources/research.md`.
+- **armeps.am serves a different page on every request, and what is stored is canonical.** A
+  fresh `jsessionid` in every link, a clock, a pager key, a calendar: `armeps/cft.parser.js#
+  canonicalPage` strips exactly those, and the stripped page is both hashed and stored, so a
+  key's hash stays the sha256 of its bytes and a re-fetch writes nothing. The session id
+  contains `+`; a character-class regex left a fragment behind and re-stored 29 of 53 pages on
+  the first refresh — match it up to the end of the path. The document ZIP is likewise built per
+  download (fresh entry timestamps, a generated listing PDF), so its identity is
+  `documents.js#documentSetHash` over the buyer's files, not the archive's bytes. armeps.am
+  has no listing, so `tender.refresh` is per source (`REFRESHERS` in `workers/scraper.js`):
+  for armeps it re-reads every *open* tender, because a deadline moves there without the
+  gnumner notice changing. Buyers are keyed per source (`armeps:buyer:…`), so a buyer that
+  runs both channels is two parties — 25 of the first 31 ARMEPS buyers; merging is open.
 - **PPCM is coming back.** It was removed because it is an AngularJS SPA rather than the CSV feed
   the reference spec assumes — but behind the SPA are public JSON endpoints, and its per-bidder
   report covers every procedure type. Verified 2026-10-18 against the e-auction ledger: 95 of 95

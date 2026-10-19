@@ -39,9 +39,12 @@ export const JOB = {
    */
   TENDER_DETAIL: 'tender.detail',
   /**
-   * Database-driven re-check of tenders whose auction has passed. The listing
-   * sweep stops at its tid watermark and so only ever sees newly published
-   * tenders; this is what catches a month-old tender turning into an award.
+   * Database-driven re-check of a source's unsettled tenders, one schedule per
+   * source (`refresh-{source}`). For e-auction it is the tenders whose auction
+   * has passed: the listing sweep stops at its tid watermark and so only ever
+   * sees newly published tenders, and this is what catches a month-old tender
+   * turning into an award. For armeps.am it is every open tender, because
+   * there a deadline moves without the gnumner notice changing.
    */
   TENDER_REFRESH: 'tender.refresh',
   /**
@@ -51,11 +54,18 @@ export const JOB = {
    */
   TENDER_DOCUMENTS: 'tender.documents',
   /**
-   * One armeps.am tender page, keyed by `resourceId`, discovered on gnumner.
-   * Rides ingest.fetch like every other detail fetch. Its consumer is ticket
-   * 05; until then the worker parks these jobs rather than failing them.
+   * One armeps.am tender page, keyed by `resourceId`: discovered on gnumner,
+   * or re-checked by the ARMEPS refresh. Rides ingest.fetch like every other
+   * detail fetch.
    */
   ARMEPS_DETAIL: 'armeps.detail',
+  /**
+   * One armeps.am tender's contract documents, as the single ZIP the page
+   * offers: the files, and the Tender Structure XML its lots come from. Its
+   * own job rather than TENDER_DOCUMENTS because nothing about it is shared
+   * but the queue — another client, another archive layout.
+   */
+  ARMEPS_DOCUMENTS: 'armeps.documents',
   /**
    * One uploaded paper invitation on gnumner, with the listing's publish
    * datetime its deadline is counted from. Consumer: ticket 06; parked until

@@ -42,6 +42,7 @@ const fieldHash = (tender) =>
     procedureType: tender.procedureType,
     submissionChannel: tender.submissionChannel,
     goodsWorksServices: tender.goodsWorksServices,
+    evaluationMethod: tender.evaluationMethod,
     status: tender.status,
     // Included so a move between two site states that share one enum value
     // (e.g. Նախաաճուրդային -> Աճուրդ, both `closed`) still registers as an
@@ -64,6 +65,7 @@ const toRow = (tender, buyerId) => ({
   procedure_type: tender.procedureType,
   submission_channel: tender.submissionChannel,
   goods_works_services: tender.goodsWorksServices ?? null,
+  evaluation_method: tender.evaluationMethod ?? null,
   status: tender.status,
   source_status: tender.sourceStatus ?? null,
   estimated_value: tender.estimatedValue ?? null,
@@ -211,7 +213,7 @@ const codeKeySql = (column) =>
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
   't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
-  't.procedure_type', 't.submission_channel', 't.goods_works_services', 't.status', 't.source_status', 't.estimated_value',
+  't.procedure_type', 't.submission_channel', 't.goods_works_services', 't.evaluation_method', 't.status', 't.source_status', 't.estimated_value',
   't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
   'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region',
 ];
@@ -468,7 +470,7 @@ export default class TenderRepository {
   static async findDocumentsWithoutManifest({ afterId = null, limit = 100 } = {}, trx = db) {
     const query = trx('tender_documents').whereNull('manifest').orderBy('id').limit(limit);
     if (afterId) query.where('id', '>', afterId);
-    return query.select('id', 'tender_id', 'storage_key');
+    return query.select('id', 'tender_id', 'kind', 'storage_key');
   }
 
   /** Fills a blank only: a listed archive never changes, so neither does its list. */
@@ -619,6 +621,7 @@ export default class TenderRepository {
   static async applyInvitationFacts({
     source = 'eauction',
     sourceId,
+    kind = 'invitation',
     url,
     storageKey,
     taxId,
@@ -678,7 +681,7 @@ export default class TenderRepository {
           tender_id: tender.id,
           url,
           storage_key: storageKey,
-          kind: 'invitation',
+          kind,
           parsed: true,
           // Serialised by hand: knex hands a JS array to node-postgres as a
           // Postgres array literal, which jsonb rejects.
@@ -732,6 +735,33 @@ export default class TenderRepository {
       .orderByRaw('COALESCE(auction_at, deadline_at) ASC')
       .limit(limit)
       .select('id', 'source_id', 'status', 'auction_at', 'deadline_at');
+  }
+
+  /**
+   * A detail source's links on tenders that have not settled, whether or not
+   * their deadline has passed — the ARMEPS refresh. Its job is the opposite
+   * case from findNeedingRefresh's: armeps.am can move a deadline while the
+   * gnumner notice stays the same, so nothing else would ever re-read the
+   * page before the deadline.
+   *
+   * Read through `tender_sources` rather than a `source_id` prefix: it is the
+   * link that names the page to fetch. Stalest link first, so the batch cap
+   * rotates through every open tender instead of re-reading the same few.
+   *
+   * A tender with no deadline is left out: nothing then bounds how long it
+   * would be re-read, and an armeps.am CfT page always states one.
+   */
+  static async findUnsettledLinks({ source, windowDays, limit }, trx = db) {
+    const floor = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+    return trx(`${TABLE} as t`)
+      .join('tender_sources as s', 's.tender_id', 't.id')
+      .where('s.source', source)
+      .whereNotIn('t.status', TERMINAL_STATUSES)
+      .andWhere('t.deadline_at', '>', floor)
+      .orderBy([{ column: 's.last_seen_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .limit(limit)
+      .select('t.id', 's.external_id', 't.status', 't.deadline_at', 's.last_seen_at');
   }
 
   /**
@@ -801,6 +831,7 @@ export default class TenderRepository {
           procedureType: existing.procedure_type,
           submissionChannel: existing.submission_channel,
           goodsWorksServices: existing.goods_works_services,
+          evaluationMethod: existing.evaluation_method,
           status: existing.status,
           sourceStatus: existing.source_status,
           estimatedValue: existing.estimated_value === null ? null : String(existing.estimated_value),

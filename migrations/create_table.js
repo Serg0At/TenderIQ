@@ -41,6 +41,9 @@ function up(pg) {
       table.string('reference_code');
       table.index(['reference_code'], 'tenders_reference_code_idx');
       table.string('goods_works_services');   // Ապրանք | Աշխատանք | Ծառայություն
+      // How the winner is chosen (lowest_price, …), as armeps.am states it. NULL for
+      // e-auctions, whose pages state none.
+      table.string('evaluation_method');
       table.timestamp('auction_at');
       table.string('invitation_url');
       table.string('currency').notNullable().defaultTo('AMD');

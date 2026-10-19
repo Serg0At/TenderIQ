@@ -939,11 +939,12 @@ No request body
 - `filter[buyerId]` (optional): buyer party id, max 40 chars.
 - `filter[region]` (optional): buyer region, max 100 chars.
 - `filter[procedure]` (optional): one of `open`, `quotation`, `single_source`, `e_auction`,
-  `restricted`. (The only live source produces `e_auction` exclusively.)
+  `restricted`. (e-auction tenders are all `e_auction`; ARMEPS tenders are `open` or
+  `quotation` so far.)
 - `filter[submissionChannel]` (optional): one or several of `eauction`, `armeps`, `paper` —
   repeat the parameter for several; any of them matches. How a supplier submits a bid, which is
-  not the procedure type: a quotation can run on ARMEPS or on paper. Every tender is `eauction`
-  today. An unknown value is a `422`, not an empty list.
+  not the procedure type: a quotation can run on ARMEPS or on paper. Tenders are `eauction` or
+  `armeps` today; `paper` has no source yet. An unknown value is a `422`, not an empty list.
 - `filter[status]` (optional): one or several of `planned`, `active`, `amended`, `closed`,
   `awarded`, `cancelled`.
 - `filter[minValue]` (optional): number ≥ 0.
@@ -979,6 +980,7 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
       "procedureType": "e_auction",
       "submissionChannel": "eauction",
       "purchaseKind": "works",
+      "evaluationMethod": null,
       "status": "active",
       "sourceStatus": "Ընթացիկ",
       "estimatedValue": 12750000,
@@ -1007,6 +1009,10 @@ blank or unrecognised.
 `submissionChannel` is how a supplier bids on the tender, and is never null: `eauction` (live
 online price bidding on eauction.armeps.am), `armeps` (one sealed electronic bid on armeps.am) or
 `paper` (a sealed envelope delivered to the buyer).
+`evaluationMethod` is how the winner is chosen, as a code derived from the source's label
+(`lowest_price` is the only one seen so far). It is `null` on e-auction tenders, whose pages
+state none. An `armeps` tender has `sourceStatus` and `auctionAt` `null`: armeps.am states no
+status (it is derived from the deadline) and runs no auction.
 
 **Errors:**
 
@@ -1244,7 +1250,8 @@ read from, oldest first. `source` is `eauction` (eauction.armeps.am), `armeps` (
 `gnumner` (gnumner.minfin.am) or `ppcm`; `url` is the page on that site; `role` is what the site
 contributed — `discovery` (it announced the tender), `detail` (deadline, terms, documents) or
 `results` (bidders and prices). An e-auction tender has one `detail` link today, since one site
-does all three.
+does all three. An ARMEPS tender has two: `armeps` (`detail`, its armeps.am page) and `gnumner`
+(`discovery`, the announcement listing that pointed at it).
 
 `buyer.taxId` (ՀՎՀՀ) is populated only for buyers, and only when the invitation archive was
 parsed. `cpvCode` is `null` for most of the corpus — CPV lives inside the invitation ZIP.
@@ -1275,6 +1282,13 @@ shown for a tender that has them. A tender that names no invitation archive at a
   when it does not. Never guessed from content. eauction's `hraver.docx` is known to be the
   Armenian invitation and is tagged `hy`; per-lot specifications are often bilingual and stay
   `null`.
+
+An ARMEPS tender's documents are one `kind: "contract_documents"` archive: everything the buyer
+uploaded to armeps.am (the invitation in HY, EN and RU, bills of quantities, addenda) plus the
+`c4t_*.xml` Tender Structure XML. `name` drops the archive's own `N_` numbering. `language` is
+the one armeps.am's document table states for that file; when a buyer uploads the same file name
+under two languages it cannot say which copy is which, and is `null`. An addendum is a second
+archive beside the first.
 
 **Errors:**
 

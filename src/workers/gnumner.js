@@ -125,7 +125,7 @@ export const gnumnerBoard = {
 };
 
 /**
- * Discoveries whose consumers have not landed yet (tickets 05 and 06) are
+ * Paper discoveries, whose consumer (ticket 06) has not landed yet, are
  * parked, not failed: moved back to delayed without spending an attempt, so
  * they stay recorded in Redis and the real handler picks them up the first
  * time it sees them. Replace this with the handler when it exists.

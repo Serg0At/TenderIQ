@@ -1,5 +1,5 @@
 import config from '../configs/variables.config.js';
-import { listEnabledSources, getSourceConfig } from '../configs/sources.config.js';
+import { listEnabledSources, getSourceConfig, hasListing } from '../configs/sources.config.js';
 import redis from '../libs/redis.js';
 import { ingestFetchQueue, maintenanceQueue, alertsQueue, closeQueues } from './index.js';
 import { JOB } from './names.js';
@@ -17,18 +17,29 @@ const register = async () => {
   for (const source of listEnabledSources()) {
     const { listingCron, refreshCron, displayName } = getSourceConfig(source);
 
-    await ingestFetchQueue.upsertJobScheduler(
-      `sweep-${source}`,
-      { pattern: listingCron },
-      { name: JOB.SOURCE_SWEEP, data: { source } }
-    );
-
-    logger.info(`[scheduler] ${displayName}: sweep scheduled "${listingCron}"`);
+    if (hasListing(source)) {
+      await ingestFetchQueue.upsertJobScheduler(
+        `sweep-${source}`,
+        { pattern: listingCron },
+        { name: JOB.SOURCE_SWEEP, data: { source } }
+      );
+      logger.info(`[scheduler] ${displayName}: sweep scheduled "${listingCron}"`);
+    } else {
+      // A source with no listing (armeps.am) is reached only by id. Removing
+      // the id rather than skipping it matters: until 2026-10-19 `armeps` was
+      // e-auction's key, and its `sweep-armeps` schedule is still in any Redis
+      // that ran then, firing a sweep no board answers.
+      if (await ingestFetchQueue.removeJobScheduler(`sweep-${source}`)) {
+        logger.info(`[scheduler] ${displayName}: removed a stale sweep schedule`);
+      }
+    }
 
     // Discovery and settlement are two different questions and run on two
     // different clocks — see JOB.TENDER_REFRESH. Without this second schedule,
     // awards are only ever ingested for tenders that happen to settle while
-    // still inside the sweep's tid watermark window.
+    // still inside the sweep's tid watermark window, and an ARMEPS deadline
+    // moved on armeps.am would never be seen. Upserting `refresh-armeps` also
+    // replaces the schedule e-auction left under that id before the rename.
     if (refreshCron) {
       await ingestFetchQueue.upsertJobScheduler(
         `refresh-${source}`,

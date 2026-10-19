@@ -9,6 +9,7 @@ import TenderDocumentService from '../services/tenderDocument.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import { sha256 } from '../utils/hash.js';
+import { JOB } from '../queues/names.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
 
@@ -30,6 +31,28 @@ import { logger } from '../utils/logger.js';
  */
 
 const DOC_REF = (sourceId) => `invitation:${sourceId}`;
+
+/**
+ * The document stage's job for a normalized e-auction tender, or null.
+ *
+ * Only when the tender changed, and keyed on the invitation URL, NOT on the
+ * detail payload hash. A tender walks Հրապարակված → Նախաաճուրդային → Աճուրդ →
+ * Շնորհում → Ավարտված, so the detail hash changes about five times and a
+ * hash-keyed id would re-download the same unchanged 600 KB archive on every
+ * one of them. The content-hash check inside the handler only skips the
+ * storage write — by then the request has already been paid for out of the
+ * 20/min budget.
+ */
+export const eauctionDocumentsJob = (observation, { sourceId, result, priority }) => {
+  const { source } = observation;
+  const { invitationUrl } = observation.tender;
+  if (!result.event || !invitationUrl) return null;
+  return {
+    name: JOB.TENDER_DOCUMENTS,
+    data: { source, sourceId, invitationUrl },
+    opts: { jobId: `${source}-docs-${sourceId}-${sha256(invitationUrl).slice(0, 12)}`, priority },
+  };
+};
 
 export const handleTenderDocuments = async (job, token) => {
   const { source, sourceId, invitationUrl } = job.data;
@@ -176,4 +199,4 @@ export const handleTenderDocuments = async (job, token) => {
   };
 };
 
-export default { handleTenderDocuments };
+export default { handleTenderDocuments, eauctionDocumentsJob };

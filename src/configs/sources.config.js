@@ -59,6 +59,32 @@ const sources = {
       },
     ],
   },
+  /**
+   * armeps.am (European Dynamics e-PPS): the detail page of every ARMEPS
+   * tender. It has no listing (its public search errors), so it is reached
+   * only through a `resourceId` that gnumner — later PPCM — supplies.
+   */
+  armeps: {
+    enabled: true,
+    displayName: 'armeps.am (ARMEPS tender pages)',
+    baseUrl: process.env.SOURCE_ARMEPS_BASE || 'https://armeps.am',
+    // Same budget as gnumner: a government site we have no relationship with.
+    // PPCM (ticket 10) is served from this host and will share the key.
+    rateLimit: { requests: 10, perMs: 60000 },
+    /**
+     * The refresh re-reads every unsettled ARMEPS tender, not only those past
+     * their deadline, because what it is for is a deadline armeps.am moves
+     * while the gnumner notice stays the same. Every 3 hours, stalest first,
+     * so ~500 open tenders cost ~70 requests an hour. After the deadline the
+     * page has nothing more to say (awards are PPCM's, ticket 10), so the
+     * window past it is short: long enough to catch a late extension.
+     */
+    refreshCron: process.env.SOURCE_ARMEPS_REFRESH_CRON || '29 */3 * * *',
+    refreshWindowDays: 3,
+    maxRefreshBatch: 200,
+    downloadDocuments: true,
+    backfillDocuments: true,
+  },
 };
 
 const getSourceConfig = (key) => {
@@ -72,4 +98,10 @@ const listEnabledSources = () =>
     .filter(([, cfg]) => cfg.enabled)
     .map(([key]) => key);
 
-export { sources, getSourceConfig, listEnabledSources };
+/** A source with a listing is swept; one without (armeps.am) is only reached by id. */
+const hasListing = (key) => Boolean(getSourceConfig(key).listingPaths?.length);
+
+/** A source's host, `www.` dropped, for classifying links that point at it. */
+const hostOf = (key) => new URL(getSourceConfig(key).baseUrl).hostname.replace(/^www\./, '');
+
+export { sources, getSourceConfig, listEnabledSources, hasListing, hostOf };

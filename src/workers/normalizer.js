@@ -2,15 +2,18 @@ import { UnrecoverableError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage } from '../libs/storage/index.js';
 import * as eauction from '../libs/adapters/source/eauction/observation.js';
+import * as armeps from '../libs/adapters/source/armeps/observation.js';
 import { lookupsFor, resolve, deriveStatus } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
 import { ingestFetchQueue, alertsQueue, maintenanceQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
-import { sha256 } from '../utils/hash.js';
 import { logger } from '../utils/logger.js';
 import { validateNormalizedTender } from '../validations/index.js';
+import { eauctionDocumentsJob } from './documents.js';
+import { armepsDocumentsJob } from './armeps.js';
+import { linkDiscovery } from '../services/discoveryLink.service.js';
 
 /**
  * Source payload -> domain entities. The only stage that writes tenders,
@@ -27,9 +30,14 @@ import { validateNormalizedTender } from '../validations/index.js';
  * here knows what a source's pages look like, and no merge rule lives here.
  */
 
-/** Source key -> its adapter's payload-to-observation mapper. */
-const OBSERVERS = {
-  [eauction.SOURCE]: eauction.observeDetail,
+/**
+ * Source key -> its adapter's payload-to-observation mapper, and the document
+ * stage's job for a saved tender (null for none). The only per-source table
+ * here; what each entry does lives with its source.
+ */
+const SOURCES = {
+  [eauction.SOURCE]: { observe: eauction.observeDetail, documentsJob: eauctionDocumentsJob },
+  [armeps.SOURCE]: { observe: armeps.observeDetail, documentsJob: armepsDocumentsJob },
 };
 
 const readPayload = async (storageKey) => {
@@ -51,16 +59,24 @@ export const normalizeTender = async ({
   hash,
   storageKey,
   priority = PRIORITY.LIVE,
+  // The gnumner notice that led to this page, if one did. It is not in the
+  // stored payload, so a replay has none, and needs none: the link it writes
+  // is kept from the first run.
+  discovery = null,
+  // Set by the detail fetch on the first normalize of a newly stored page;
+  // absent on a replay or a refresh re-normalize. See armepsDocumentsJob.
+  fresh = false,
 }) => {
   if (!source || !sourceId || !ref || !hash || !storageKey) {
     throw new UnrecoverableError(
       'normalize.tender requires source, sourceId, ref, hash, and storageKey'
     );
   }
-  const observe = OBSERVERS[source];
-  if (!observe) {
+  const registered = SOURCES[source];
+  if (!registered) {
     throw new UnrecoverableError(`no tender normalizer is registered for source "${source}"`);
   }
+  const { observe, documentsJob } = registered;
 
   // A newer payload for this ref means this job is describing a page that has
   // already been superseded; normalizing it would walk the tender backwards.
@@ -113,7 +129,8 @@ export const normalizeTender = async ({
   // Degrade, do not discard: an unrecognised label still stores the tender,
   // with a status from its deadline and the label verbatim as source_status.
   // This warning is what prompts adding the label to the adapter properly.
-  if (observation.status === null) {
+  // A page that states no status at all (armeps.am) has nothing to map.
+  if (observation.status === null && observation.observedStatus !== null) {
     logger.warn(
       `[normalizer] unmapped ${source} status ${JSON.stringify(observation.observedStatus)} on tender ` +
         `${sourceId} — stored as "${status}" from its deadline. Add it to the ${source} adapter's ` +
@@ -156,30 +173,24 @@ export const normalizeTender = async ({
     });
   }
 
+  // The notice that discovered this page, now that its tender exists. Which
+  // tender is again the resolution module's call, through the pointer.
+  if (discovery) {
+    await linkDiscovery({ discovery, pointer: { source, externalId: observation.externalId } });
+  }
+
   // Enqueued from here rather than from the detail fetch because this is the
   // point at which the tender is known to exist in the database — the document
   // stage updates it by source_id and would otherwise race its own creation.
-  //
-  // The jobId is keyed on the invitation URL, NOT on the detail payload hash.
-  // A tender walks Հրապարակված → Նախաաճուրդային → Աճուրդ → Շնորհում →
-  // Ավարտված, so the detail hash changes about five times and a hash-keyed id
-  // would re-download the same unchanged 600 KB archive on every one of them.
-  // The content-hash check inside the handler only skips the storage write —
-  // by then the request has already been paid for out of the 20/min budget.
+  // When, and under which job id, is the source's call (its `documentsJob`).
   // The seed skips archives unless explicitly opted in — see backfillDocuments.
   const documentsWanted =
     sourceConfig.downloadDocuments &&
     (priority !== PRIORITY.BACKFILL || sourceConfig.backfillDocuments === true);
 
-  if (result.event && tender.invitationUrl && documentsWanted) {
-    await ingestFetchQueue.add(
-      JOB.TENDER_DOCUMENTS,
-      { source, sourceId, invitationUrl: tender.invitationUrl },
-      {
-        jobId: `${source}-docs-${sourceId}-${sha256(tender.invitationUrl).slice(0, 12)}`,
-        priority,
-      }
-    );
+  const documents = documentsWanted ? documentsJob(observation, { sourceId, result, fresh, priority }) : null;
+  if (documents) {
+    await ingestFetchQueue.add(documents.name, documents.data, documents.opts);
   }
 
   // The domain event, delivered as a job. Only on a real change, so a
