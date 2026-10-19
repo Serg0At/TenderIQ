@@ -224,17 +224,26 @@ The only stage that writes domain entities. Runs in its own queue so a parser bu
 and replayed without re-fetching.
 
 1. Read the raw payload from storage by `storageKey`.
-2. Map source fields → OCDS-aligned entities: `parties` (buyer), `tenders`, and for the importer
-   `awards` / `contracts`.
-3. Validate the mapped record with `joi`. Invalid → DLQ with the payload key attached; never a
-   partial write.
-4. **Upsert `tenders` by `source_id`** (unique index) inside a transaction.
-5. **Amendment detection** — compare a canonical field hash (deadline, value, CPV, status, spec
+2. The source's adapter turns it into an **observation** — one source's view of one tender
+   (`libs/adapters/source/<source>/observation.js`). Everything source-specific about
+   normalization lives there; `workers/normalizer.js` is an orchestrator and knows no page.
+3. **Resolve** it (`services/resolution.service.js`, pure, ADR 0004): an existing
+   `(source, external_id)` link wins, then a pointer to another source's id, then — for result
+   sources only — normalized procedure code + submission channel + dates and lots. The answer is
+   link to a tender, create one, or unmatched. Unmatched goes to `unmatched_results` with its
+   reason (`no_candidate`, `ambiguous`, `no_code`, `unsupported_format`) and is counted, never
+   guessed onto a tender. A detail source is never matched on its code, so a re-announcement
+   under the same code is a second tender.
+4. **Derive status** in the same module: only the source that owns a state for the submission
+   channel decides it, and status only moves forward.
+5. Validate the mapped record with `joi`. Invalid → DLQ with the payload key attached; never a
+   partial write. Write the tender, its link and its ledger inside one transaction.
+6. **Amendment detection** — compare a canonical field hash (deadline, value, CPV, status, spec
    refs) against the stored latest version:
    - unchanged → touch `fetched_at` only, emit nothing;
    - changed → set previous row `is_latest = false`, insert a new row with `version + 1` and
      `is_latest = true`, emit `TenderAmended` with the field diff.
-6. Emit `TenderIngested` (new) or `TenderAmended` (changed) / `AwardIngested`.
+7. Emit `TenderIngested` (new) or `TenderAmended` (changed) / `AwardIngested`.
 
 Downstream consumers — matcher, notifier, intelligence recompute — are separate workers
 subscribed to those events, and are out of scope for this document.
@@ -272,7 +281,7 @@ Every stage is safe to re-run, which is what makes at-least-once queue delivery 
 | `listing.page` | `(source, page, etag)` | `304` → no work |
 | `tender.detail` | `(source, ref, hash)` | known hash → no storage write, no enqueue |
 | `document.download` | content hash | same object key → overwrite-in-place, one DB row |
-| `normalize.tender` | `tenders.source_id` + field hash | upsert; no new version unless fields changed |
+| `normalize.tender` | `tender_sources (source, external_id)` + field hash | resolves to the same tender; no new version unless fields changed |
 | `import.ppcm` | file hash, then award reference | row-level upsert |
 
 Storage keys are deterministic by design: a retried job writes the *same* key, so a partial

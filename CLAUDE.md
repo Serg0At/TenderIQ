@@ -578,8 +578,13 @@ decision that has already been made.
   details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
   is one run, never a procedure code; every source a tender came from is a link on it
   (`tender_sources`, unique on `(source, external_id)`, written in `saveNormalized`'s transaction;
-  `tenders.source_id` stays as the creating link until readers move over); anything
-  that cannot be attached to exactly one tender is an unmatched result, counted — and in
+  `tenders.source_id` stays as the creating link until readers move over). Which tender an
+  observation belongs to, and the tender's status, are decided only in the pure
+  `services/resolution.service.js`; each adapter emits an observation
+  (`eauction/observation.js`) and `workers/normalizer.js` merely orchestrates, so a new source
+  is a parser, never a merge rule. Only a *result* is matched on procedure code — a detail page
+  never is, which is what keeps a re-announcement a second tender. Anything
+  that cannot be attached to exactly one tender is an unmatched result (`unmatched_results`), counted — and in
   production a missed tender will raise an operator alert (a later feature, live ingestion only).
   The e-auction source key was `armeps` until 2026-10-19 and is now `eauction`, so that `armeps`
   can mean armeps.am; its stored objects were not moved and still sit under `raw/armeps/` and

@@ -195,6 +195,19 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
 };
 
 
+/**
+ * SQL twin of `normalizeCode` in services/resolution.service.js: «» and quotes
+ * stripped, dashes made `-`, inner whitespace collapsed, uppercased. It only
+ * narrows the candidates; the resolution module re-checks each one.
+ *
+ * The `և` replace is not cosmetic: JavaScript uppercases that ligature to
+ * `ԵՒ` and Postgres leaves it alone, so without it a code such as
+ * `ՀՀ ԱԱԾ-ՏԱևԿԿԳՎ-…` never reaches the candidates at all.
+ */
+const codeKeySql = (column) =>
+  `upper(btrim(regexp_replace(regexp_replace(translate(replace(${column}, 'և', 'ԵՒ'), ` +
+  `'‐‑‒–—―', '------'), '[«»"''“”„‘’]', '', 'g'), '\\s+', ' ', 'g')))`;
+
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
   't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
@@ -544,6 +557,58 @@ export default class TenderRepository {
   }
 
   /**
+   * The candidate tenders for one observation, answering exactly the lookups
+   * `resolution.service.js#lookupsFor` asked for. Deciding between them is the
+   * resolution module's job, never this one's: the code lookup may return more
+   * than one run, and that is the point.
+   */
+  static async findCandidates({ link, pointer, code }, trx = db) {
+    const candidates = (query) =>
+      query.select(
+        't.id', 't.status', 't.reference_code', 't.submission_channel', 't.published_at', 't.deadline_at',
+        trx.raw(
+          `array(select lot_number from tender_lots where tender_id = t.id
+                 union
+                 select lot_number from public_tender_bids where tender_id = t.id) as lot_numbers`
+        )
+      );
+    const byLink = async (ref) =>
+      ref
+        ? candidates(
+          trx(`${TABLE} as t`)
+            .join('tender_sources as s', 's.tender_id', 't.id')
+            .where({ 's.source': ref.source, 's.external_id': ref.externalId })
+        )
+        : [];
+    const byCode = async () =>
+      code
+        ? candidates(
+          trx(`${TABLE} as t`)
+            .whereRaw(`${codeKeySql('t.reference_code')} = ?`, [code.key])
+            .andWhere('t.submission_channel', code.submissionChannel)
+        )
+        : [];
+
+    const toCandidate = (row) => ({
+      id: row.id,
+      status: row.status,
+      referenceCode: row.reference_code,
+      submissionChannel: row.submission_channel,
+      publishedAt: row.published_at,
+      deadlineAt: row.deadline_at,
+      lotNumbers: row.lot_numbers ?? [],
+    });
+    const linked = await byLink(link);
+    const pointed = await byLink(pointer);
+    const coded = await byCode();
+    return {
+      linked: linked.map(toCandidate),
+      pointed: pointed.map(toCandidate),
+      byCode: coded.map(toCandidate),
+    };
+  }
+
+  /**
    * Apply what the invitation archive revealed: the buyer's tax ID, the CPV
    * code, and a `tender_documents` row for the archive itself.
    *
@@ -686,8 +751,13 @@ export default class TenderRepository {
    * written on every call, unchanged tenders included, in the same
    * transaction: a tender is never visible without the link that produced it,
    * and `last_seen_at` / `observed_status` follow every fetch that got this far.
+   *
+   * `tenderId` is the resolution module's decision: the tender this
+   * observation links to, or null to create one under `sourceId`. Which tender
+   * is never re-decided here. A linked tender deleted since it was resolved
+   * throws, so the retry resolves again rather than resurrecting it.
    */
-  static async saveNormalized({ source, sourceId, buyerName, tender, lots, link }) {
+  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, tender, lots, link }) {
     return db.transaction(async (trx) => {
       const buyerId = await parties.upsertBuyer({ source, name: buyerName }, trx);
       if (!buyerId) {
@@ -696,7 +766,10 @@ export default class TenderRepository {
         return { event: null, skipped: 'no_buyer' };
       }
 
-      const existing = await trx(TABLE).where({ source_id: sourceId }).forUpdate().first();
+      const existing = tenderId ? await trx(TABLE).where({ id: tenderId }).forUpdate().first() : null;
+      if (tenderId && !existing) {
+        throw new Error(`[tenders] resolved tender ${tenderId} no longer exists — re-resolve`);
+      }
       // The detail page never carries a CPV; the invitation archive does, and
       // applyInvitationFacts writes it after this row exists. A detail with no
       // CPV is silence, not a change — treating it as one wiped every stored

@@ -1,10 +1,11 @@
 import { UnrecoverableError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage } from '../libs/storage/index.js';
-import { parseDetail } from '../libs/adapters/source/eauction/detail.parser.js';
-import { detailUrl } from '../libs/adapters/source/eauction/client.js';
+import * as eauction from '../libs/adapters/source/eauction/observation.js';
+import { lookupsFor, resolve, deriveStatus } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
+import unmatchedResults from '../repositories/unmatchedResult.repo.js';
 import { ingestFetchQueue, alertsQueue, maintenanceQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256 } from '../utils/hash.js';
@@ -17,62 +18,18 @@ import { validateNormalizedTender } from '../validations/index.js';
  *
  * It runs on its own queue so a mapping bug can be fixed and replayed straight
  * from object storage without re-crawling the source — which is also why this
- * file re-parses the stored HTML rather than trusting anything the fetch job
+ * file re-parses the stored payload rather than trusting anything the fetch job
  * put in the job payload.
+ *
+ * A thin orchestrator: the source's adapter turns the payload into an
+ * observation, services/resolution.service.js decides which tender it belongs
+ * to and what status that tender is in, and the repositories write. Nothing
+ * here knows what a source's pages look like, and no merge rule lives here.
  */
 
-/**
- * Fallback for a status the adapter does not recognise.
- *
- * Degrade, do not discard. Throwing here used to lose an entire tender — title,
- * buyer, deadline, the whole bid ledger — over one unrecognised label, and
- * missed tenders are the product's #1 churn cause. The site has ten lifecycle
- * states today and can add an eleventh whenever it likes.
- *
- * "Can a supplier still bid?" is answerable from the deadline alone, which is
- * the only thing `status` is load-bearing for downstream. The exact Armenian
- * label is preserved as `source_status`, so nothing is actually lost, and the
- * warning is what prompts adding it to STATUS properly.
- *
- * The clock lives here rather than in the parser, which must stay pure.
- */
-const statusFromDeadline = (detail, sourceId) => {
-  const fallback = detail.deadlineAt && detail.deadlineAt.getTime() < Date.now() ? 'closed' : 'active';
-  logger.warn(
-    `[normalizer] unmapped e-auction status ${JSON.stringify(detail.rawStatus)} on tender ` +
-      `${sourceId} — stored as "${fallback}" from its deadline. Add it to STATUS in ` +
-      'libs/adapters/source/eauction/detail.parser.js'
-  );
-  return fallback;
-};
-
-const mapEauctionDetail = (detail, sourceId) => {
-  return {
-    status: detail.status ?? statusFromDeadline(detail, sourceId),
-    sourceStatus: detail.rawStatus ?? null,
-    title: detail.title,
-    referenceCode: detail.code,
-    procedureType: detail.procedureType,
-    // Every tender on eauction.armeps.am is bid by live auction there.
-    submissionChannel: 'eauction',
-    goodsWorksServices: detail.goodsWorksServices,
-    // Neither is published anywhere in the HTML. `cpvCode` arrives later from
-    // the invitation archive via applyInvitationFacts.
-    cpvCode: null,
-    // `description` does NOT. It has no writer anywhere and no source to have
-    // one: the docx's contract-subject line is the title verbatim, and the real
-    // per-item text is already stored as tender_lots.name. The column is an
-    // OCDS-shaped leftover — see docs/SCRAPER_WORKFLOW.md § 5. Do not "fix"
-    // this by joining lot names into it.
-    description: null,
-    estimatedValue: detail.estimatedValue,
-    currency: detail.currency,
-    publishedAt: detail.publishedAt,
-    deadlineAt: detail.deadlineAt,
-    qnaDeadlineAt: detail.qnaDeadlineAt,
-    auctionAt: detail.auctionAt,
-    invitationUrl: detail.invitationUrl,
-  };
+/** Source key -> its adapter's payload-to-observation mapper. */
+const OBSERVERS = {
+  [eauction.SOURCE]: eauction.observeDetail,
 };
 
 const readPayload = async (storageKey) => {
@@ -100,7 +57,8 @@ export const normalizeTender = async ({
       'normalize.tender requires source, sourceId, ref, hash, and storageKey'
     );
   }
-  if (source !== 'eauction') {
+  const observe = OBSERVERS[source];
+  if (!observe) {
     throw new UnrecoverableError(`no tender normalizer is registered for source "${source}"`);
   }
 
@@ -112,52 +70,90 @@ export const normalizeTender = async ({
   }
 
   const sourceConfig = getSourceConfig(source);
-  const detail = parseDetail(await readPayload(storageKey), { baseUrl: sourceConfig.baseUrl });
+  // When the page was fetched — a replay re-reads an old page.
+  const seenAt = latest.fetched_at;
+  const observation = observe(await readPayload(storageKey), {
+    externalId: sourceId,
+    seenAt,
+    baseUrl: sourceConfig.baseUrl,
+  });
 
-  // Layout-health alarm, the detail-page counterpart to blocksSeen: a page that
-  // parsed to no labels at all is a redesign, not an empty tender.
-  if (detail.labelsSeen === 0) {
-    throw new Error(
-      `[normalizer] ${source} detail ${sourceId} yielded 0 label/value pairs — parser likely broken`
+  const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
+
+  if (decision.action === 'unmatched') {
+    await unmatchedResults.record({
+      source,
+      externalRef: observation.externalId,
+      procedureCode: observation.procedureCode,
+      reason: decision.reason,
+      candidateTenderIds: decision.candidateIds,
+      payloadHash: hash,
+      seenAt,
+    });
+    logger.warn(`[normalizer] ${source}:${sourceId} unmatched (${decision.reason})`, {
+      candidates: decision.candidateIds,
+    });
+    return { event: null, skipped: 'unmatched', reason: decision.reason };
+  }
+
+  // Only this observation's status is passed: every tender today has one link.
+  // A second source's link stores its label verbatim, so deriving across links
+  // needs each label mapped by its own adapter first — the work of the ticket
+  // that adds that source.
+  const status = deriveStatus(
+    {
+      submissionChannel: observation.submissionChannel,
+      links: [{ source, status: observation.status }],
+      current: decision.tender?.status ?? null,
+      deadlineAt: observation.deadlineAt,
+    },
+    new Date()
+  );
+
+  // Degrade, do not discard: an unrecognised label still stores the tender,
+  // with a status from its deadline and the label verbatim as source_status.
+  // This warning is what prompts adding the label to the adapter properly.
+  if (observation.status === null) {
+    logger.warn(
+      `[normalizer] unmapped ${source} status ${JSON.stringify(observation.observedStatus)} on tender ` +
+        `${sourceId} — stored as "${status}" from its deadline. Add it to the ${source} adapter's ` +
+        'status map'
     );
   }
 
-  // The ledger table was present and every row was rejected. That is a column
-  // change, not an empty ledger — and persisting it would look identical to an
-  // active tender that simply has no bids yet. Failing here is what keeps the
-  // ledger-replace from being handed an empty result it would act on.
-  if (detail.malformedLedgerRows > 0 && detail.lots.length === 0) {
-    throw new Error(
-      `[normalizer] ${source} detail ${sourceId}: bid ledger present but all ` +
-        `${detail.malformedLedgerRows} rows failed the column check — ` +
-        'Գնառաջարկներ layout likely changed'
-    );
-  }
-
-  const tender = validateNormalizedTender(mapEauctionDetail(detail, sourceId));
+  const tender = validateNormalizedTender({ ...observation.tender, status });
 
   const result = await tenders.saveNormalized({
     source,
-    sourceId: `${source}:${sourceId}`,
-    buyerName: detail.buyerName,
+    sourceId: `${source}:${observation.externalId}`,
+    tenderId: decision.tenderId ?? null,
+    buyerName: observation.buyerName,
     tender,
-    lots: detail.lots,
-    // One site is discovery, detail and results for an e-auction; the detail
-    // page is the one that creates the tender, so that is the role it carries.
+    lots: observation.ledger,
     link: {
       source,
-      externalId: sourceId,
-      url: detailUrl(sourceId),
-      role: 'detail',
-      observedStatus: detail.rawStatus ?? null,
-      // When the page was fetched — a replay re-reads an old page.
-      seenAt: latest.fetched_at,
+      externalId: observation.externalId,
+      url: observation.url,
+      role: observation.role,
+      observedStatus: observation.observedStatus,
+      seenAt,
     },
   });
 
   if (result.skipped === 'no_buyer') {
     logger.warn(`[normalizer] ${source}:${sourceId} skipped — no buyer on the detail page`);
     return result;
+  }
+
+  // A result that was once unmatched and has now found its tender. Only when
+  // the link is new: an observation already linked was never left unmatched
+  // since, and the e-auction path skips a pointless UPDATE per page.
+  if (decision.rule !== 'link') {
+    await unmatchedResults.markResolved({
+      source,
+      externalRef: observation.externalId,
+      tenderId: result.tenderId,
+    });
   }
 
   // Enqueued from here rather than from the detail fetch because this is the
@@ -175,12 +171,12 @@ export const normalizeTender = async ({
     sourceConfig.downloadDocuments &&
     (priority !== PRIORITY.BACKFILL || sourceConfig.backfillDocuments === true);
 
-  if (result.event && detail.invitationUrl && documentsWanted) {
+  if (result.event && tender.invitationUrl && documentsWanted) {
     await ingestFetchQueue.add(
       JOB.TENDER_DOCUMENTS,
-      { source, sourceId, invitationUrl: detail.invitationUrl },
+      { source, sourceId, invitationUrl: tender.invitationUrl },
       {
-        jobId: `${source}-docs-${sourceId}-${sha256(detail.invitationUrl).slice(0, 12)}`,
+        jobId: `${source}-docs-${sourceId}-${sha256(tender.invitationUrl).slice(0, 12)}`,
         priority,
       }
     );

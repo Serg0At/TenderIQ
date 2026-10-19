@@ -72,6 +72,25 @@ function up(pg) {
       table.index(['tender_id'], 'tender_sources_tender_idx');
     })
 
+    // unmatched_results — A result row from a source that could not be attached to exactly one
+    // tender (ADR 0004): kept with its reason and counted, never guessed onto a tender. Unique on
+    // (source, external_ref), so a re-seen result updates its row rather than adding one. The
+    // reader is the operator alert. Public data: no organization_id.
+    .createTable('unmatched_results', table => {
+      table.string('id').primary();
+      table.string('source').notNullable();
+      table.string('external_ref').notNullable();
+      table.string('procedure_code');
+      table.string('reason').notNullable();         // no_candidate | ambiguous | no_code | unsupported_format
+      table.specificType('candidate_tender_ids', 'text[]').notNullable().defaultTo('{}');
+      table.string('payload_hash').notNullable();   // the stored raw payload it was read from
+      table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.timestamp('last_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.string('resolved_tender_id').references('id').inTable('tenders').onDelete('SET NULL');
+      table.timestamp('resolved_at');
+      table.unique(['source', 'external_ref'], { indexName: 'unmatched_results_source_ref_uq' });
+    })
+
     // awards — The winner of each individual lot, with the price it won at alongside the
     // buyer's budget for that lot.
     .createTable('awards', table => {
@@ -640,6 +659,8 @@ async function indexes(pg) {
      CHECK (submission_channel IN ('eauction','armeps','paper'))`);
   await pg.raw(`ALTER TABLE tender_sources ADD CONSTRAINT tender_sources_role_chk
      CHECK (role IN ('discovery','detail','results'))`);
+  await pg.raw(`ALTER TABLE unmatched_results ADD CONSTRAINT unmatched_results_reason_chk
+     CHECK (reason IN ('no_candidate','ambiguous','no_code','unsupported_format'))`);
 
   await pg.raw(`CREATE INDEX IF NOT EXISTS tracked_tenders_org_status_idx
      ON tracked_tenders (organization_id, status)`);
