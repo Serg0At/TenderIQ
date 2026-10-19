@@ -3,7 +3,7 @@
 **What to build:** A supplier never sees a dead ARMEPS or paper tender as open. When gnumner
 publishes a failed-procedure notice, the tender becomes `cancelled`. ADR 0004 status table.
 
-**Blocked by:** 05, 06
+**Blocked by:** 05, 06, 15
 
 **Status:** ready-for-agent
 

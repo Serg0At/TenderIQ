@@ -5,7 +5,7 @@ prices, benchmarks and bid reconciliation work on paper tenders, compared on net
 everything else. The paper tender becomes `awarded`. Spec: *Sources and parsers → gnumner*
 (contract-concluded parser). Research: the two sampled 323-Ա notices.
 
-**Blocked by:** 06
+**Blocked by:** 06, 15
 
 **Status:** ready-for-agent
 

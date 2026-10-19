@@ -4,7 +4,7 @@
 and gets an alert about the change. For paper this is the only place a change is published.
 Spec: *Sources and parsers → gnumner* (amendment listing). User stories 6–7.
 
-**Blocked by:** 06
+**Blocked by:** 06, 15
 
 **Status:** ready-for-agent
 
