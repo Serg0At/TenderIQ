@@ -148,12 +148,6 @@ job fails loudly rather than silently returning nothing.
 Raw payloads are **kept forever**. When a parser improves, normalization is replayed from
 storage — no re-crawl of the source.
 
-The e-auction source was keyed `armeps` until 2026-10-19 (ADR 0004). Its objects were not moved:
-everything fetched before then is under `raw/armeps/` and `docs/armeps/`, everything after under
-`raw/eauction/` and `docs/eauction/`, and `source_payloads.storage_key` records which. Replay reads
-that column, so it never cares; `npm run reindex` is the one reader that derives a source from a key,
-and it maps the old folder back to `eauction`. A future armeps.am source must not write there.
-
 ### 5. Document download — `document.download`
 
 1. Stream the attachment, aborting past `SCRAPER.MAX_DOCUMENT_BYTES` (60 MB default).

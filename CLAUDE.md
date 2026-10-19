@@ -587,9 +587,7 @@ decision that has already been made.
   that cannot be attached to exactly one tender is an unmatched result (`unmatched_results`), counted — and in
   production a missed tender will raise an operator alert (a later feature, live ingestion only).
   The e-auction source key was `armeps` until 2026-10-19 and is now `eauction`, so that `armeps`
-  can mean armeps.am; its stored objects were not moved and still sit under `raw/armeps/` and
-  `docs/armeps/` — `source_payloads.storage_key` points at them, and `reindexPayloads.js` maps that
-  folder back to `eauction`. **armeps.am must not write under those folders.** Research and verification: `.scratch/procurement-sources/research.md`.
+  can mean armeps.am. Research and verification: `.scratch/procurement-sources/research.md`.
 - **PPCM is coming back.** It was removed because it is an AngularJS SPA rather than the CSV feed
   the reference spec assumes — but behind the SPA are public JSON endpoints, and its per-bidder
   report covers every procedure type. Verified 2026-10-18 against the e-auction ledger: 95 of 95
