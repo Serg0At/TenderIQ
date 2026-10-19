@@ -200,7 +200,7 @@ Tendra/
     │       ├── notify/              # telegram, email, sms
     │       ├── payment/             # bank transfer, card link
     │       └── source/              # one adapter per procurement source
-    │           ├── armeps/          # client.js · listing.parser.js · detail.parser.js
+    │           ├── eauction/        # client.js · listing.parser.js · detail.parser.js
     │           ├── ppcm/            # client.js · csv.parser.js
     │           └── ocds/            # 2027
     │

@@ -1,7 +1,7 @@
 import { UnrecoverableError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage } from '../libs/storage/index.js';
-import { parseDetail } from '../libs/adapters/source/armeps/detail.parser.js';
+import { parseDetail } from '../libs/adapters/source/eauction/detail.parser.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import { ingestFetchQueue, alertsQueue, maintenanceQueue } from '../queues/index.js';
@@ -38,14 +38,14 @@ import { validateNormalizedTender } from '../validations/index.js';
 const statusFromDeadline = (detail, sourceId) => {
   const fallback = detail.deadlineAt && detail.deadlineAt.getTime() < Date.now() ? 'closed' : 'active';
   logger.warn(
-    `[normalizer] unmapped ARMEPS status ${JSON.stringify(detail.rawStatus)} on tender ` +
+    `[normalizer] unmapped e-auction status ${JSON.stringify(detail.rawStatus)} on tender ` +
       `${sourceId} — stored as "${fallback}" from its deadline. Add it to STATUS in ` +
-      'libs/adapters/source/armeps/detail.parser.js'
+      'libs/adapters/source/eauction/detail.parser.js'
   );
   return fallback;
 };
 
-const mapArmepsDetail = (detail, sourceId) => {
+const mapEauctionDetail = (detail, sourceId) => {
   return {
     status: detail.status ?? statusFromDeadline(detail, sourceId),
     sourceStatus: detail.rawStatus ?? null,
@@ -97,7 +97,7 @@ export const normalizeTender = async ({
       'normalize.tender requires source, sourceId, ref, hash, and storageKey'
     );
   }
-  if (source !== 'armeps') {
+  if (source !== 'eauction') {
     throw new UnrecoverableError(`no tender normalizer is registered for source "${source}"`);
   }
 
@@ -131,7 +131,7 @@ export const normalizeTender = async ({
     );
   }
 
-  const tender = validateNormalizedTender(mapArmepsDetail(detail, sourceId));
+  const tender = validateNormalizedTender(mapEauctionDetail(detail, sourceId));
 
   const result = await tenders.saveNormalized({
     source,

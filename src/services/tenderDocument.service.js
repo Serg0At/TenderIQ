@@ -1,7 +1,7 @@
 import tenders from '../repositories/tender.repo.js';
 import { getStorage } from '../libs/storage/index.js';
 import { ZipError, listEntries, openEntry, storageSource } from '../libs/adapters/archive/zip.js';
-import { invitationManifest } from '../libs/adapters/source/armeps/invitation.files.js';
+import { invitationManifest } from '../libs/adapters/source/eauction/invitation.files.js';
 import { tenderDocumentManifestSchema } from '../validations/schemas/tenderDocument.schema.js';
 import { ApiError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';

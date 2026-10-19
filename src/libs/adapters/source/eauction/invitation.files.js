@@ -3,7 +3,7 @@ import { languageOfFilename } from '../../../documentLanguage.js';
 /**
  * The invitation archive's entries -> the file list a tender page shows.
  *
- * Every armeps archive is the same few shapes (all 5,671 entries across the
+ * Every eauction archive is the same few shapes (all 5,671 entries across the
  * 1,087 archives stored on 2026-10-18): `hraver.docx`, `hraver_ru.docx`, then
  * `lot_N_i_texnikakan_bnutagir.*` per lot and `popoxutyan_pastatuxt.*` for an
  * amendment. Nested .zip and .rar entries (846 of them) are listed as files

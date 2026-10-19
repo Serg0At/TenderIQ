@@ -5,7 +5,7 @@
  * consumes the raw rows these functions return.
  *
  * Depends on `public_tender_bids` (now part of migrations/create_table.js),
- * which is populated by the ARMEPS completed-tender bids-table parser — see
+ * which is populated by the e-auction completed-tender bids-table parser — see
  * detail.parser.js `parseBidLedger` and tender.repo.js `replaceLedger`. Rows
  * appear only for tenders whose status has reached `awarded`; until the sweep
  * has ingested some finished tenders, every function here

@@ -29,7 +29,7 @@ export const acquire = async (source, { requests, perMs }) => {
 /**
  * Run fn only if no other run holds the named lock.
  *
- * The armeps cron fires every 5 minutes and a post-outage deep sweep can take
+ * The eauction cron fires every 5 minutes and a post-outage deep sweep can take
  * longer than that at ~3.5s/page. Without this, sweeps stack up and the scraper
  * rate-limits itself into a spiral.
  */

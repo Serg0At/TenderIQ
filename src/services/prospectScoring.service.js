@@ -16,7 +16,7 @@
 //
 // Target Customers.md is explicit: "Vertical must be inferred from what
 // they actually bid on (tender subject/category), never from the company
-// name." Inputs are ARMEPS tender titles + goods_works_services labels
+// name." Inputs are e-auction tender titles + goods_works_services labels
 // (Armenian, sometimes Russian) sampled from the supplier's own bid history
 // — never the supplier's own name.
 //
@@ -166,7 +166,7 @@ export const scoreCandidate = (candidate, { amdToUsd, nowMs = Date.now() } = {})
   const bidCount = Number(candidate.bid_count ?? 0);
 
   /**
-   * PROXY, not a measurement. ARMEPS never publishes when a bid was submitted,
+   * PROXY, not a measurement. The e-auction board never publishes when a bid was submitted,
    * so activity span is derived from the *tender's* publish dates. A supplier
    * whose sampled tenders all happened to be published in one week therefore
    * reads as a burst regardless of how it actually paced its bidding, which is

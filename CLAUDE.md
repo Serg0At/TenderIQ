@@ -570,15 +570,17 @@ decision that has already been made.
 - **Working:** `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
   hourly. `backfill.js` seeds the historical archive on its own queue and process.
-- **Single source today:** `armeps` = eauction.armeps.am, reverse auctions only (`procedure_type`
+- **Single source today:** `eauction` = eauction.armeps.am, reverse auctions only (`procedure_type`
   is always `e_auction`). **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
   paper — assembled from four sources.** gnumner discovers ARMEPS and paper tenders, armeps.am
   details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
   is one run, never a procedure code; every source a tender came from is a link on it; anything
   that cannot be attached to exactly one tender is an unmatched result, counted — and in
   production a missed tender will raise an operator alert (a later feature, live ingestion only).
-  The source key `armeps` is renamed `eauction` before armeps.am
-  arrives. Research and verification: `.scratch/procurement-sources/research.md`.
+  The e-auction source key was `armeps` until 2026-10-19 and is now `eauction`, so that `armeps`
+  can mean armeps.am; its stored objects were not moved and still sit under `raw/armeps/` and
+  `docs/armeps/` — `source_payloads.storage_key` points at them, and `reindexPayloads.js` maps that
+  folder back to `eauction`. **armeps.am must not write under those folders.** Research and verification: `.scratch/procurement-sources/research.md`.
 - **PPCM is coming back.** It was removed because it is an AngularJS SPA rather than the CSV feed
   the reference spec assumes — but behind the SPA are public JSON endpoints, and its per-bidder
   report covers every procedure type. Verified 2026-10-18 against the e-auction ledger: 95 of 95

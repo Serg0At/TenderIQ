@@ -3,7 +3,7 @@ import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import redis from '../libs/redis.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
-import { fetchListing, fetchDetail, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
+import { fetchListing, fetchDetail, RateLimitedError } from '../libs/adapters/source/eauction/client.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import { ingestFetchQueue, ingestNormalizeQueue } from '../queues/index.js';

@@ -18,7 +18,7 @@ import { logger } from '../utils/logger.js';
  * were ingested. Idempotent: tenders that already have a document row are not
  * selected, and the handler's content hash skips a re-download anyway.
  *
- *   node src/scripts/backfillDocuments.js [--limit 500] [--source armeps]
+ *   node src/scripts/backfillDocuments.js [--limit 500] [--source eauction]
  *
  * Cost is one request per tender against the shared 20/min budget, so ~500
  * tenders is about 25 minutes of polite fetching alongside whatever else runs.
@@ -29,7 +29,7 @@ const arg = (name, fallback) => {
 };
 
 const run = async () => {
-  const source = String(arg('source', 'armeps'));
+  const source = String(arg('source', 'eauction'));
   const limit = Number(arg('limit', 500));
 
   if (!getSourceConfig(source).downloadDocuments) {

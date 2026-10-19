@@ -40,7 +40,19 @@ import { logger } from '../utils/logger.js';
 const RAW_PREFIX = `${PREFIX.RAW}/`;
 
 /**
- * `raw/armeps/detail%3A46895/<hash>.html` -> { source, ref, hash }
+ * Storage folders whose name is not the source key that owns them.
+ *
+ * The e-auction source was keyed `armeps` until ADR 0004, and its objects were
+ * deliberately not moved when the key became `eauction` — `source_payloads`
+ * points at them by full key, so a move would buy nothing and risk the archive.
+ * Only this script reads a source back OUT of a key, so the old name lives
+ * here and nowhere else. It also means armeps.am, when it arrives, must not
+ * write under `raw/armeps/`: this map could not tell its objects apart.
+ */
+const LEGACY_STORAGE_FOLDERS = new Map([['armeps', 'eauction']]);
+
+/**
+ * `raw/eauction/detail%3A46895/<hash>.html` -> { source, ref, hash }
  *
  * Returns null for anything that does not match rather than guessing, so an
  * unrelated object in the bucket is skipped and counted instead of being
@@ -51,7 +63,8 @@ export const parseRawKey = (key) => {
   const parts = key.slice(RAW_PREFIX.length).split('/');
   if (parts.length !== 3) return null;
 
-  const [source, encodedRef, filename] = parts;
+  const [folder, encodedRef, filename] = parts;
+  const source = LEGACY_STORAGE_FOLDERS.get(folder) ?? folder;
   const hash = filename.replace(/\.[^.]+$/, '');
   if (!source || !encodedRef || !/^[0-9a-f]{64}$/.test(hash)) return null;
 

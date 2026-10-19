@@ -309,11 +309,11 @@ No request body
     "checks": [
       {
         "check": "freshness",
-        "source": "armeps",
+        "source": "eauction",
         "severity": "ok",
         "ageMinutes": 7,
         "slaMinutes": 15,
-        "detail": "ARMEPS e-auction: 7m since last sweep"
+        "detail": "e-auction (reverse auctions): 7m since last sweep"
       },
       {
         "check": "dead_letters",
@@ -968,7 +968,7 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
   "data": [
     {
       "id": "cm9zx4k1p0010qw8fj3k9d2p1",
-      "sourceId": "armeps:284391",
+      "sourceId": "eauction:284391",
       "title": "Շինարարական աշխատանքների գնում",
       "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
       "cpvCode": "45000000",
@@ -1182,7 +1182,7 @@ No request body
 {
   "data": {
     "id": "cm9zx4k1p0010qw8fj3k9d2p1",
-    "sourceId": "armeps:284391",
+    "sourceId": "eauction:284391",
     "title": "Շինարարական աշխատանքների գնում",
     "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
     "cpvCode": "45000000",
@@ -1251,7 +1251,7 @@ shown for a tender that has them. A tender that names no invitation archive at a
   listed as files and not unpacked.
 - `sizeBytes` — uncompressed size.
 - `language` — `hy`, `ru` or `en` when the filename says so (`_HY`, `_ru`, `hayeren`, …), `null`
-  when it does not. Never guessed from content. armeps's `hraver.docx` is known to be the
+  when it does not. Never guessed from content. eauction's `hraver.docx` is known to be the
   Armenian invitation and is tagged `hy`; per-lot specifications are often bilingual and stay
   `null`.
 

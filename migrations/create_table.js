@@ -60,7 +60,7 @@ function up(pg) {
       table.string('currency').notNullable().defaultTo('AMD');
       table.timestamp('awarded_at');
       table.string('status').notNullable();
-      table.string('source').notNullable().defaultTo('armeps');
+      table.string('source').notNullable().defaultTo('eauction');
       table.unique(['tender_id', 'lot_number', 'source'], { indexName: 'awards_tender_lot_source_uq' });
       table.unique(['id', 'tender_id'], { indexName: 'awards_id_tender_uq' });
       table.index(['supplier_id'], 'awards_supplier_idx');
@@ -87,7 +87,7 @@ function up(pg) {
       table.string('status').notNullable(); // 'accepted' | 'rejected', mapped from "Մասնակցի կարգավիճակ"
       table.string('application_url');
       table.string('currency').notNullable().defaultTo('AMD');
-      table.string('source').notNullable().defaultTo('armeps');
+      table.string('source').notNullable().defaultTo('eauction');
       table.timestamp('fetched_at').notNullable();
       table.unique(['tender_id', 'lot_number', 'supplier_id', 'source'], {
         indexName: 'public_tender_bids_tender_lot_supplier_source_uq',
@@ -115,7 +115,7 @@ function up(pg) {
       // scoped by source, so a second writer's row must not collide with the
       // first's. Both key columns are NOT NULL because a NULL never collides in
       // a Postgres unique index, which would silently reopen the duplicate.
-      table.string('source').notNullable().defaultTo('armeps');
+      table.string('source').notNullable().defaultTo('eauction');
       table.unique(['tender_id', 'lot_number', 'item_sequence', 'source'], {
         indexName: 'tender_lots_tender_lot_item_source_uq',
       });

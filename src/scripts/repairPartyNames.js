@@ -1,7 +1,7 @@
 import { closeDb } from '../libs/knex.js';
 import { getStorage } from '../libs/storage/index.js';
 import { getSourceConfig } from '../configs/sources.config.js';
-import { parseDetail } from '../libs/adapters/source/armeps/detail.parser.js';
+import { parseDetail } from '../libs/adapters/source/eauction/detail.parser.js';
 import parties from '../repositories/party.repo.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 
@@ -16,7 +16,7 @@ import sourcePayloads from '../repositories/sourcePayload.repo.js';
  *
  * Buyers are re-keyed FIRST. A buyer's identity is a hash of its name, so when
  * the identity rule changes, upserting before re-keying would mint a second row
- * beside the old one. Suppliers are keyed on their ARMEPS business operator id
+ * beside the old one. Suppliers are keyed on their e-auction business operator id
  * and simply have their name corrected in place.
  *
  * Idempotent: a second run finds every name already correct and changes nothing.
@@ -25,7 +25,7 @@ import sourcePayloads from '../repositories/sourcePayload.repo.js';
  *   node src/scripts/repairPartyNames.js
  */
 
-const SOURCE = 'armeps';
+const SOURCE = 'eauction';
 
 const run = async () => {
   const rekey = await parties.rekeyBuyers({ source: SOURCE });

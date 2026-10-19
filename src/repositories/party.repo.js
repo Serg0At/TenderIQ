@@ -29,7 +29,7 @@ export const identityKey = (raw) => normalizeName(String(raw ?? '').replace(QUOT
  * database uniqueness problem rather than an application-logic one — the same
  * choice `source_payloads` makes.
  *
- * Suppliers carry a real one: the bidder link exposes a stable ARMEPS business
+ * Suppliers carry a real one: the bidder link exposes a stable e-auction business
  * operator id (verified — seven suppliers, one id each, constant across all
  * lots of a tender). Buyers are rendered as bare text with no link at all, so
  * theirs is derived from the normalized name. That means a buyer renaming

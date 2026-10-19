@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { parseInvitation } from '../libs/adapters/source/armeps/invitation.parser.js';
+import { parseInvitation } from '../libs/adapters/source/eauction/invitation.parser.js';
 import ChecklistExtractionService from '../services/checklistExtraction.service.js';
 import config from '../configs/variables.config.js';
 

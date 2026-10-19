@@ -22,14 +22,14 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
-| `armeps` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
+| `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
 | `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
-| `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `armeps` upstream; downstream unchanged |
+| `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
 
 Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit`, `concurrency`,
 `maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`.
 
-There is deliberately no `lookbackHours` on `armeps`: the eauction listing table has no publish-date
+There is deliberately no `lookbackHours` on `eauction`: the eauction listing table has no publish-date
 column, so depth is driven by the tid high-water mark instead (stage 3).
 Cross-source defaults live under `config.SCRAPER` in
 [src/configs/variables.config.js](src/configs/variables.config.js).
@@ -80,7 +80,7 @@ scheduler re-registers rather than duplicates.
 A sweep job carries:
 
 ```js
-{ source: 'armeps', mode: 'incremental', since: <now - lookbackHours>, cursor: null }
+{ source: 'eauction', mode: 'incremental', since: <now - lookbackHours>, cursor: null }
 ```
 
 `mode: 'backfill'` overrides `lookbackHours` with an explicit date range and is enqueued at low
@@ -148,6 +148,12 @@ job fails loudly rather than silently returning nothing.
 Raw payloads are **kept forever**. When a parser improves, normalization is replayed from
 storage — no re-crawl of the source.
 
+The e-auction source was keyed `armeps` until 2026-10-19 (ADR 0004). Its objects were not moved:
+everything fetched before then is under `raw/armeps/` and `docs/armeps/`, everything after under
+`raw/eauction/` and `docs/eauction/`, and `source_payloads.storage_key` records which. Replay reads
+that column, so it never cares; `npm run reindex` is the one reader that derives a source from a key,
+and it maps the old folder back to `eauction`. A future armeps.am source must not write there.
+
 ### 5. Document download — `document.download`
 
 1. Stream the attachment, aborting past `SCRAPER.MAX_DOCUMENT_BYTES` (60 MB default).
@@ -185,7 +191,7 @@ Three findings that would change how anyone approaches these:
   repeated across tenders. The useful content is the small file.
 - **The formats vary wildly and include `.rar`.** Across 43 sampled entries: 18 `.xls`,
   11 `.rar`, 11 `.docx`, 3 `.xlsx` (see the header comment in
-  `libs/adapters/source/armeps/invitation.parser.js`). `adm-zip` cannot read `.rar`, so roughly
+  `libs/adapters/source/eauction/invitation.parser.js`). `adm-zip` cannot read `.rar`, so roughly
   a quarter of them need a decoder that is not currently a dependency. That, not the parsing,
   is the real cost of this work.
 
@@ -369,7 +375,7 @@ downstream consumer stay as they are.
 | Storage port + S3/local drivers, deterministic key helpers | done |
 | Schema + composite unique `(source, ref, hash)` on `source_payloads` | done |
 | `utils/{logger,hash,http,rateLimiter}.js` | done, verified live |
-| ARMEPS adapter: `listing.parser.js` + `client.js` | done, verified live |
+| e-auction adapter: `listing.parser.js` + `client.js` | done, verified live |
 | `repositories/sourcePayload.repo.js` | done |
 | `queues/{names,index,scheduler}.js` | done |
 | `workers/{scraper,index}.js` — sweep + chained listing pagination | **done, proven idempotent** |

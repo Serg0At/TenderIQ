@@ -3,7 +3,7 @@ import { fetchPage } from '../../../../utils/http.js';
 import { acquire } from '../../../../utils/rateLimiter.js';
 import { parseListing } from './listing.parser.js';
 
-const SOURCE = 'armeps';
+const SOURCE = 'eauction';
 
 export class RateLimitedError extends Error {
   constructor(retryAfterMs) {

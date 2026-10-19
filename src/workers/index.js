@@ -39,11 +39,11 @@ await mailer.assertUsable();
 const workers = [
   new Worker(QUEUE.INGEST_FETCH, processIngestFetch, {
     connection: redis.connectionOptions,
-    concurrency: getSourceConfig('armeps').concurrency,
+    concurrency: getSourceConfig('eauction').concurrency,
   }),
   new Worker(QUEUE.INGEST_NORMALIZE, processIngestNormalize, {
     connection: redis.connectionOptions,
-    concurrency: getSourceConfig('armeps').concurrency,
+    concurrency: getSourceConfig('eauction').concurrency,
   }),
   // Its own queue, so a backed-up fetch queue can never delay the alarm that
   // reports the backlog. Concurrency 1 — it is a read-only status sweep.

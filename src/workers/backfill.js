@@ -3,7 +3,7 @@ import { getSourceConfig } from '../configs/sources.config.js';
 import redis from '../libs/redis.js';
 import { closeDb } from '../libs/knex.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
-import { fetchListing, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
+import { fetchListing, RateLimitedError } from '../libs/adapters/source/eauction/client.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import { ingestBackfillQueue, closeQueues } from '../queues/index.js';
 import { JOB, QUEUE, PRIORITY } from '../queues/names.js';
@@ -183,7 +183,7 @@ export const processBackfill = async (job, token) => {
  * existing chain keeps going and this adds a second starting point, so check
  * `backfillProgress()` first if that is not what you want.
  */
-export const startBackfill = async ({ source = 'armeps', fromPage = 2, toPage = null } = {}) => {
+export const startBackfill = async ({ source = 'eauction', fromPage = 2, toPage = null } = {}) => {
   const sourceConfig = getSourceConfig(source);
   const board = sourceConfig.listingPaths[0];
 
@@ -234,7 +234,7 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
       process.exit(1);
     }
   } else {
-    const progress = await backfillProgress('armeps', getSourceConfig('armeps').listingPaths[0].slug);
+    const progress = await backfillProgress('eauction', getSourceConfig('eauction').listingPaths[0].slug);
     logger.info(
       progress
         ? `[backfill] resuming — last checkpoint page ${progress.page}/${progress.toPage}, ` +

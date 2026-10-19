@@ -97,7 +97,7 @@ const changedKeys = (before, after) =>
  */
 const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt }) => {
   // Nothing parsed -> touch nothing. The delete used to run before this guard,
-  // which made an empty parse destructive: ARMEPS adding one column to
+  // which made an empty parse destructive: the e-auction board adding one column to
   // Գնառաջարկներ makes parseBidLedger reject every row, and a finished tender's
   // entire ledger — its whole contribution to the benchmark corpus — would be
   // deleted with no error and no alarm, since labelsSeen stays > 0 so the
@@ -477,7 +477,7 @@ export default class TenderRepository {
    * shape as findNeedingRefresh, driven from the database rather than from the
    * board.
    */
-  static async findMissingInvitationDocuments({ source = 'armeps', limit = 500 }, trx = db) {
+  static async findMissingInvitationDocuments({ source = 'eauction', limit = 500 }, trx = db) {
     return trx(`${TABLE} as t`)
       .leftJoin('tender_documents as d', 'd.tender_id', 't.id')
       .whereNotNull('t.invitation_url')
@@ -504,7 +504,7 @@ export default class TenderRepository {
    * no re-crawl, no re-parse. The winner is the lowest-ranked accepted bid per
    * lot; a lot with no accepted bid yields no award.
    */
-  static async rebuildAwardsFromBids({ source = 'armeps' } = {}) {
+  static async rebuildAwardsFromBids({ source = 'eauction' } = {}) {
     return db.transaction(async (trx) => {
       const before = Number((await trx('awards').where({ source }).count('* as c').first()).c);
 
@@ -546,7 +546,7 @@ export default class TenderRepository {
    * a tender never shows a CPV whose source document was not recorded.
    */
   static async applyInvitationFacts({
-    source = 'armeps',
+    source = 'eauction',
     sourceId,
     url,
     storageKey,
