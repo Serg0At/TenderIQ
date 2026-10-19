@@ -26,6 +26,11 @@ function up(pg) {
       table.string('buyer_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
       table.string('cpv_code');
       table.string('procedure_type').notNullable();
+      // How a supplier submits: eauction | armeps | paper (CHECK in indexes()). No
+      // default — a source that forgets to say must fail its insert rather than file a
+      // paper tender as an e-auction. Independent of procedure_type: a quotation runs
+      // on ARMEPS or on paper. ADR 0004.
+      table.string('submission_channel').notNullable();
       table.string('status').notNullable();
       // The source's own lifecycle label, verbatim. eauction publishes ten
       // states (Նախաաճուրդային, Աճուրդ, Շնորհում, …) which collapse into the
@@ -45,6 +50,26 @@ function up(pg) {
       table.integer('version').notNullable().defaultTo(1);
       table.boolean('is_latest').notNullable().defaultTo(true);
       table.index(['buyer_id'], 'tenders_buyer_idx');
+      table.index(['submission_channel'], 'tenders_submission_channel_idx');
+    })
+
+    // tender_sources — Every source a tender came from, one row per link (ADR 0004). A tender
+    // is one run assembled from several sites, and `tenders.source_id` names only the one that
+    // created it. UNIQUE (source, external_id) is the dedupe anchor: re-seeing a link is an
+    // update, and a concurrent insert that loses the race is success, as for source_payloads.
+    // Public data: no organization_id.
+    .createTable('tender_sources', table => {
+      table.string('id').primary();
+      table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
+      table.string('source').notNullable();
+      table.string('external_id').notNullable();    // eauction tid, armeps.am resourceId, gnumner URL, …
+      table.text('url');
+      table.string('role').notNullable();           // discovery | detail | results (CHECK in indexes())
+      table.string('observed_status');              // what this source last said, verbatim
+      table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.timestamp('last_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.unique(['source', 'external_id'], { indexName: 'tender_sources_source_external_uq' });
+      table.index(['tender_id'], 'tender_sources_tender_idx');
     })
 
     // awards — The winner of each individual lot, with the price it won at alongside the
@@ -610,6 +635,11 @@ async function indexes(pg) {
   // themselves are validated against the code list, which a CHECK could only duplicate.
   await pg.raw(`ALTER TABLE organizations ADD CONSTRAINT organizations_type_max_chk
      CHECK (cardinality(type) <= 3)`);
+
+  await pg.raw(`ALTER TABLE tenders ADD CONSTRAINT tenders_submission_channel_chk
+     CHECK (submission_channel IN ('eauction','armeps','paper'))`);
+  await pg.raw(`ALTER TABLE tender_sources ADD CONSTRAINT tender_sources_role_chk
+     CHECK (role IN ('discovery','detail','results'))`);
 
   await pg.raw(`CREATE INDEX IF NOT EXISTS tracked_tenders_org_status_idx
      ON tracked_tenders (organization_id, status)`);

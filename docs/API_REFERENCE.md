@@ -940,6 +940,10 @@ No request body
 - `filter[region]` (optional): buyer region, max 100 chars.
 - `filter[procedure]` (optional): one of `open`, `quotation`, `single_source`, `e_auction`,
   `restricted`. (The only live source produces `e_auction` exclusively.)
+- `filter[submissionChannel]` (optional): one or several of `eauction`, `armeps`, `paper` —
+  repeat the parameter for several; any of them matches. How a supplier submits a bid, which is
+  not the procedure type: a quotation can run on ARMEPS or on paper. Every tender is `eauction`
+  today. An unknown value is a `422`, not an empty list.
 - `filter[status]` (optional): one or several of `planned`, `active`, `amended`, `closed`,
   `awarded`, `cancelled`.
 - `filter[minValue]` (optional): number ≥ 0.
@@ -973,6 +977,7 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
       "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
       "cpvCode": "45000000",
       "procedureType": "e_auction",
+      "submissionChannel": "eauction",
       "purchaseKind": "works",
       "status": "active",
       "sourceStatus": "Ընթացիկ",
@@ -999,6 +1004,9 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
 notices carry neither.
 `purchaseKind` is `goods`, `works` or `services`, and `null` on the rare row whose label is
 blank or unrecognised.
+`submissionChannel` is how a supplier bids on the tender, and is never null: `eauction` (live
+online price bidding on eauction.armeps.am), `armeps` (one sealed electronic bid on armeps.am) or
+`paper` (a sealed envelope delivered to the buyer).
 
 **Errors:**
 
@@ -1035,7 +1043,8 @@ No request body
 
 The [List tenders](#list-tenders) filter vocabulary, unchanged: `filter[cpv]`, `filter[keyword]`,
 `filter[buyerId]`, `filter[region]`, `filter[procedure]`, `filter[minValue]`, `filter[maxValue]`,
-`filter[deadlineAfter]`, `filter[deadlineBefore]`, `filter[purchaseKind]`, `filter[field]`, plus
+`filter[deadlineAfter]`, `filter[deadlineBefore]`, `filter[purchaseKind]`, `filter[field]`,
+`filter[submissionChannel]`, plus
 `page[size]` (1–100, default 20) and `page[cursor]`.
 
 Candidates are **biddable** tenders: the current version, with a deadline still ahead **or no
@@ -1161,7 +1170,8 @@ free on every plan.
 
 ## Tender detail
 
-One tender with its lots, documents (and the files inside them) and buyer tax id.
+One tender with its lots, documents (and the files inside them), buyer tax id and the sources it
+was read from.
 
 **API:**
 `GET /api/v1/tenders/:id`
@@ -1187,6 +1197,7 @@ No request body
     "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
     "cpvCode": "45000000",
     "procedureType": "e_auction",
+    "submissionChannel": "eauction",
     "purchaseKind": "works",
     "status": "active",
     "sourceStatus": "Ընթացիկ",
@@ -1220,10 +1231,20 @@ No request body
           { "index": 2, "name": "lot_1_i_texnikakan_bnutagir.xlsx", "path": "lot_1_i_texnikakan_bnutagir.xlsx", "ext": "xlsx", "sizeBytes": 45736, "language": null }
         ]
       }
+    ],
+    "sources": [
+      { "source": "eauction", "url": "https://eauction.armeps.am/hy/public/tender_details/tid/284391/", "role": "detail" }
     ]
   }
 }
 ```
+
+**Sources.** One tender can be assembled from several sites, and `sources` lists every one it was
+read from, oldest first. `source` is `eauction` (eauction.armeps.am), `armeps` (armeps.am),
+`gnumner` (gnumner.minfin.am) or `ppcm`; `url` is the page on that site; `role` is what the site
+contributed — `discovery` (it announced the tender), `detail` (deadline, terms, documents) or
+`results` (bidders and prices). An e-auction tender has one `detail` link today, since one site
+does all three.
 
 `buyer.taxId` (ՀՎՀՀ) is populated only for buyers, and only when the invitation archive was
 parsed. `cpvCode` is `null` for most of the corpus — CPV lives inside the invitation ZIP.

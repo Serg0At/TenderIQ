@@ -33,6 +33,7 @@ async function down(pg) {
     'tender_lots',
     'public_tender_bids',
     'awards',
+    'tender_sources',
     'tenders',
     'users',
     'parties',

@@ -2,6 +2,7 @@ import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 import { stableHash } from '../utils/hash.js';
 import parties from './party.repo.js';
+import tenderSources from './tenderSource.repo.js';
 
 const TABLE = 'tenders';
 
@@ -39,6 +40,7 @@ const fieldHash = (tender) =>
     referenceCode: tender.referenceCode,
     cpvCode: tender.cpvCode,
     procedureType: tender.procedureType,
+    submissionChannel: tender.submissionChannel,
     goodsWorksServices: tender.goodsWorksServices,
     status: tender.status,
     // Included so a move between two site states that share one enum value
@@ -60,6 +62,7 @@ const toRow = (tender, buyerId) => ({
   reference_code: tender.referenceCode ?? null,
   cpv_code: tender.cpvCode ?? null,
   procedure_type: tender.procedureType,
+  submission_channel: tender.submissionChannel,
   goods_works_services: tender.goodsWorksServices ?? null,
   status: tender.status,
   source_status: tender.sourceStatus ?? null,
@@ -195,7 +198,7 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
   't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
-  't.procedure_type', 't.goods_works_services', 't.status', 't.source_status', 't.estimated_value',
+  't.procedure_type', 't.submission_channel', 't.goods_works_services', 't.status', 't.source_status', 't.estimated_value',
   't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
   'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region',
 ];
@@ -221,6 +224,7 @@ const applyDiscoveryFilters = (query, {
   minValue = null,
   maxValue = null,
   procedureType = null,
+  submissionChannels = [],
   status = null,
   deadlineAfter = null,
   deadlineBefore = null,
@@ -251,6 +255,7 @@ const applyDiscoveryFilters = (query, {
   if (buyerId) query.where('t.buyer_id', buyerId);
   if (region) query.whereILike('b.region', `%${region}%`);
   if (procedureType) query.where('t.procedure_type', procedureType);
+  if (submissionChannels.length) query.whereIn('t.submission_channel', submissionChannels);
   if (status) query.whereIn('t.status', Array.isArray(status) ? status : [status]);
   if (minValue !== null) query.where('t.estimated_value', '>=', minValue);
   if (maxValue !== null) query.where('t.estimated_value', '<=', maxValue);
@@ -409,7 +414,7 @@ export default class TenderRepository {
       .select(...LIST_COLUMNS, lotsColumn(trx, []));
   }
 
-  /** Full detail for one tender, including its lots. */
+  /** Full detail for one tender, including its lots, documents and source links. */
   static async findDetail(id, trx = db) {
     const tender = await trx(`${TABLE} as t`)
       .join('parties as b', 'b.id', 't.buyer_id')
@@ -418,12 +423,13 @@ export default class TenderRepository {
       .first();
     if (!tender) return null;
 
-    const [lots, documents] = await Promise.all([
+    const [lots, documents, sources] = await Promise.all([
       trx('tender_lots').where({ tender_id: id }).orderBy('lot_number').select('lot_number', 'cpv_code', 'name'),
       trx('tender_documents').where({ tender_id: id }).orderBy('id').select('id', 'kind', 'url', 'parsed', 'manifest'),
+      tenderSources.listForTender(id, trx),
     ]);
 
-    return { ...tender, lots, documents };
+    return { ...tender, lots, documents, sources };
   }
 
 
@@ -675,8 +681,13 @@ export default class TenderRepository {
    * `version`. Retaining superseded rows (which `is_latest` implies) needs the
    * constraint changed to UNIQUE(source_id, version) first. Deliberately left
    * as-is — that is a schema decision, not a normalizer one.
+   *
+   * `link` is the `tender_sources` row for the page this came from. It is
+   * written on every call, unchanged tenders included, in the same
+   * transaction: a tender is never visible without the link that produced it,
+   * and `last_seen_at` / `observed_status` follow every fetch that got this far.
    */
-  static async saveNormalized({ source, sourceId, buyerName, tender, lots }) {
+  static async saveNormalized({ source, sourceId, buyerName, tender, lots, link }) {
     return db.transaction(async (trx) => {
       const buyerId = await parties.upsertBuyer({ source, name: buyerName }, trx);
       if (!buyerId) {
@@ -696,6 +707,7 @@ export default class TenderRepository {
       if (!existing) {
         const id = createId();
         await trx(TABLE).insert({ ...row, id, source_id: sourceId, version: 1, is_latest: true });
+        await tenderSources.upsert({ ...link, tenderId: id }, trx);
         const ledger = await replaceLedger(trx, {
           source,
           tenderId: id,
@@ -714,6 +726,7 @@ export default class TenderRepository {
           referenceCode: existing.reference_code,
           cpvCode: existing.cpv_code,
           procedureType: existing.procedure_type,
+          submissionChannel: existing.submission_channel,
           goodsWorksServices: existing.goods_works_services,
           status: existing.status,
           sourceStatus: existing.source_status,
@@ -724,6 +737,8 @@ export default class TenderRepository {
           qnaDeadlineAt: existing.qna_deadline_at,
           auctionAt: existing.auction_at,
         });
+
+      await tenderSources.upsert({ ...link, tenderId: existing.id }, trx);
 
       if (unchanged) {
         return { event: null, tenderId: existing.id, version: existing.version };

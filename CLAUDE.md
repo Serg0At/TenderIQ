@@ -465,10 +465,12 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
 - **Publish only aggregated/anonymized statistics externally.** Private tenant data (bids, vault)
   never leaves its tenant.
 
-Enum values are constrained at the DB level: `tender.procedure_type ∈ {open, quotation,
-single_source, e_auction, restricted}`; `tender.status ∈ {planned, active, amended, closed, awarded,
-cancelled}`; `tracked_tender.status ∈ {considering, preparing, submitted, won, lost, dropped}`;
-`invitation.status ∈ {pending, accepted, declined}`.
+Enum values constrained at the DB level by a CHECK: `tender.submission_channel ∈ {eauction, armeps,
+paper}`; `tender_sources.role ∈ {discovery, detail, results}`; `tracked_tender.status ∈ {considering,
+preparing, submitted, won, lost, dropped}`; `invitation.status ∈ {pending, accepted, declined}`.
+`tender.procedure_type ∈ {open, quotation, single_source, e_auction, restricted}` and `tender.status ∈
+{planned, active, amended, closed, awarded, cancelled}` are pinned only by the Joi schema at the
+normalizer boundary (`validations/schemas/tender.schema.js`) — there is no CHECK on either yet.
 Nullable on purpose: `tenders.deadline_at` (some notices lack it), `awards.supplier_id` (void or
 undisclosed), `vault_documents.valid_until` (non-expiring docs), `organizations.tax_id` (no ՀՎՀՀ
 until invoice payment) — features degrade rather than break.
@@ -574,7 +576,9 @@ decision that has already been made.
   is always `e_auction`). **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
   paper — assembled from four sources.** gnumner discovers ARMEPS and paper tenders, armeps.am
   details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
-  is one run, never a procedure code; every source a tender came from is a link on it; anything
+  is one run, never a procedure code; every source a tender came from is a link on it
+  (`tender_sources`, unique on `(source, external_id)`, written in `saveNormalized`'s transaction;
+  `tenders.source_id` stays as the creating link until readers move over); anything
   that cannot be attached to exactly one tender is an unmatched result, counted — and in
   production a missed tender will raise an operator alert (a later feature, live ingestion only).
   The e-auction source key was `armeps` until 2026-10-19 and is now `eauction`, so that `armeps`

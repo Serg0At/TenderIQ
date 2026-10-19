@@ -2,6 +2,7 @@ import { UnrecoverableError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage } from '../libs/storage/index.js';
 import { parseDetail } from '../libs/adapters/source/eauction/detail.parser.js';
+import { detailUrl } from '../libs/adapters/source/eauction/client.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import { ingestFetchQueue, alertsQueue, maintenanceQueue } from '../queues/index.js';
@@ -52,6 +53,8 @@ const mapEauctionDetail = (detail, sourceId) => {
     title: detail.title,
     referenceCode: detail.code,
     procedureType: detail.procedureType,
+    // Every tender on eauction.armeps.am is bid by live auction there.
+    submissionChannel: 'eauction',
     goodsWorksServices: detail.goodsWorksServices,
     // Neither is published anywhere in the HTML. `cpvCode` arrives later from
     // the invitation archive via applyInvitationFacts.
@@ -139,6 +142,17 @@ export const normalizeTender = async ({
     buyerName: detail.buyerName,
     tender,
     lots: detail.lots,
+    // One site is discovery, detail and results for an e-auction; the detail
+    // page is the one that creates the tender, so that is the role it carries.
+    link: {
+      source,
+      externalId: sourceId,
+      url: detailUrl(sourceId),
+      role: 'detail',
+      observedStatus: detail.rawStatus ?? null,
+      // When the page was fetched — a replay re-reads an old page.
+      seenAt: latest.fetched_at,
+    },
   });
 
   if (result.skipped === 'no_buyer') {

@@ -13,6 +13,8 @@ import Joi from 'joi';
  */
 export const PROCEDURE_TYPES = ['open', 'quotation', 'single_source', 'e_auction', 'restricted'];
 export const TENDER_STATUSES = ['planned', 'active', 'amended', 'closed', 'awarded', 'cancelled'];
+/** How a supplier submits a bid (ADR 0004). Mirrors `tenders_submission_channel_chk`. */
+export const SUBMISSION_CHANNELS = ['eauction', 'armeps', 'paper'];
 
 export const normalizedTenderSchema = Joi.object({
   title: Joi.string().trim().min(1).required(),
@@ -23,6 +25,9 @@ export const normalizedTenderSchema = Joi.object({
   goodsWorksServices: Joi.string().trim().allow(null),
   status: Joi.string()
     .valid(...TENDER_STATUSES)
+    .required(),
+  submissionChannel: Joi.string()
+    .valid(...SUBMISSION_CHANNELS)
     .required(),
   // Free text on purpose: this is the source's own label, and constraining it
   // to a known set would defeat the point of keeping it.

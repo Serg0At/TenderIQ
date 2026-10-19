@@ -23,6 +23,7 @@ const filtersOf = (f = {}) => ({
   buyerId: f.buyerId ?? null,
   region: f.region ?? null,
   procedureType: f.procedure ?? null,
+  submissionChannels: toList(f.submissionChannel),
   status: f.status ?? null,
   minValue: f.minValue ?? null,
   maxValue: f.maxValue ?? null,
@@ -228,6 +229,7 @@ export default class TenderService {
       referenceCode: row.reference_code,
       cpvCode: row.cpv_code,
       procedureType: row.procedure_type,
+      submissionChannel: row.submission_channel,
       purchaseKind: purchaseKindOf(row.goods_works_services),
       status: row.status,
       sourceStatus: row.source_status,
@@ -249,6 +251,9 @@ export default class TenderService {
       version: row.version,
       lots: (row.lots ?? []).map((l) => ({ lotNumber: l.lot_number, cpvCode: l.cpv_code, name: l.name })),
       documents: TenderDocumentService.present(row),
+      // Where this tender was read from. The external id stays internal: the
+      // URL is what a supplier can use, and the id is our join key.
+      sources: (row.sources ?? []).map((s) => ({ source: s.source, url: s.url, role: s.role })),
     };
   }
 }

@@ -6,6 +6,7 @@ import { getStorage, rawKey } from '../libs/storage/index.js';
 import { fetchListing, fetchDetail, RateLimitedError } from '../libs/adapters/source/eauction/client.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
+import tenderSources from '../repositories/tenderSource.repo.js';
 import { ingestFetchQueue, ingestNormalizeQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256, stableHash } from '../utils/hash.js';
@@ -250,7 +251,12 @@ export const handleTenderDetail = async (job, token) => {
     throw error;
   }
 
+  // The page answered and says nothing new, so no normalize job will run —
+  // but the source still showed this tender just now, and its link's
+  // `last_seen_at` is the record of that. A changed page is recorded by the
+  // normalizer instead, together with what it now says.
   if (result.notModified) {
+    await tenderSources.touch({ source, externalId: sourceId });
     log.info('304 not modified');
     return { notModified: true };
   }
@@ -260,6 +266,7 @@ export const handleTenderDetail = async (job, token) => {
   const hash = sha256(body);
 
   if (await sourcePayloads.existsWithHash(source, ref, hash)) {
+    await tenderSources.touch({ source, externalId: sourceId });
     return { unchanged: true };
   }
 
