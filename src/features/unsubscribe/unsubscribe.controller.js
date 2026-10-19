@@ -16,13 +16,13 @@ const wantsHtml = (req) => req.accepts(['json', 'html']) === 'html';
 const page = ({ title, body, action = null }) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} · TenderIQ</title></head>
+<title>${escapeHtml(title)} · Tendra</title></head>
 <body style="margin:0;padding:24px;background:#f6f7f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a">
 <div style="max-width:480px;margin:48px auto;background:#fff;border-radius:8px;padding:32px">
 <h1 style="margin:0 0 16px;font-size:18px;font-weight:600">${escapeHtml(title)}</h1>
 <p style="margin:0 0 20px;font-size:14px;line-height:1.5">${escapeHtml(body)}</p>
 ${action ?? ''}
-<p style="margin:24px 0 0;font-size:12px;color:#6b7280">TenderIQ — Armenian public procurement intelligence</p>
+<p style="margin:24px 0 0;font-size:12px;color:#6b7280">Tendra — Armenian public procurement intelligence</p>
 </div></body></html>`;
 
 export default class UnsubscribeController {
@@ -51,13 +51,13 @@ export default class UnsubscribeController {
       return res
         .status(200)
         .type('html')
-        .send(page({ title: 'Already unsubscribed', body: `TenderIQ is no longer sending ${label}.` }));
+        .send(page({ title: 'Already unsubscribed', body: `Tendra is no longer sending ${label}.` }));
     }
 
     return res.status(200).type('html').send(
       page({
         title: 'Turn off tender alerts?',
-        body: `This will stop ${label}. You can switch them back on any time from TenderIQ.`,
+        body: `This will stop ${label}. You can switch them back on any time from Tendra.`,
         action: `<form method="post" action="/api/v1/unsubscribe?token=${escapeHtml(token)}">
 <button type="submit" style="background:#b42318;color:#fff;border:0;border-radius:6px;padding:10px 20px;font-size:14px;cursor:pointer">Turn off alerts</button>
 </form>`,
@@ -90,7 +90,7 @@ export default class UnsubscribeController {
       .send(
         page({
           title: 'Alerts turned off',
-          body: `${label} Sign in to TenderIQ to turn them back on.`,
+          body: `${label} Sign in to Tendra to turn them back on.`,
         })
       );
   }

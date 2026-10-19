@@ -1,4 +1,4 @@
-# TenderIQ — Architectural Design
+# Tendra — Architectural Design
 
 > Supplier-side bid-intelligence SaaS over public procurement data. Armenia first,
 > OCDS-region expansion later.
@@ -134,7 +134,7 @@ Two rules carry most of the weight:
 ### Current
 
 ```
-TenderIQ/
+Tendra/
 ├── ARCHITECTURE.md
 ├── SCRAPER_WORKFLOW.md
 ├── package.json
@@ -175,7 +175,7 @@ Grows the current tree rather than reorganizing it — the existing `configs/ li
 workers/` split stays, and features slot in beside them.
 
 ```
-TenderIQ/
+Tendra/
 ├── db/
 │   ├── migrations/                  # numbered, forward-only
 │   └── seeds/                       # roles, plans, CPV reference data

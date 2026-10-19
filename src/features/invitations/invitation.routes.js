@@ -21,17 +21,10 @@ export const organizationInvitationRoutes = Router();
 
 organizationInvitationRoutes.use(authenticate);
 
-/**
- * Per user, per hour. Every send raises an announcement through the
- * organization's channels, so an uncapped loop is a message cannon pointed at
- * the organization's own Telegram chats and inboxes.
- */
-const sendLimit = rateLimit({ requests: 60, perMs: 3_600_000, bucket: 'invite-send' });
-
 organizationInvitationRoutes.post(
   '/',
   authorize('user:manage', { planGate: 'invitations' }),
-  sendLimit,
+  rateLimit({ requests: 60, perMs: 3_600_000, bucket: 'invite-send' }),
   validate(sendInvitationSchema),
   InvitationController.send
 );

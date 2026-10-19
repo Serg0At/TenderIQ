@@ -4,16 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-TenderIQ is supplier-side bid-intelligence SaaS over Armenian public procurement data. It scrapes
+Tendra is supplier-side bid-intelligence SaaS over Armenian public procurement data. It scrapes
 public tender notices, normalizes them into an OCDS-aligned model, and (eventually) turns that into
 discovery, alerts, price benchmarks, and bid workflow. It is not a procurement platform and does not
 replace ARMEPS. Users are **suppliers only** — the companies that bid.
 
 Node.js ESM (`"type": "module"`), no build step, no TypeScript, no transpiler — files run as written.
 
-**Strategic clock:** Armenia's OCDS-based procurement platform launches **2027-01-01**. The
-OCDS-aligned data model exists so that migration is a source-adapter swap, not a rewrite. Scraping is
-the pre-2027 bridge, and it is the system's primary architectural risk.
+**Strategic clock:** the procurement-law amendments creating a unified electronic platform are
+planned to take effect **2027-01-01**, but the government's own OGP commitment (AM0058) puts the
+platform's **testing in July 2027**, and no official source promises OCDS, a public API or migrated
+history (`.scratch/procurement-sources/research.md`, checked 2026-10-18). The OCDS-aligned data
+model still exists so that a new platform is a source adapter, not a rewrite — but do not plan
+around scraping ending on a date. Scraping is the bridge for an unknown length of time, and it is
+the system's primary architectural risk.
 
 Product layers, in dependency order: **Discovery** (the hook) → **Intelligence** (the moat) →
 **Bid workflow** (the glue) → **Post-award**. Build data and intelligence before polishing workflow.
@@ -341,20 +345,22 @@ POST   /invitations/:id/{accept,decline}
   per-user delivery built first, and that is phase 5's problem (a declined card is not a company
   announcement).
 - **`organizations.tax_id` is the ՀՎՀՀ: unique, NULLABLE, collected only when the customer chooses to
-  pay by invoice.** It is unverifiable — no source this project has carries a *supplier's* tax number
+  pay by invoice.** It is unverifiable — no source ingested today carries a *supplier's* tax number
   — so it was never evidence, only a consistently-claimed identifier. Its one hard requirement is the
   Armenian VAT invoice, which is a property of the payment method rather than of the sale, so a card
   payer is never asked for it. This wants a plain `UNIQUE`, whose default `NULLS DISTINCT` lets any
   number of orgs hold NULL — the exact opposite of `notifications_dedupe_uq`, and getting it backwards
   means the second TIN-less organization fails to insert.
 - **De-duplication is therefore best-effort, and that is a knowing trade.** The constraint still turns
-  a collision into "Shinarar LLC already uses TenderIQ — ask an admin there to invite you", but it
+  a collision into "Shinarar LLC already uses Tendra — ask an admin there to invite you", but it
   only fires between two orgs that both reached invoice payment, so two tenants for one company can
   exist. What makes that survivable is that the expensive case is two *teams*, and invoice payment is
   the dominant B2B method here, so teams mostly do collide. Merging two tenants by hand is not an
   `UPDATE organization_id`: children carry composite `(parent_id, organization_id)` keys, and
   `vault_documents` have objects in a bucket.
-- **The ՀՎՀՀ does NOT link an org to its supplier party, and cannot.** `parties.tax_id` is populated
+- **The ՀՎՀՀ does NOT link an org to its supplier party today.** PPCM publishes every bidder's ՀՎՀՀ
+  (ADR 0004), which reopens this once it is ingested — whether to use it is an open decision, and
+  until it is made the rule below stands. `parties.tax_id` is populated
   **only for buyers** — `invitation.parser.js` scrapes it out of the invitation ZIP, which is the
   procuring agency's number, and `tender.repo.js:applyInvitationFacts` writes it to `tender.buyer_id`.
   Supplier parties come from the bid ledger, which carries names, ranks and prices and no tax number.
@@ -564,12 +570,22 @@ decision that has already been made.
 - **Working:** `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
   hourly. `backfill.js` seeds the historical archive on its own queue and process.
-- **Single source:** `armeps` = eauction.armeps.am, reverse auctions only (`procedure_type` is
-  always `e_auction`). Non-e-auction procedures are not covered; that would mean adding the gnumner
-  notice board as a second source.
-- **PPCM was removed**, not deferred. It is an AngularJS SPA rather than the CSV feed the reference
-  spec assumes, and the eauction bid ledger already supplies the award data it existed for. `awards`
-  and `public_tender_bids` have a `source` column so a second writer can be added safely later.
+- **Single source today:** `armeps` = eauction.armeps.am, reverse auctions only (`procedure_type`
+  is always `e_auction`). **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
+  paper — assembled from four sources.** gnumner discovers ARMEPS and paper tenders, armeps.am
+  details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
+  is one run, never a procedure code; every source a tender came from is a link on it; anything
+  that cannot be attached to exactly one tender is an unmatched result, counted — and in
+  production a missed tender will raise an operator alert (a later feature, live ingestion only).
+  The source key `armeps` is renamed `eauction` before armeps.am
+  arrives. Research and verification: `.scratch/procurement-sources/research.md`.
+- **PPCM is coming back.** It was removed because it is an AngularJS SPA rather than the CSV feed
+  the reference spec assumes — but behind the SPA are public JSON endpoints, and its per-bidder
+  report covers every procedure type. Verified 2026-10-18 against the e-auction ledger: 95 of 95
+  bidder prices equal `final_offer_net`, but its `bid_rejected` flag is unreliable and about half
+  of awarded tenders are missing (buyers file late, or never). It supplies results for ARMEPS
+  tenders and only the bidder's ՀՎՀՀ for e-auctions. `awards` and `public_tender_bids` already
+  have the `source` column it writes through.
 - **Empty on purpose:** `contracts` (post-award, phase 6) and `cpv_code` / `parties.tax_id` (both
   live only inside the invitation ZIP — see the document stage).
 - **Still no writer:** `contracts`, `subscriptions`, `invoices`, `audit_logs` — all phase 5/6.

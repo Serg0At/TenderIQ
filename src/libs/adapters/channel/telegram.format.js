@@ -175,7 +175,7 @@ export const stopConfirmation = () =>
     '<b>Disconnected</b>',
     '',
     'This chat will no longer receive tender alerts.',
-    'Use the connect link in TenderIQ to reconnect.',
+    'Use the connect link in Tendra to reconnect.',
   ].join('\n');
 
 // `escapeHtml` and `tenderLink` are deliberately not re-exported: they moved to

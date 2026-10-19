@@ -1,4 +1,4 @@
-# TenderIQ API Reference
+# Tendra API Reference
 
 > **Frontend status:** this repository contains **no frontend**. There is no `frontend/`,
 > `client/` or `web/` directory, no `.jsx`/`.tsx`/`.vue`/`.html` files, and no browser HTTP
@@ -2954,7 +2954,7 @@ organization no longer counts toward the three-organization creation cap.
 
 Offers an email address a role in the caller's organization. The answer is **the same object for
 every address** — registered or not — and nothing about the invitee is looked up, so the endpoint
-cannot be used to learn who is a TenderIQ customer. The offer is recorded either way and is matched
+cannot be used to learn who is a Tendra customer. The offer is recorded either way and is matched
 when that address registers and verifies.
 
 - Re-inviting an address updates the role on the existing offer instead of creating a second one,
@@ -3612,7 +3612,7 @@ existing row and `upload: null` rather than a `409` the customer would have to i
     },
     "duplicate": false,
     "upload": {
-      "url": "https://minio.example.com/tenderiq/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
+      "url": "https://minio.example.com/Tendra/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
       "method": "PUT",
       "headers": {
         "Content-Type": "application/pdf",
@@ -3767,7 +3767,7 @@ No request body
 ```json
 {
   "data": {
-    "url": "https://minio.example.com/tenderiq/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
+    "url": "https://minio.example.com/Tendra/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
     "expiresIn": 300,
     "filename": "tax-clearance-2026.pdf",
     "contentType": "application/pdf"
@@ -4783,7 +4783,7 @@ No request body
 ```json
 {
   "data": {
-    "url": "https://t.me/TenderIQBot?start=aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v",
+    "url": "https://t.me/TendraBot?start=aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v",
     "expiresInMinutes": 15,
     "token": "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v"
   }
@@ -5102,7 +5102,7 @@ to stop now, with no account and no session.
 
 Building it is self-interest rather than courtesy. Without an unsubscribe button an annoyed
 recipient presses **spam** instead, and mail providers score a sending domain on how often that
-happens — enough of them and every TenderIQ message lands in junk, password resets included. The
+happens — enough of them and every Tendra message lands in junk, password resets included. The
 unsubscribe link is what protects the password resets.
 
 **The token is derived, not stored.** It is an HMAC over the subscription id, keyed on the app

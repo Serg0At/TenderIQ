@@ -44,7 +44,6 @@ function up(pg) {
       table.timestamp('qna_deadline_at');
       table.integer('version').notNullable().defaultTo(1);
       table.boolean('is_latest').notNullable().defaultTo(true);
-      // Buyer profiles and buyer-scoped benchmarks both filter on this.
       table.index(['buyer_id'], 'tenders_buyer_idx');
     })
 
@@ -63,12 +62,7 @@ function up(pg) {
       table.string('status').notNullable();
       table.string('source').notNullable().defaultTo('armeps');
       table.unique(['tender_id', 'lot_number', 'source'], { indexName: 'awards_tender_lot_source_uq' });
-      // The parent side of the key `contracts` anchors on. Trivially satisfied — `id` is
-      // already the primary key — and it exists only so a composite FK can reference the
-      // pair, which is what stops a contract naming an award from a different tender.
       table.unique(['id', 'tender_id'], { indexName: 'awards_id_tender_uq' });
-      // Supplier profiles filter by party; without this every win-rate read is
-      // a sequential scan. Mirrored in add_intelligence_indexes.js.
       table.index(['supplier_id'], 'awards_supplier_idx');
     })
 
@@ -90,23 +84,16 @@ function up(pg) {
       table.decimal('final_offer_price', 18, 2);    // "Վերջին առաջարկ — Գին", with VAT
       table.decimal('final_offer_net', 18, 2);      // the same offer's value cell, without VAT — what ranks
       table.float('vat_pct');
-      // 'accepted' | 'rejected', mapped from "Մասնակցի կարգավիճակ" (blank on
-      // the source page = accepted). Left a string, like every other status
-      // column here, rather than a Postgres ENUM.
-      table.string('status').notNullable();
+      table.string('status').notNullable(); // 'accepted' | 'rejected', mapped from "Մասնակցի կարգավիճակ"
       table.string('application_url');
       table.string('currency').notNullable().defaultTo('AMD');
       table.string('source').notNullable().defaultTo('armeps');
       table.timestamp('fetched_at').notNullable();
-      // A company cannot occupy two ranks in one lot. Also the idempotency key
-      // for the wholesale ledger replace on re-normalize.
       table.unique(['tender_id', 'lot_number', 'supplier_id', 'source'], {
         indexName: 'public_tender_bids_tender_lot_supplier_source_uq',
       });
       table.index(['tender_id'], 'public_tender_bids_tender_idx');
       table.index(['supplier_id'], 'public_tender_bids_supplier_idx');
-      // The competitor-price read walks one tender's ledger ordered by lot then
-      // rank; this serves the ordering, not just the filter.
       table.index(['tender_id', 'lot_number', 'rank'], 'public_tender_bids_tender_lot_rank_idx');
     })
 
@@ -139,10 +126,6 @@ function up(pg) {
     // post-award tracking is built (phase 6).
     .createTable('contracts', table => {
       table.string('id').primary();
-      // The anchor is the TENDER, not the award. Requiring an award asserted that every
-      // contract follows a separately published one, which is false for single-source and
-      // direct awards, and it inverts OCDS — a release is keyed by the process (`ocid`,
-      // the tender) and `awardID` is a pointer within it.
       table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
       // Nullable, and carrying NO single-column FK of its own: it is half of the composite
       // key in indexes(), and an independent FK beside that key is what lets the two
@@ -191,16 +174,12 @@ function up(pg) {
       table.string('id').primary();
       table.string('email').notNullable().unique();
       table.string('password_hash').notNullable();
-      // What a colleague is called on the roster. NOT NULL because the alternative is a member
-      // list of email addresses, which is what the roster exists to stop being.
       table.string('display_name').notNullable();
       table.string('locale').notNullable().defaultTo('hy');
-      // Verification is a durable fact, so it lives here; only the one-time token lives
-      // in Redis. Login refuses a NULL, so a fresh account is unusable until confirmed.
       table.timestamp('email_verified_at');
     })
 
-    // organizations — A supplier company using TenderIQ, and the tenant boundary that every
+    // organizations — A supplier company using Tendra, and the tenant boundary that every
     // private table is scoped by.
     .createTable('organizations', table => {
       table.string('id').primary();
@@ -251,8 +230,6 @@ function up(pg) {
       table.string('user_id').notNullable().references('id').inTable('users').onDelete('CASCADE');
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
       table.string('role_id').notNullable().references('id').inTable('roles').onDelete('RESTRICT');
-      // When this person joined — the roster's "joined" column and its sort key. A re-joined
-      // member gets a fresh row and a fresh date: removal is a DELETE, not a status (ADR 0001).
       table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
       table.unique(['user_id', 'organization_id']);
     })
@@ -266,11 +243,9 @@ function up(pg) {
     .createTable('invitations', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
-      // Stored lowercased (see the CHECK below), so matching an address is an equality.
       table.string('email').notNullable();
       table.string('role_id').notNullable().references('id').inTable('roles').onDelete('RESTRICT');
       table.string('status').notNullable().defaultTo('pending');
-      // SET NULL: an offer does not become invalid because whoever sent it left.
       table.string('invited_by').references('id').inTable('users').onDelete('SET NULL');
       table.timestamp('responded_at');
       table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
@@ -295,9 +270,6 @@ function up(pg) {
       table.timestamp('created_at').defaultTo(pg.fn.now());
       table.timestamp('updated_at').defaultTo(pg.fn.now());
       table.unique(['organization_id', 'tender_id']);
-      // Redundant against the primary key, and required anyway: a foreign key can only
-      // reference a uniquely-constrained set of columns, and every child table points at this
-      // pair so its own organization_id cannot drift from its parent's. See indexes() below.
       table.unique(['id', 'organization_id'], { indexName: 'tracked_tenders_id_org_uq' });
     })
 
@@ -521,7 +493,6 @@ function up(pg) {
       table.string('link_token');
       table.timestamp('token_expires_at');
       table.timestamp('verified_at');
-      // Kept rather than deleted, so re-linking is an update and the trail survives.
       table.timestamp('revoked_at');
       table.integer('failure_count').notNullable().defaultTo(0);
       table.text('last_error');

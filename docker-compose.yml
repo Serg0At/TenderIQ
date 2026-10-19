@@ -1,4 +1,4 @@
-# Local development infrastructure for TenderIQ.
+# Local development infrastructure for Tendra.
 #
 # The app itself runs on the host (npm run dev / worker / scheduler); this file
 # only provides the backing services it talks to. Compose reads the root .env
@@ -10,7 +10,7 @@
 services:
   redis:
     image: redis:7-alpine
-    container_name: tenderiq-redis
+    container_name: Tendra-redis
     restart: unless-stopped
     # BullMQ requires noeviction: evicting a job hash mid-flight loses the job
     # silently. appendonly keeps queued jobs across a container restart.
@@ -30,7 +30,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: tenderiq-minio
+    container_name: Tendra-minio
     restart: unless-stopped
     command: server /data --console-address ':9001'
     environment:
@@ -51,12 +51,12 @@ services:
   # private. Exits 0 once done; `docker compose ps` will show it as exited.
   minio-init:
     image: minio/mc:latest
-    container_name: tenderiq-minio-init
+    container_name: Tendra-minio-init
     depends_on:
       minio:
         condition: service_healthy
     environment:
-      S3_BUCKET: ${S3_BUCKET:-tenderiq}
+      S3_BUCKET: ${S3_BUCKET:-Tendra}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
     entrypoint: >

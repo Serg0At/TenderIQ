@@ -1,4 +1,4 @@
-# TenderIQ
+# Tendra
 
 Supplier-side bid intelligence over Armenian public procurement. This glossary fixes the
 words the code and the docs must use for the same thing. It is a glossary only — decisions
@@ -14,7 +14,7 @@ data of its own — everything private belongs to an organization.
 _Avoid_: Account, Member, Profile
 
 **Organization**:
-A supplier that uses TenderIQ, and the tenant boundary every private table is scoped by.
+A supplier that uses Tendra, and the tenant boundary every private table is scoped by.
 Carries two independent optional claims: a ՀՎՀՀ and a supplier identity.
 _Avoid_: Account, Company, Workspace, Tenant, Client
 
@@ -68,6 +68,50 @@ _Avoid_: TIN, VAT number, Company number, Registration number
 The `parties` row an organization bids as — a deliberate human claim from a search, never
 inferred from a name or derived from the ՀՎՀՀ. Its absence is why win/loss can be unknown.
 _Avoid_: Supplier match, Party link, Company profile
+
+### Tenders and sources
+
+**Tender**:
+One run of a procurement procedure — one announcement with its own deadline, bidders and
+outcome. A procedure cancelled and announced again is two tenders, even under the same
+procedure code.
+_Avoid_: Procurement, Procedure, Notice, Competition
+
+**Procedure code**:
+The code a buyer gives a procurement procedure (ծածկագիր), such as `ԵՔ-ԷԱՃԱՇՁԲ-26/11`. Shared by
+every run of that procedure, so it names no single tender; it is how sources without a common
+identifier are matched. `reference_code` in code.
+_Avoid_: Tender ID, Reference, Tender number
+
+**Submission channel**:
+How a supplier submits a bid to a tender: by **e-auction** (live online price bidding), through
+**ARMEPS** (one sealed electronic bid), or on **paper** (a sealed envelope delivered to the
+buyer). A property of the tender, independent of its procedure type. Never "channel" alone: that
+word already means where an alert is delivered (Telegram, email).
+_Avoid_: Channel (alone), Submission type, Source, Platform, Procedure type
+
+**Procedure type**:
+The legal form of a tender's procedure: open, quotation, single source, e-auction or
+restricted. A quotation can run on ARMEPS or on paper, so procedure type does not decide the
+submission channel.
+_Avoid_: Submission channel, Submission type, Purchase kind
+
+**Source**:
+A website Tendra reads tenders from: eauction.armeps.am, armeps.am, gnumner.minfin.am or PPCM.
+One tender can be assembled from several sources, and one source can serve several submission
+channels.
+_Avoid_: Submission channel, Platform, Feed
+
+**Unmatched result**:
+A bidder or award row from a source that could not be attached to exactly one tender — because
+Tendra holds no such tender, or holds more than one with that procedure code. Kept with its
+reason and counted, never guessed onto a tender and never thrown away.
+_Avoid_: Orphan, Dropped row, Error
+
+**Operator alert**:
+A message to the people running Tendra about the health of the system — a missed tender, a
+broken source — sent to the owner's private Telegram chat. Never reaches an organization.
+_Avoid_: Alert (alone), Notification, Customer alert
 
 ### Discovery
 

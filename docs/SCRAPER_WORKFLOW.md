@@ -1,6 +1,6 @@
 # Scraper Workflow
 
-> How raw public-procurement data becomes normalized, deduped OCDS entities in TenderIQ.
+> How raw public-procurement data becomes normalized, deduped OCDS entities in Tendra.
 > Companion document: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Purpose
@@ -8,7 +8,7 @@
 Define the end-to-end ingestion pipeline: what triggers a scrape, what each stage does, where
 data lands, how failures are contained, and which knobs control behaviour.
 
-Ingestion is the moat. Everything else in TenderIQ (discovery, alerts, price intelligence, bid
+Ingestion is the moat. Everything else in Tendra (discovery, alerts, price intelligence, bid
 workflow) is a read model over what this pipeline produces. A missed tender is the single
 failure mode customers churn over, so the workflow is designed around **idempotency,
 raw-payload retention, and freshness alerting** rather than raw throughput.
@@ -99,7 +99,7 @@ HTML page rather than a 404 status. Politeness rests entirely on the rate limit 
 identity in `SCRAPER.USER_AGENT`. A future source that does publish crawl rules needs this decision
 revisited.
 
-Identity is always the declared bot UA (`TenderIQBot/1.0 (+https://tenderiq.am/bot; …)`). The
+Identity is always the declared bot UA (`TendraBot/1.0 (+https://Tendra.am/bot; …)`). The
 scraper does not rotate user agents, spoof browsers, or bypass access controls — it reads
 public pages at a polite rate and identifies itself.
 
@@ -325,7 +325,7 @@ why zero-row sweeps alert rather than log.
 
 | Setting | Where | Default | Controls |
 |---|---|---|---|
-| `SCRAPER_USER_AGENT` | env | `TenderIQBot/1.0 …` | bot identity sent on every request |
+| `SCRAPER_USER_AGENT` | env | `TendraBot/1.0 …` | bot identity sent on every request |
 | `SCRAPER_HTTP_TIMEOUT_MS` | env | `30000` | axios timeout |
 | `SCRAPER_BROWSER_TIMEOUT_MS` | env | `60000` | Playwright fallback timeout |
 | `SCRAPER_MAX_ATTEMPTS` | env | `5` | retries before DLQ |

@@ -65,7 +65,7 @@ const button = (url, text) =>
  * link is the recipient pressing the spam button — which costs the sending
  * domain's reputation and takes every other customer's alerts down with it.
  */
-const WHY = 'You are receiving this because tender alerts are switched on for your TenderIQ account.';
+const WHY = 'You are receiving this because tender alerts are switched on for your Tendra account.';
 
 /**
  * The visible unsubscribe line, not just the header.
@@ -83,12 +83,12 @@ const WHY = 'You are receiving this because tender alerts are switched on for yo
 const footer = (unsubscribeUrl) =>
   unsubscribeUrl
     ? `${WHY}\n\nStop these emails: ${unsubscribeUrl}`
-    : `${WHY} Manage them in TenderIQ under Integrations.`;
+    : `${WHY} Manage them in Tendra under Integrations.`;
 
 const footerHtml = (unsubscribeUrl) => {
   const body = unsubscribeUrl
     ? `${escapeHtml(WHY)} <a href="${escapeHtml(unsubscribeUrl)}" style="color:#6b7280">Stop these emails</a>.`
-    : `${escapeHtml(WHY)} Manage them in TenderIQ under Integrations.`;
+    : `${escapeHtml(WHY)} Manage them in Tendra under Integrations.`;
   return `<p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280">${body}</p>`;
 };
 

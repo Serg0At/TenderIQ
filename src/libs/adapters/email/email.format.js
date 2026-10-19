@@ -28,7 +28,7 @@ export const layout = (title, lines) => `<!doctype html>
 <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:8px;padding:32px">
 <h1 style="margin:0 0 16px;font-size:18px;font-weight:600">${escapeHtml(title)}</h1>
 ${lines.join('\n')}
-<p style="margin:24px 0 0;font-size:12px;color:#6b7280">TenderIQ — Armenian public procurement intelligence</p>
+<p style="margin:24px 0 0;font-size:12px;color:#6b7280">Tendra — Armenian public procurement intelligence</p>
 </div></body></html>`;
 
 export const paragraph = (text) =>
@@ -51,24 +51,24 @@ export const verificationEmail = ({ token }) => {
   const hours = AUTH.EMAIL_VERIFY_TTL_HOURS;
 
   const body = url
-    ? [`Confirm your address to finish setting up your TenderIQ account:`, '', url]
+    ? [`Confirm your address to finish setting up your Tendra account:`, '', url]
     : [
-        'Confirm your address to finish setting up your TenderIQ account.',
+        'Confirm your address to finish setting up your Tendra account.',
         '',
         'Your verification token:',
         token,
       ];
 
   return {
-    subject: 'Confirm your TenderIQ email address',
-    text: [...body, '', `This link expires in ${hours} hours.`, '', "If you did not create a TenderIQ account, ignore this message."].join('\n'),
+    subject: 'Confirm your Tendra email address',
+    text: [...body, '', `This link expires in ${hours} hours.`, '', "If you did not create a Tendra account, ignore this message."].join('\n'),
     html: layout('Confirm your email address', [
-      paragraph('Confirm your address to finish setting up your TenderIQ account.'),
+      paragraph('Confirm your address to finish setting up your Tendra account.'),
       url
         ? `<p style="margin:0 0 20px"><a href="${escapeHtml(url)}" style="display:inline-block;background:#1a56db;color:#ffffff;text-decoration:none;padding:10px 20px;border-radius:6px;font-size:14px">Confirm email address</a></p>`
         : `<p style="margin:0 0 20px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:16px;background:#f3f4f6;padding:12px;border-radius:6px">${escapeHtml(token)}</p>`,
       paragraph(`This link expires in ${hours} hours.`),
-      paragraph('If you did not create a TenderIQ account, ignore this message.'),
+      paragraph('If you did not create a Tendra account, ignore this message.'),
     ]),
   };
 };
@@ -86,9 +86,9 @@ export const resetCodeEmail = ({ code }) => {
   const minutes = AUTH.RESET_CODE_TTL_MINUTES;
 
   return {
-    subject: 'Your TenderIQ password reset code',
+    subject: 'Your Tendra password reset code',
     text: [
-      'Use this code to reset your TenderIQ password:',
+      'Use this code to reset your Tendra password:',
       '',
       code,
       '',
@@ -97,7 +97,7 @@ export const resetCodeEmail = ({ code }) => {
       'If you did not ask to reset your password, ignore this message — your password has not changed.',
     ].join('\n'),
     html: layout('Reset your password', [
-      paragraph('Use this code to reset your TenderIQ password:'),
+      paragraph('Use this code to reset your Tendra password:'),
       `<p style="margin:0 0 20px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:28px;letter-spacing:6px;font-weight:600;background:#f3f4f6;padding:16px;border-radius:6px;text-align:center">${escapeHtml(code)}</p>`,
       paragraph(`The code expires in ${minutes} minutes and can be used once.`),
       paragraph('If you did not ask to reset your password, ignore this message — your password has not changed.'),
@@ -113,15 +113,15 @@ export const resetCodeEmail = ({ code }) => {
  * already been revoked.
  */
 export const passwordChangedEmail = () => ({
-  subject: 'Your TenderIQ password was changed',
+  subject: 'Your Tendra password was changed',
   text: [
-    'Your TenderIQ password has just been changed, and every signed-in session was signed out.',
+    'Your Tendra password has just been changed, and every signed-in session was signed out.',
     '',
     'If this was you, nothing further is needed.',
     'If it was not, reset your password immediately and contact support.',
   ].join('\n'),
   html: layout('Your password was changed', [
-    paragraph('Your TenderIQ password has just been changed, and every signed-in session was signed out.'),
+    paragraph('Your Tendra password has just been changed, and every signed-in session was signed out.'),
     paragraph('If this was you, nothing further is needed.'),
     paragraph('If it was not, reset your password immediately and contact support.'),
   ]),

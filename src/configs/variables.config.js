@@ -149,7 +149,7 @@ const config = {
     PORT: int('PSQL_PORT', 5432),
     HOST: optional('PSQL_HOST', 'localhost'),
     USER: optional('PSQL_USER', 'postgres'),
-    DATABASE: optional('PSQL_DATABASE', 'tenderiq'),
+    DATABASE: optional('PSQL_DATABASE', 'Tendra'),
     PASSWORD: optional('PSQL_PASSWORD', ''),
     SSL: sslFlag('PSQL_SSL', true),
   },
@@ -196,7 +196,7 @@ const config = {
   EMAIL: {
     DRIVER: oneOf('EMAIL_DRIVER', ['smtp', 'log'], 'log'),
     /** RFC 5322 From. A display name matters here: bare no-reply@ addresses score badly with spam filters. */
-    FROM: optional('EMAIL_FROM', 'TenderIQ <no-reply@tenderiq.am>'),
+    FROM: optional('EMAIL_FROM', 'Tendra <no-reply@Tendra.am>'),
     /** Where a reply actually goes, if anywhere. Unset means the From address. */
     REPLY_TO: optional('EMAIL_REPLY_TO', undefined),
     SMTP: {
@@ -229,7 +229,7 @@ const config = {
     DRIVER: optional('STORAGE_DRIVER', 's3'), // s3 | local
     ENDPOINT: optional('S3_ENDPOINT', undefined),
     REGION: optional('S3_REGION', 'us-east-1'),
-    BUCKET: optional('S3_BUCKET', 'tenderiq'),
+    BUCKET: optional('S3_BUCKET', 'Tendra'),
     ACCESS_KEY: optional('S3_ACCESS_KEY', undefined),
     SECRET_KEY: optional('S3_SECRET_KEY', undefined),
     FORCE_PATH_STYLE: bool('S3_FORCE_PATH_STYLE', true),
@@ -241,7 +241,7 @@ const config = {
   SCRAPER: {
     USER_AGENT: optional(
       'SCRAPER_USER_AGENT',
-      'TenderIQBot/1.0 (+https://tenderiq.am/bot; contact@tenderiq.am)'
+      'TendraBot/1.0 (+https://Tendra.am/bot; contact@Tendra.am)'
     ),
     EXTRA_CA_DIR: optional('SCRAPER_EXTRA_CA_DIR', './certs'),
     HTTP_TIMEOUT_MS: int('SCRAPER_HTTP_TIMEOUT_MS', 30000),

@@ -31,7 +31,7 @@ When your output names a domain concept (in an issue title, a refactor proposal,
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 
-TenderIQ's `CONTEXT.md` lists an explicit `_Avoid_` line under each term, so the drift it forbids is
+Tendra's `CONTEXT.md` lists an explicit `_Avoid_` line under each term, so the drift it forbids is
 named rather than implied: an Organization is never a "Tenant", "Company" or "Workspace"; the ՀՎՀՀ is
 never a "TIN" or "VAT number" in prose. `tax_id` in code, ՀՎՀՀ in anything a person reads.
 
