@@ -39,7 +39,7 @@ parsers → armeps.am*. ADR 0004 matching rule 2.
       against the configured gnumner base, and `SOURCE_GNUMNER_BASE` then really changes
       classification. armeps.am's own base URL lives in its sources-config entry.
 - [ ] Raw HTML is kept, and replay from storage works.
-- [ ] **Before writing anything, confirm `raw/armeps/` and `docs/armeps/` are empty and the
+- [ ] **Before writing anything, confirm `raw/armeps/` and `tender-docs/armeps/` are empty and the
       legacy folder map is gone (ticket 14).** If either still holds e-auction objects, stop: an
       armeps.am object written there would be indistinguishable from them. Then armeps.am writes
       under its own `armeps` folders, and a reindex dry run over a mixed set maps its keys to
