@@ -1,7 +1,7 @@
 import config from '../configs/variables.config.js';
 import { listEnabledSources, getSourceConfig } from '../configs/sources.config.js';
 import { queues } from '../queues/index.js';
-import { lastSuccessfulSweep } from './scraper.js';
+import { lastSuccessfulSweep } from '../utils/sweepState.js';
 import { JOB } from '../queues/names.js';
 import { logger } from '../utils/logger.js';
 

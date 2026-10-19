@@ -1,6 +1,19 @@
 import redis from '../libs/redis.js';
 
 /**
+ * What a source client throws when `acquire` says wait. One class for every
+ * source, so a worker's `instanceof` check cannot miss a second source's
+ * throttle and burn a retry attempt on it.
+ */
+export class RateLimitedError extends Error {
+  constructor(source, retryAfterMs) {
+    super(`[${source}] rate limited, retry in ${retryAfterMs}ms`);
+    this.name = 'RateLimitedError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
  * Fixed-window request budget, keyed per source.
  *
  * It lives in Redis rather than in process memory because politeness is a
@@ -50,4 +63,4 @@ export const withLock = async (name, ttlMs, fn) => {
   }
 };
 
-export default { acquire, withLock };
+export default { acquire, withLock, RateLimitedError };

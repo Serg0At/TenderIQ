@@ -50,6 +50,18 @@ export const JOB = {
    * budget.
    */
   TENDER_DOCUMENTS: 'tender.documents',
+  /**
+   * One armeps.am tender page, keyed by `resourceId`, discovered on gnumner.
+   * Rides ingest.fetch like every other detail fetch. Its consumer is ticket
+   * 05; until then the worker parks these jobs rather than failing them.
+   */
+  ARMEPS_DETAIL: 'armeps.detail',
+  /**
+   * One uploaded paper invitation on gnumner, with the listing's publish
+   * datetime its deadline is counted from. Consumer: ticket 06; parked until
+   * then, like ARMEPS_DETAIL.
+   */
+  PAPER_INVITATION: 'paper.invitation',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',

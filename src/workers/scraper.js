@@ -1,28 +1,21 @@
 import { DelayedError, UnrecoverableError } from 'bullmq';
 import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
-import redis from '../libs/redis.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
-import { fetchListing, fetchDetail, RateLimitedError } from '../libs/adapters/source/eauction/client.js';
+import { fetchListing, fetchDetail } from '../libs/adapters/source/eauction/client.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
 import { ingestFetchQueue, ingestNormalizeQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256, stableHash } from '../utils/hash.js';
-import { withLock } from '../utils/rateLimiter.js';
+import { withLock, RateLimitedError } from '../utils/rateLimiter.js';
+import { markSweepHealthy, readHighWater, advanceHighWater } from '../utils/sweepState.js';
 import { logger } from '../utils/logger.js';
 import { handleTenderDocuments } from './documents.js';
+import { handleGnumnerSweep, handleGnumnerListingPage, parkUntilConsumerExists } from './gnumner.js';
 
 const { SCRAPER } = config;
-
-const markSweepHealthy = (source) =>
-  redis.getRedis().set(`sweep:ok:${source}`, Date.now(), 'EX', 7 * 24 * 60 * 60);
-
-export const lastSuccessfulSweep = async (source) => {
-  const value = await redis.getRedis().get(`sweep:ok:${source}`);
-  return value ? new Date(Number(value)) : null;
-};
 
 /**
  * Highest tid ingested by a *completed* sweep of this board.
@@ -37,32 +30,6 @@ export const lastSuccessfulSweep = async (source) => {
  * that we have already seen everything from here down.
  */
 const tidWatermarkKey = (source, slug) => `sweep:tid:${source}:${slug}`;
-
-const readTidWatermark = async (source, slug) => {
-  const value = await redis.getRedis().get(tidWatermarkKey(source, slug));
-  return value ? Number(value) : 0;
-};
-
-/**
- * Advanced only when a sweep chain terminates, and only forwards. A sweep that
- * dies mid-chain leaves the old value, so the next run re-walks the gap rather
- * than skipping over notices it never actually ingested.
- */
-const advanceTidWatermark = async (source, slug, tid) => {
-  if (!Number.isFinite(tid) || tid <= 0) return;
-  // Compare-and-set in one round trip. The sweep lock is released as soon as
-  // page 1 is enqueued, so two chains can be in flight at once; a read-then-
-  // write would let a slower chain's lower value overwrite a higher one and
-  // regress the watermark, causing pages to be re-walked indefinitely.
-  await redis
-    .getRedis()
-    .eval(
-      'local c = redis.call("GET", KEYS[1]) if (not c) or (tonumber(ARGV[1]) > tonumber(c)) then redis.call("SET", KEYS[1], ARGV[1]) end return 1',
-      1,
-      tidWatermarkKey(source, slug),
-      String(tid)
-    );
-};
 
 /**
  * Fields that define "this notice changed".
@@ -98,7 +65,7 @@ const handleSweep = async (job) => {
       // Read once, at the top of the chain: every page of this sweep compares
       // against the same watermark, so a notice published mid-sweep cannot
       // move the goalposts underneath the pages still in flight.
-      const sinceTid = await readTidWatermark(source, board.slug);
+      const sinceTid = await readHighWater(tidWatermarkKey(source, board.slug));
 
       await ingestFetchQueue.add(
         JOB.LISTING_PAGE,
@@ -220,7 +187,7 @@ const handleListingPage = async (job, token) => {
       { priority: PRIORITY.LIVE }
     );
   } else {
-    await advanceTidWatermark(source, slug, highTid);
+    await advanceHighWater(tidWatermarkKey(source, slug), highTid);
   }
 
   return { rows: result.rows.length, changed, continued: shouldContinue };
@@ -348,13 +315,32 @@ const handleRefreshSweep = async (job) => {
   return { queued, capped };
 };
 
-/** Processor for the ingest.fetch queue. */
+/**
+ * Processor for the ingest.fetch queue.
+ *
+ * A sweep and a listing page are the same job for every source; what differs
+ * is the parser and the depth rule, so they route on `data.source`.
+ */
+const LISTING_HANDLERS = {
+  eauction: { sweep: handleSweep, listingPage: handleListingPage },
+  gnumner: { sweep: handleGnumnerSweep, listingPage: handleGnumnerListingPage },
+};
+
+const listingHandlers = (job) => {
+  const handlers = LISTING_HANDLERS[job.data?.source];
+  if (!handlers) throw new UnrecoverableError(`no listing handlers for source "${job.data?.source}"`);
+  return handlers;
+};
+
 export const processIngestFetch = async (job, token) => {
   switch (job.name) {
     case JOB.SOURCE_SWEEP:
-      return handleSweep(job);
+      return listingHandlers(job).sweep(job);
     case JOB.LISTING_PAGE:
-      return handleListingPage(job, token);
+      return listingHandlers(job).listingPage(job, token);
+    case JOB.ARMEPS_DETAIL:
+    case JOB.PAPER_INVITATION:
+      return parkUntilConsumerExists(job, token);
     case JOB.TENDER_DETAIL:
       return handleTenderDetail(job, token);
     case JOB.TENDER_DOCUMENTS:
@@ -366,4 +352,4 @@ export const processIngestFetch = async (job, token) => {
   }
 };
 
-export default { processIngestFetch, lastSuccessfulSweep };
+export default { processIngestFetch };

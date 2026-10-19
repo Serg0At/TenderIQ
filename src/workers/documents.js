@@ -1,7 +1,8 @@
 import { DelayedError, UnrecoverableError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, tenderDocKey, tenderDocTextKey } from '../libs/storage/index.js';
-import { fetchDocument, RateLimitedError } from '../libs/adapters/source/eauction/client.js';
+import { fetchDocument } from '../libs/adapters/source/eauction/client.js';
+import { RateLimitedError } from '../utils/rateLimiter.js';
 import { parseInvitation } from '../libs/adapters/source/eauction/invitation.parser.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';

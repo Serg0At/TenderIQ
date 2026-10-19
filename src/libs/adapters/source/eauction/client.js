@@ -1,17 +1,9 @@
 import { getSourceConfig } from '../../../../configs/sources.config.js';
 import { fetchPage } from '../../../../utils/http.js';
-import { acquire } from '../../../../utils/rateLimiter.js';
+import { acquire, RateLimitedError } from '../../../../utils/rateLimiter.js';
 import { parseListing } from './listing.parser.js';
 
 const SOURCE = 'eauction';
-
-export class RateLimitedError extends Error {
-  constructor(retryAfterMs) {
-    super(`[${SOURCE}] rate limited, retry in ${retryAfterMs}ms`);
-    this.name = 'RateLimitedError';
-    this.retryAfterMs = retryAfterMs;
-  }
-}
 
 /**
  * Page 1 is the bare listing path. Page N appends `start/<N>` — verified
@@ -37,7 +29,7 @@ export const fetchListing = async (listingPath, page = 1, conditional = {}) => {
   const url = listingUrl(listingPath, page);
 
   const waitMs = await acquire(SOURCE, config.rateLimit);
-  if (waitMs > 0) throw new RateLimitedError(waitMs);
+  if (waitMs > 0) throw new RateLimitedError(SOURCE, waitMs);
 
   const response = await fetchPage(url, conditional);
 
@@ -55,7 +47,7 @@ export const fetchDetail = async (sourceId, conditional = {}) => {
   const url = detailUrl(sourceId);
 
   const waitMs = await acquire(SOURCE, config.rateLimit);
-  if (waitMs > 0) throw new RateLimitedError(waitMs);
+  if (waitMs > 0) throw new RateLimitedError(SOURCE, waitMs);
 
   const response = await fetchPage(url, conditional);
 
@@ -75,10 +67,10 @@ export const fetchDocument = async (url) => {
   const config = getSourceConfig(SOURCE);
 
   const waitMs = await acquire(SOURCE, config.rateLimit);
-  if (waitMs > 0) throw new RateLimitedError(waitMs);
+  if (waitMs > 0) throw new RateLimitedError(SOURCE, waitMs);
 
   const response = await fetchPage(url, { binary: true });
   return { url, bytes: response.raw, contentType: response.contentType };
 };
 
-export default { listingUrl, fetchListing, detailUrl, fetchDetail, fetchDocument, RateLimitedError };
+export default { listingUrl, fetchListing, detailUrl, fetchDetail, fetchDocument };
