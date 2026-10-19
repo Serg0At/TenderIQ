@@ -181,7 +181,7 @@ Times are Yerevan on the page and UTC in the database.
   URL"; for an ARMEPS notice that URL is the armeps.am page itself.
 - **`tenders.evaluation_method`** (nullable, a code derived from the label) added with the
   four-step workflow: script run twice on `tendra`, mirrored into `create_table.js`, deleted in
-  the next commit (`git show <feat commit>:migrations/add_evaluation_method.js`). Neon is not
+  the next commit (`git show d494592:migrations/add_evaluation_method.js`). Neon is not
   touched; whoever migrates it runs that script with tickets 01 and 14's.
 - The scheduler registers no sweep for a source without a listing and removes a leftover
   `sweep-{source}`; the health check skips freshness for such a source.
