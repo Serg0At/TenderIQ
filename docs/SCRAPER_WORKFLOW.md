@@ -121,12 +121,28 @@ Pagination is *chained*: each page's handler decides whether to enqueue the next
    Gazprom Armenia open-offer requests, ministry quotation requests). Only the first kind has a
    stable id; v1 skips the second and *counts* it, so coverage loss is visible rather than
    silent. The parser returns `blocksSeen` and `skipped` alongside `rows` for exactly this.
-5. **Continue to page N+1 only while the page still holds notices newer than `since`.**
-   The board is a 9-year archive reaching back to 2017, so `lookbackHours` — not
-   `maxListingPages` — must be the depth control. A routine sweep touches 1–2 pages; a
-   post-outage sweep goes as deep as the window requires, with no config change. Loading
-   history is a deliberate backfill with its own date range.
-6. Enqueue one `normalize.tender` job per row whose fingerprint changed.
+5. **Continue to page N+1 only while the page's lowest watermark value is still above the
+   board's high-water mark, and a next page exists.** One shared chain
+   ([src/workers/listingChain.js](../src/workers/listingChain.js)) applies this to every board;
+   each source supplies only its page reader, its mark (e-auction: tid; gnumner: publish
+   datetime) and its notice → job mapping.
+   - The mark is read once by `source.sweep` and carried down the chain with the highest mark
+     page 1 saw. Whichever page ends the chain commits that high mark — never earlier, so a chain
+     that dies mid-way re-walks the gap.
+   - `maxListingPages` bounds a **cold start only** (no watermark yet). With a watermark the chain
+     walks until it reaches it — after an outage that is the gap to re-read — bounded only by
+     `SCRAPER_MAX_LISTING_PAGES`, and logs a warning naming how far it got if it stops short.
+   - "A next page exists" comes from the pager (e-auction's `→` arrow, gnumner's `a.e` link), never
+     from the reported page total.
+   - A page holding a mark newer than the previous page's oldest throws before it stores, enqueues
+     or marks anything healthy (ties are legal): the pager did not advance (a base URL that already contains the listing path does this — the
+     site answers with page 1 for every N).
+
+   A routine sweep touches 1–2 pages. Loading history is a deliberate backfill with its own page
+   range.
+6. Enqueue one job per notice whose fingerprint changed — `tender.detail` for e-auction,
+   `armeps.detail` / `paper.invitation` for gnumner — **before** recording the fingerprint. The
+   listing writes no domain rows; the detail page is the single writer.
 
 **Browser fallback.** If the parser yields zero rows on a page that returned HTTP 200 and the
 markup contains a known JS-app marker, the job re-runs through Playwright with

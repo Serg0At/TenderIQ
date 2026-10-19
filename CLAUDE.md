@@ -139,14 +139,24 @@ What matters when touching it:
   `sourcePayload.repo.js:record()` returns `false` and the caller skips.
 - **Raw payloads are kept forever.** When a parser improves, normalization replays from storage; the
   source is never re-crawled.
-- **Pagination depth is the tid high-water mark, not `maxListingPages` and not a time window.** The
-  board is a multi-year archive, not a live feed, and its listing table has **no publish-date column** —
-  a time-based rule would compare against a field that does not exist (it did, silently, and made
-  every sweep walk to the page cap). tids ascend with publication and the board is newest-first, so continue
-  to page N+1 only while the page's lowest tid is still above `sweep:tid:{source}:{slug}`. The
-  watermark advances only when a chain terminates, so a sweep that dies mid-chain re-walks the gap
-  rather than skipping it. `maxListingPages` is the cold-start bound only. Loading history is a
-  deliberate backfill with its own page range.
+- **Pagination depth is a high-water mark, not `maxListingPages` and not a time window — one rule,
+  one chain, every board.** Every listing is swept by `workers/listingChain.js`; a source supplies a
+  *board* (page reader, watermark key, mark per notice, notice → job) and the module never branches
+  on a source name. e-auction's mark is the tid (`sweep:tid:{source}:{slug}`): its listing table has
+  **no publish-date column**, so a time-based rule compares against a field that does not exist (it
+  did, silently, and made every sweep walk to the page cap). gnumner's is the publish datetime
+  (`sweep:published:gnumner:{slug}`). Boards are newest-first, so continue to page N+1 only while
+  the page's lowest mark is still above the watermark **and a next page exists** — never the site's
+  reported page total. The watermark advances only when a chain terminates, so a sweep that dies
+  mid-chain re-walks the gap rather than skipping it. **`maxListingPages` bounds a cold start only**
+  (no watermark); with one, the chain walks until it reaches it, bounded only by
+  `SCRAPER.MAX_LISTING_PAGES`, and warns if it stops short. e-auction once capped every chain at 40
+  pages, which after a long outage committed the high mark over pages it never read — a permanent,
+  silent hole. Because the walk is now unbounded by source, a page holding a mark newer than the
+  previous page's oldest **throws** before storing anything or marking the source healthy: that is
+  a pager that did not advance (ties are legal — publish times are minute-precision), and a base
+  URL that already contains the listing path produces exactly that (the site answers the
+  malformed URL with page 1). Loading history is a deliberate backfill with its own page range.
 - **Never filter rows by deadline in a parser.** Expired tenders are the *most* valuable ones — prices,
   suppliers and awards exist only on finished pages. Filtering also puts a clock in a file that must
   stay pure, which breaks replay-from-storage and makes fixture tests rot. Filter in the query
@@ -569,7 +579,7 @@ removed as unnecessary. Do not rebuild it from the reference spec's `product/Fea
 (which still lists "Tasks, assignments, roles" as P1) without asking; that is a product
 decision that has already been made.
 
-- **Working:** `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writes
+- **Working:** `source.sweep` (watermark chain) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
   hourly. `backfill.js` seeds the historical archive on its own queue and process.
 - **Single source today:** `eauction` = eauction.armeps.am, reverse auctions only (`procedure_type`

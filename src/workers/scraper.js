@@ -1,5 +1,4 @@
 import { DelayedError, UnrecoverableError } from 'bullmq';
-import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
 import { fetchListing, fetchDetail } from '../libs/adapters/source/eauction/client.js';
@@ -9,21 +8,20 @@ import tenderSources from '../repositories/tenderSource.repo.js';
 import { ingestFetchQueue, ingestNormalizeQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256, stableHash } from '../utils/hash.js';
-import { withLock, RateLimitedError } from '../utils/rateLimiter.js';
-import { markSweepHealthy, readHighWater, advanceHighWater } from '../utils/sweepState.js';
+import { RateLimitedError } from '../utils/rateLimiter.js';
 import { logger } from '../utils/logger.js';
 import { handleTenderDocuments } from './documents.js';
-import { handleGnumnerSweep, handleGnumnerListingPage, parkUntilConsumerExists } from './gnumner.js';
-
-const { SCRAPER } = config;
+import { gnumnerBoard, parkUntilConsumerExists } from './gnumner.js';
+import { sweepBoard, readListingPage } from './listingChain.js';
 
 /**
  * Highest tid ingested by a *completed* sweep of this board.
  *
- * This is the pagination depth control. The listing table exposes no publish
- * date (that is a detail-page field), so the previous `publishedAt >= since`
- * rule compared undefined against a date, was therefore always true, and made
- * every sweep walk `maxListingPages` — the exact inversion the design forbids.
+ * The e-auction board's watermark for the shared chain (listingChain.js). The
+ * listing table exposes no publish date (that is a detail-page field), so the
+ * previous `publishedAt >= since` rule compared undefined against a date, was
+ * therefore always true, and made every sweep walk `maxListingPages` — the
+ * exact inversion the design forbids.
  *
  * tids ascend with publication and the board is sorted newest-first, so
  * "this page's lowest tid is at or below the watermark" is an exact statement
@@ -55,142 +53,52 @@ const rowFingerprint = (row) =>
     deadlineAt: row.deadlineAt,
   });
 
-const handleSweep = async (job) => {
-  const { source } = job.data;
-  const sourceConfig = getSourceConfig(source);
-  const log = logger.child({ job: JOB.SOURCE_SWEEP, source });
+/**
+ * The e-auction board for the shared listing chain (workers/listingChain.js).
+ */
+const EAUCTION = 'eauction';
 
-  const { skipped } = await withLock(`sweep:${source}`, 10 * 60 * 1000, async () => {
-    for (const board of sourceConfig.listingPaths) {
-      // Read once, at the top of the chain: every page of this sweep compares
-      // against the same watermark, so a notice published mid-sweep cannot
-      // move the goalposts underneath the pages still in flight.
-      const sinceTid = await readHighWater(tidWatermarkKey(source, board.slug));
+const eauctionBoard = {
+  source: EAUCTION,
+  watermarkKey: (slug) => tidWatermarkKey(EAUCTION, slug),
+  markName: 'tids',
+  formatMark: String,
 
-      await ingestFetchQueue.add(
-        JOB.LISTING_PAGE,
-        { source, slug: board.slug, listingPath: board.path, page: 1, sinceTid },
-        { priority: PRIORITY.LIVE }
-      );
-      log.info(`enqueued page 1 of "${board.slug}" (sinceTid ${sinceTid})`);
-    }
-  });
+  read: async (listingPath, page) => {
+    const result = await fetchListing(listingPath, page);
+    return { ...result, entries: result.rows };
+  },
 
-  if (skipped) log.warn('previous sweep still running — skipped');
-  return { skipped };
-};
+  markOf: (row) => Number(row.sourceId),
 
-const handleListingPage = async (job, token) => {
-  const { source, slug, listingPath, page, sinceTid = 0 } = job.data;
-  const sourceConfig = getSourceConfig(source);
-  const log = logger.child({ job: JOB.LISTING_PAGE, source, slug, page });
-
-  let result;
-  try {
-    result = await fetchListing(listingPath, page);
-  } catch (error) {
-    if (error instanceof RateLimitedError) {
-      await job.moveToDelayed(Date.now() + error.retryAfterMs, token);
-      throw new DelayedError();
-    }
-    throw error;
-  }
-
-  if (result.notModified) {
-    await markSweepHealthy(source);
-    log.info('304 not modified — stopping pagination');
-    return { notModified: true };
-  }
-
-  if (result.blocksSeen === 0) {
-    throw new Error(
-      `[${source}] "${slug}" page ${page} returned 200 with 0 tender blocks — parser likely broken`
-    );
-  }
-
-  const skipped = result.skipped ?? { noTid: 0, duplicate: 0 };
-  if (skipped.noTid > 0) {
-    // Coverage signal: a detail link the parser could not read a tid out of.
-    log.info(`skipped ${skipped.noTid}/${result.blocksSeen} rows with no usable tid`);
-  }
-
-  const storage = await getStorage();
-  const pageHash = sha256(result.response.body);
-  const pageRef = `listing:${slug}:p${page}`;
-  const pageKey = rawKey({ source, ref: pageRef, hash: pageHash, ext: 'html' });
-
-  if (!(await sourcePayloads.existsWithHash(source, pageRef, pageHash))) {
-    await storage.put(pageKey, result.response.body, { contentType: 'text/html' });
-    await sourcePayloads.record({ source, ref: pageRef, storageKey: pageKey, hash: pageHash });
-  }
-
-  let changed = 0;
-  for (const row of result.rows) {
+  // Discovery only: the listing knows no buyer, no publish date and no
+  // prices, so it must not write tenders. Detail is the single writer;
+  // listing's job ends at "this one moved".
+  toNotice: (row) => {
     const ref = `notice:${row.sourceId}`;
     const hash = rowFingerprint(row);
+    return {
+      notice: {
+        ref,
+        hash,
+        job: {
+          name: JOB.TENDER_DETAIL,
+          data: { source: EAUCTION, sourceId: row.sourceId, listingRef: ref, listingHash: hash },
+          opts: {
+            jobId: `${EAUCTION}-detail-${row.sourceId}-${hash.slice(0, 12)}`,
+            priority: PRIORITY.LIVE,
+          },
+        },
+      },
+    };
+  },
 
-    if (await sourcePayloads.existsWithHash(source, ref, hash)) continue;
-
-    // Discovery only: the listing knows no buyer, no publish date and no
-    // prices, so it must not write tenders. Detail is the single writer;
-    // listing's job ends at "this one moved".
-    //
-    // Enqueue BEFORE recording the fingerprint. Recording first meant a crash
-    // between the two left the notice marked as seen with no detail job ever
-    // created — the next sweep finds an unchanged hash and skips it forever, a
-    // silent permanent coverage hole. This order can only ever duplicate work,
-    // and the jobId already dedupes that.
-    await ingestFetchQueue.add(
-      JOB.TENDER_DETAIL,
-      { source, sourceId: row.sourceId, listingRef: ref, listingHash: hash },
-      { jobId: `${source}-detail-${row.sourceId}-${hash.slice(0, 12)}`, priority: PRIORITY.LIVE }
-    );
-
-    // A concurrent worker won the race and already recorded it.
-    if (!(await sourcePayloads.record({ source, ref, storageKey: pageKey, hash }))) continue;
-
-    changed += 1;
-  }
-
-  await markSweepHealthy(source);
-
-  // Depth control. Page 1 observes the highest tid on the board and carries it
-  // down the chain; whichever page terminates the chain commits it as the new
-  // watermark. A page whose rows were all unusable yields no tids, so it cannot
-  // conclude anything and keeps going — bounded, as always, by maxPage.
-  const tids = result.rows.map((row) => Number(row.sourceId)).filter(Number.isFinite);
-  const highTid = job.data.highTid ?? (tids.length ? Math.max(...tids) : 0);
-  const pageMinTid = tids.length ? Math.min(...tids) : Infinity;
-
-  const maxPage = Math.min(
-    result.pagination?.lastPage ?? 1,
-    sourceConfig.maxListingPages,
-    SCRAPER.MAX_LISTING_PAGES
-  );
-  const reachedSeen = pageMinTid <= sinceTid;
-  const shouldContinue = !reachedSeen && page < maxPage;
-
-  log.info(
-    `${result.blocksSeen} blocks, ${result.rows.length} usable, ${changed} new/changed, ` +
-      `tids ${pageMinTid}..${highTid} vs watermark ${sinceTid} — ` +
-      `${
-        shouldContinue
-          ? `continuing to page ${page + 1}`
-          : `stopping (${reachedSeen ? 'reached already-seen tids' : `page cap ${maxPage}`})`
-      }`
-  );
-
-  if (shouldContinue) {
-    await ingestFetchQueue.add(
-      JOB.LISTING_PAGE,
-      { source, slug, listingPath, page: page + 1, sinceTid, highTid },
-      { priority: PRIORITY.LIVE }
-    );
-  } else {
-    await advanceHighWater(tidWatermarkKey(source, slug), highTid);
-  }
-
-  return { rows: result.rows.length, changed, continued: shouldContinue };
+  // noTid is a coverage signal: a detail link the parser could not read a tid
+  // out of.
+  summarize: ({ result, changed }) =>
+    `${result.blocksSeen} blocks, ${result.rows.length} usable` +
+    `${result.skipped?.noTid ? ` (${result.skipped.noTid} with no usable tid)` : ''}, ` +
+    `${changed} new/changed`,
 };
 
 /**
@@ -318,26 +226,26 @@ const handleRefreshSweep = async (job) => {
 /**
  * Processor for the ingest.fetch queue.
  *
- * A sweep and a listing page are the same job for every source; what differs
- * is the parser and the depth rule, so they route on `data.source`.
+ * A sweep and a listing page are the same chain for every source; what
+ * differs is the board, so they route on `data.source`.
  */
-const LISTING_HANDLERS = {
-  eauction: { sweep: handleSweep, listingPage: handleListingPage },
-  gnumner: { sweep: handleGnumnerSweep, listingPage: handleGnumnerListingPage },
+const BOARDS = {
+  eauction: eauctionBoard,
+  gnumner: gnumnerBoard,
 };
 
-const listingHandlers = (job) => {
-  const handlers = LISTING_HANDLERS[job.data?.source];
-  if (!handlers) throw new UnrecoverableError(`no listing handlers for source "${job.data?.source}"`);
-  return handlers;
+const boardFor = (job) => {
+  const board = BOARDS[job.data?.source];
+  if (!board) throw new UnrecoverableError(`no listing board for source "${job.data?.source}"`);
+  return board;
 };
 
 export const processIngestFetch = async (job, token) => {
   switch (job.name) {
     case JOB.SOURCE_SWEEP:
-      return listingHandlers(job).sweep(job);
+      return sweepBoard(job, boardFor(job));
     case JOB.LISTING_PAGE:
-      return listingHandlers(job).listingPage(job, token);
+      return readListingPage(job, token, boardFor(job));
     case JOB.ARMEPS_DETAIL:
     case JOB.PAPER_INVITATION:
       return parkUntilConsumerExists(job, token);

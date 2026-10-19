@@ -233,6 +233,7 @@ Tendra/
     └── workers/
         ├── index.js                 # worker process entry: register all processors
         ├── scraper.js               # ingest.fetch
+        ├── listingChain.js          # the one listing chain every board is swept by
         ├── importer.js              # ingest.fetch (PPCM/OCDS)
         ├── documents.js             # ingest.documents
         ├── normalizer.js            # ingest.normalize

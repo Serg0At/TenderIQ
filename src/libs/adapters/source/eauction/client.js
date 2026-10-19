@@ -34,12 +34,12 @@ export const fetchListing = async (listingPath, page = 1, conditional = {}) => {
   const response = await fetchPage(url, conditional);
 
   if (response.notModified) {
-    return { url, notModified: true, rows: [], blocksSeen: 0, pagination: null, response };
+    return { url, notModified: true, rows: [], blocksSeen: 0, pagination: null, hasNextPage: false, response };
   }
 
-  const { rows, blocksSeen, skipped, pagination } = parseListing(response.body);
+  const { rows, blocksSeen, skipped, pagination, hasNextPage } = parseListing(response.body);
 
-  return { url, notModified: false, rows, blocksSeen, skipped, pagination, response };
+  return { url, notModified: false, rows, blocksSeen, skipped, pagination, hasNextPage, response };
 };
 
 export const fetchDetail = async (sourceId, conditional = {}) => {
