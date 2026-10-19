@@ -685,9 +685,13 @@ export default class TenderRepository {
         return { event: null, skipped: 'no_buyer' };
       }
 
-      const candidate = { ...tender, buyerId };
-      const row = toRow(candidate, buyerId);
       const existing = await trx(TABLE).where({ source_id: sourceId }).forUpdate().first();
+      // The detail page never carries a CPV; the invitation archive does, and
+      // applyInvitationFacts writes it after this row exists. A detail with no
+      // CPV is silence, not a change — treating it as one wiped every stored
+      // code and re-notified each tender as amended on every replay.
+      const candidate = { ...tender, buyerId, cpvCode: tender.cpvCode ?? existing?.cpv_code ?? null };
+      const row = toRow(candidate, buyerId);
 
       if (!existing) {
         const id = createId();
