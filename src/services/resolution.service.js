@@ -17,7 +17,8 @@
  *     superseded: boolean,                      // this run was itself replaced
  *     procedureCode, submissionChannel, procedureType, buyerName,
  *     publishedAt, deadlineAt, lotNumbers: number[],
- *     status }                                  // the source's status as a domain value, null if unmapped
+ *     status,                                   // the source's status as a domain value, null if unmapped
+ *     unreadable: { format } | undefined }      // a file its parser could not read (a paper .rar)
  *
  * A candidate is a stored tender:
  *
@@ -164,6 +165,15 @@ const unmatched = (reason, tenders = []) => ({
  * `unmatched` beside it: a new run, the two tenders untouched, and the join
  * recorded as ambiguous.
  *
+ * A tender created with no readable procedure code is `create` with a
+ * `no_code` beside it (ticket 06). It is a real, biddable tender and must
+ * appear — but rule 3 can never attach a result to it, so its eventual
+ * result is a gap the count has to show in advance.
+ *
+ * A file the source's parser could not read (a paper invitation uploaded as
+ * .rar, .doc or a scan) is `unsupported_format`: there is no buyer, deadline
+ * or code to create anything from, and it is counted rather than dropped.
+ *
  * A page from a superseded run — one that says so, or whose link its
  * replacement already marked — is `superseded` when linked, and `skip` when
  * not: nothing is created for a dead run, and its replacement records it
@@ -174,6 +184,8 @@ const unmatched = (reason, tenders = []) => ({
  * predecessors.
  */
 export const resolve = (observation, { linked = [], pointed = [], predecessorTenders = [], byCode = [] } = {}) => {
+  if (observation.unreadable) return unmatched('unsupported_format');
+
   const byLink = unique(linked);
   if (byLink.length === 1) {
     if (observation.superseded || byLink[0].linkSuperseded) return supersededRun(byLink[0]);
@@ -197,7 +209,12 @@ export const resolve = (observation, { linked = [], pointed = [], predecessorTen
   if (byPointer.length === 1) return link(byPointer[0], 'pointer');
   if (byPointer.length > 1) return unmatched('ambiguous', byPointer);
 
-  if (observation.role !== 'results') return { action: 'create' };
+  if (observation.role !== 'results') {
+    // A discovery never creates (its caller reads `create` as "not yet"), so
+    // only a detail's missing code is counted.
+    const uncoded = observation.role === 'detail' && !normalizeCode(observation.procedureCode);
+    return uncoded ? { action: 'create', unmatched: unmatched('no_code') } : { action: 'create' };
+  }
 
   if (!normalizeCode(observation.procedureCode)) return unmatched('no_code');
   const fits = unique(codeMatches(observation, byCode));

@@ -97,6 +97,22 @@ fields and the archive's changed files. Two consequences:
   tenders, the replacement is created as a new run and the join is recorded as an `ambiguous`
   unmatched result naming both. Nothing is merged, and the tender is not missed.
 
+## Paper invitations (2026-10-21, ticket 06)
+
+A paper tender's detail is the file a gnumner notice uploads, and **its external id is the file's
+content hash, not its URL**. Buyers sometimes upload the same file twice, minutes apart, under a
+new path each time (five byte-identical pairs among 56 uploads on 2026-10-19/20): keyed by URL,
+that is two tenders for one procurement. Keyed by content, the second upload resolves by rule 1
+to the same tender, and its notice is one more `discovery` link (`paper:{digest of the path}`)
+pointing at the file by rule 2. No new merge rule was needed. A buyer who re-issues a *changed*
+invitation uploads different bytes, which is a different tender until the amendment listing
+(ticket 07) joins them — seen once: ԵՊՊՔ-ԳՀԱՊՁԲ-26-3, uploaded on 10-08 and again on 10-12 with
+the day count adjusted to keep the same deadline.
+
+Two reasons join `no_candidate` and `ambiguous` on unmatched results. A file the parser cannot
+read is `unsupported_format` and creates nothing; a tender created with no readable code is
+`no_code`, because no result can ever be matched to it by rule 3.
+
 ## Considered options
 
 - **A tender is a procedure code, with runs inside it.** One card per code, but alerts, pursuits

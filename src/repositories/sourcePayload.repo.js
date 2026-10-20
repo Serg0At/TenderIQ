@@ -41,6 +41,19 @@ export default class SourcePayloadRepository {
     return await db(TABLE).where({ source, ref }).orderBy('fetched_at', 'desc').first();
   }
 
+  /**
+   * The listing page stored under one key. A listing notice's row points at
+   * the page it was read on, and only the page's own row says which listing
+   * that was (`listing:{slug}:p{N}`) — the notices on it share its key.
+   */
+  static async findListingPage(source, storageKey) {
+    return db(TABLE)
+      .where({ source, storage_key: storageKey })
+      .where('ref', 'like', 'listing:%')
+      .orderBy('fetched_at', 'asc')
+      .first();
+  }
+
   static async latestFetchedAt(source) {
     const row = await db(TABLE).where({ source }).max('fetched_at as at').first();
     return row?.at ?? null;

@@ -25,6 +25,8 @@ export const normalizedTenderSchema = Joi.object({
   goodsWorksServices: Joi.string().trim().allow(null),
   // A code derived from the source's label (`lowest_price`), never free text.
   evaluationMethod: Joi.string().pattern(/^[a-z0-9_]+$/).allow(null),
+  // Where a paper bid is delivered, as the invitation states it. Source text.
+  submissionAddress: Joi.string().trim().max(1000).allow(null),
   status: Joi.string()
     .valid(...TENDER_STATUSES)
     .required(),

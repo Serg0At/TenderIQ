@@ -70,10 +70,17 @@ export const JOB = {
   ARMEPS_DOCUMENTS: 'armeps.documents',
   /**
    * One uploaded paper invitation on gnumner, with the listing's publish
-   * datetime its deadline is counted from. Consumer: ticket 06; parked until
-   * then, like ARMEPS_DETAIL.
+   * datetime its deadline is counted from (workers/paper.js). Also the paper
+   * refresh's job (`reason: 'refresh'`), which makes no request and only
+   * re-normalizes the stored file so a tender past its deadline closes.
    */
   PAPER_INVITATION: 'paper.invitation',
+  /**
+   * A paper tender's invitation, stored and listed as its document, and its
+   * lots written. Reads the file the invitation fetch stored — no request —
+   * so it shares nothing with the other document jobs but the queue.
+   */
+  PAPER_DOCUMENTS: 'paper.documents',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',

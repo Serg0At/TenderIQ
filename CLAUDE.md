@@ -593,10 +593,11 @@ decision that has already been made.
 - **Working:** `source.sweep` (watermark chain) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
   hourly. `backfill.js` seeds the historical archive on its own queue and process.
-- **Two submission channels today:** `eauction` = eauction.armeps.am, reverse auctions only
-  (`procedure_type` always `e_auction`), and **ARMEPS** — gnumner discovers it, armeps.am's CfT
-  page creates it (`armeps` source, `procedure_type` `open`/`quotation` from the page; ticket 05).
-  Paper is not built yet. **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
+- **All three submission channels run:** `eauction` = eauction.armeps.am, reverse auctions only
+  (`procedure_type` always `e_auction`); **ARMEPS** — gnumner discovers it, armeps.am's CfT
+  page creates it (`armeps` source, `procedure_type` `open`/`quotation` from the page; ticket 05);
+  and **paper** — the invitation a gnumner notice uploads creates it (ticket 06, below). Paper
+  results (ticket 08) are not built. **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
   paper — assembled from four sources.** gnumner discovers ARMEPS and paper tenders, armeps.am
   details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
   is one run, never a procedure code; every source a tender came from is a link on it
@@ -611,6 +612,23 @@ decision that has already been made.
   production a missed tender will raise an operator alert (a later feature, live ingestion only).
   The e-auction source key was `armeps` until 2026-10-19 and is now `eauction`, so that `armeps`
   can mean armeps.am. Research and verification: `.scratch/procurement-sources/research.md`.
+- **A paper tender is its uploaded invitation, keyed by the file's content hash** (ticket 06,
+  `workers/paper.js`). The same file is sometimes uploaded twice under new paths, so the hash,
+  not the path, is the detail link; each notice is a `paper:{path digest}` discovery link
+  pointing at it. The file says nothing about when it was published, so the normalizer reads
+  the notices too (`services/paperNotice.service.js`): the job's, and on a replay those already
+  linked, re-parsed from their stored listing pages. **The deadline is the Yerevan calendar date
+  of publication + N, at the stated time** — checked against the buyer's own listing close
+  before it was written (34 of 36; N − 1 and working days fit none) — and is never moved off a
+  holiday: buyers who mind already pick their N, and showing a day early is the safe error.
+  Only a `.docx` (or one inside a `.zip`) holding the Armenian template is read; everything else
+  is stored and counted as `unsupported_format` with no tender, on purpose, until the counts say
+  which converter is worth adding — the comment at the format check in `invitation.parser.js` is
+  addressed to the owner and holds the query. A tender with no readable code is created and
+  counted `no_code`. `tenders.submission_address` holds where the envelope goes, and paper is the
+  one source that writes `tenders.description` (the contract subject). A paper file never
+  changes, so `refresh-gnumner` re-normalizes from storage the ones past their deadline, so they
+  close.
 - **armeps.am serves a different page on every request, and what is stored is canonical.** A
   fresh `jsessionid` in every link, a clock, a pager key, a calendar: `armeps/cft.parser.js#
   canonicalPage` strips exactly those, and the stripped page is both hashed and stored, so a

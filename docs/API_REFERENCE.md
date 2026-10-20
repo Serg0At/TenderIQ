@@ -949,8 +949,9 @@ No request body
   `quotation` so far.)
 - `filter[submissionChannel]` (optional): one or several of `eauction`, `armeps`, `paper` —
   repeat the parameter for several; any of them matches. How a supplier submits a bid, which is
-  not the procedure type: a quotation can run on ARMEPS or on paper. Tenders are `eauction` or
-  `armeps` today; `paper` has no source yet. An unknown value is a `422`, not an empty list.
+  not the procedure type: a quotation can run on ARMEPS or on paper. All three have tenders
+  (`paper` since ticket 06: paper quotations and the rare paper open tender, read from the
+  invitation a gnumner notice uploads). An unknown value is a `422`, not an empty list.
 - `filter[status]` (optional): one or several of `planned`, `active`, `amended`, `closed`,
   `awarded`, `cancelled`.
 - `filter[minValue]` (optional): number ≥ 0.
@@ -988,6 +989,7 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
       "submissionChannel": "eauction",
       "purchaseKind": "works",
       "evaluationMethod": null,
+      "submissionAddress": null,
       "status": "active",
       "sourceStatus": "Ընթացիկ",
       "estimatedValue": 12750000,
@@ -1020,6 +1022,12 @@ online price bidding on eauction.armeps.am), `armeps` (one sealed electronic bid
 (`lowest_price` is the only one seen so far). It is `null` on e-auction tenders, whose pages
 state none. An `armeps` tender has `sourceStatus` and `auctionAt` `null`: armeps.am states no
 status (it is derived from the deadline) and runs no auction.
+`submissionAddress` is where a `paper` bid is delivered, verbatim from the invitation's
+submission sentence; `null` for tenders bid online. A `paper` tender's `deadlineAt` is computed
+from the invitation's "N-th day counted from publication, at HH:MM" against the notice's publish
+datetime — the Yerevan calendar date of publication plus N days, never moved off a holiday — or
+taken from a date the invitation states; `sourceStatus`, `evaluationMethod`, `estimatedValue` and
+`auctionAt` are `null`, and `title` is the buyer's notice headline.
 
 **Errors:**
 
@@ -1222,6 +1230,8 @@ No request body
     "publishedAt": "2026-08-14T09:30:00.000Z",
     "deadlineAt": "2026-09-12T11:00:00.000Z",
     "auctionAt": "2026-09-13T10:00:00.000Z",
+    "submissionAddress": null,
+    "description": null,
     "qnaDeadlineAt": "2026-09-05T11:00:00.000Z",
     "invitationUrl": "https://eauction.armeps.am/tender/284391/invitation.zip",
     "version": 1,
@@ -1262,7 +1272,16 @@ contributed — `discovery` (it announced the tender), `detail` (deadline, terms
 `results` (bidders and prices). An e-auction tender has one `detail` link, since one site
 does all three. An amended e-auction still shows one: the site publishes the amendment under a
 new page, and the page it replaced is not listed, since it shows the old deadline. An ARMEPS tender has two: `armeps` (`detail`, its armeps.am page) and `gnumner`
-(`discovery`, the announcement listing that pointed at it).
+(`discovery`, the announcement listing that pointed at it). A paper tender's links are all
+`gnumner` and all point at the uploaded invitation: one `detail` (the file the tender was read
+from) and one `discovery` per notice that uploaded it — a buyer who posts the same file twice
+gives one tender with two `discovery` links.
+
+`description` is what is being bought, as the source states it beside the title: a paper
+invitation's contract subject («… կնքել **<subject>** մատակարարման պայմանագիր»). `null` for
+e-auction and ARMEPS tenders, whose pages state none apart from the title. `submissionAddress`
+is where a paper bid is delivered (see the list above). A paper tender's one document is its
+invitation: the uploaded `.zip` as it is, or the uploaded `.docx` as a one-file archive.
 
 `buyer.taxId` (ՀՎՀՀ) is populated only for buyers, and only when the invitation archive was
 parsed. `cpvCode` is `null` for most of the corpus — CPV lives inside the invitation ZIP.

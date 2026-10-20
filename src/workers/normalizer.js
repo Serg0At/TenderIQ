@@ -3,6 +3,7 @@ import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage } from '../libs/storage/index.js';
 import * as eauction from '../libs/adapters/source/eauction/observation.js';
 import * as armeps from '../libs/adapters/source/armeps/observation.js';
+import * as gnumner from '../libs/adapters/source/gnumner/observation.js';
 import { lookupsFor, resolve, deriveStatus } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
@@ -14,7 +15,9 @@ import { logger } from '../utils/logger.js';
 import { validateNormalizedTender } from '../validations/index.js';
 import { eauctionDocumentsJob } from './documents.js';
 import { armepsDocumentsJob } from './armeps.js';
-import { linkDiscovery } from '../services/discoveryLink.service.js';
+import { paperDocumentsJob } from './paper.js';
+import { linkDiscovery, linkPaperDiscovery } from '../services/discoveryLink.service.js';
+import { noticesFor } from '../services/paperNotice.service.js';
 
 /**
  * Source payload -> domain entities. The only stage that writes tenders,
@@ -32,16 +35,34 @@ import { linkDiscovery } from '../services/discoveryLink.service.js';
  */
 
 /**
- * Source key -> its adapter's payload-to-observation mapper, and the document
- * stage's job for a saved tender (null for none). The only per-source table
- * here; what each entry does lives with its source.
+ * Source key -> its adapter's payload-to-observation mapper, the document
+ * stage's job for a saved tender (null for none), and how the notice that
+ * discovered it is linked once it exists. The only per-source table here;
+ * what each entry does lives with its source.
+ *
+ * gnumner's payload is a paper invitation: binary, and saying nothing about
+ * when it was published, which its deadline is counted from. `context` reads
+ * the notices that listed it — from the job on a first run, from storage on
+ * a replay (services/paperNotice.service.js).
  */
 const SOURCES = {
   [eauction.SOURCE]: { observe: eauction.observeDetail, documentsJob: eauctionDocumentsJob },
-  [armeps.SOURCE]: { observe: armeps.observeDetail, documentsJob: armepsDocumentsJob },
+  [armeps.SOURCE]: {
+    observe: armeps.observeDetail,
+    documentsJob: armepsDocumentsJob,
+    link: ({ discovery, observation }) =>
+      linkDiscovery({ discovery, pointer: { source: armeps.SOURCE, externalId: observation.externalId } }),
+  },
+  [gnumner.SOURCE]: {
+    observe: gnumner.observeInvitation,
+    documentsJob: paperDocumentsJob,
+    binary: true,
+    context: async ({ sourceId, discovery }) => ({ notices: await noticesFor({ invitationId: sourceId, discovery }) }),
+    link: ({ discovery, observation }) => linkPaperDiscovery({ discovery, invitationId: observation.externalId }),
+  },
 };
 
-const readPayload = async (storageKey) => {
+const readPayload = async (storageKey, { binary = false } = {}) => {
   const storage = await getStorage();
   if (!(await storage.head(storageKey))) {
     throw new UnrecoverableError(
@@ -50,6 +71,7 @@ const readPayload = async (storageKey) => {
     );
   }
   const body = await storage.get(storageKey);
+  if (binary) return Buffer.isBuffer(body) ? body : Buffer.from(body);
   return Buffer.isBuffer(body) ? body.toString('utf8') : String(body);
 };
 
@@ -62,7 +84,8 @@ export const normalizeTender = async ({
   priority = PRIORITY.LIVE,
   // The gnumner notice that led to this page, if one did. It is not in the
   // stored payload, so a replay has none, and needs none: the link it writes
-  // is kept from the first run.
+  // is kept from the first run (and a paper invitation reads its notices back
+  // through those links).
   discovery = null,
   // Set by the detail fetch on the first normalize of a newly stored page;
   // absent on a replay or a refresh re-normalize. See armepsDocumentsJob.
@@ -77,7 +100,7 @@ export const normalizeTender = async ({
   if (!registered) {
     throw new UnrecoverableError(`no tender normalizer is registered for source "${source}"`);
   }
-  const { observe, documentsJob } = registered;
+  const { observe, documentsJob, binary = false, context = null, link = null } = registered;
 
   // A newer payload for this ref means this job is describing a page that has
   // already been superseded; normalizing it would walk the tender backwards.
@@ -89,11 +112,16 @@ export const normalizeTender = async ({
   const sourceConfig = getSourceConfig(source);
   // When the page was fetched — a replay re-reads an old page.
   const seenAt = latest.fetched_at;
-  const observation = observe(await readPayload(storageKey), {
+  const observation = observe(await readPayload(storageKey, { binary }), {
     externalId: sourceId,
     seenAt,
     baseUrl: sourceConfig.baseUrl,
+    ...(context ? await context({ sourceId, discovery }) : {}),
   });
+
+  // What the adapter found worth saying about its own reading (a paper
+  // deadline taken from the listing, say). It decides nothing here.
+  for (const warning of observation.warnings ?? []) logger.warn(`[normalizer] ${source}:${sourceId} — ${warning}`);
 
   const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
 
@@ -109,6 +137,7 @@ export const normalizeTender = async ({
     });
     logger.warn(`[normalizer] ${source}:${sourceId} unmatched (${decision.reason})`, {
       candidates: decision.candidateIds,
+      ...(observation.unreadable ? { format: observation.unreadable.format } : {}),
     });
     return { event: null, skipped: 'unmatched', reason: decision.reason };
   }
@@ -193,10 +222,12 @@ export const normalizeTender = async ({
     return result;
   }
 
-  // A replacement whose predecessors are on two tenders: created as a new run,
-  // and the join it could not make recorded beside it, unresolved — the two
-  // tenders are left exactly as they were (ticket 29). Recorded after the save,
-  // so a page with no buyer leaves no row pointing at a tender never written.
+  // A tender created with something unresolved beside it, recorded after the
+  // save so a page with no buyer leaves no row pointing at a tender never
+  // written: a replacement whose predecessors are on two tenders, created as a
+  // new run with the two tenders left exactly as they were (ticket 29, an
+  // `ambiguous` row); or a tender with no readable code, which no result can
+  // ever be matched to (ticket 06, `no_code`).
   if (decision.unmatched) {
     await unmatchedResults.record({
       source,
@@ -207,7 +238,7 @@ export const normalizeTender = async ({
       payloadHash: hash,
       seenAt,
     });
-    logger.warn(`[normalizer] ${source}:${sourceId} created as a new run; its join is ${decision.unmatched.reason}`, {
+    logger.warn(`[normalizer] ${source}:${sourceId} created, and recorded as ${decision.unmatched.reason}`, {
       tenderId: result.tenderId,
       candidates: decision.unmatched.candidateIds,
     });
@@ -224,9 +255,7 @@ export const normalizeTender = async ({
 
   // The notice that discovered this page, now that its tender exists. Which
   // tender is again the resolution module's call, through the pointer.
-  if (discovery) {
-    await linkDiscovery({ discovery, pointer: { source, externalId: observation.externalId } });
-  }
+  if (discovery && link) await link({ discovery, observation });
 
   // Enqueued from here rather than from the detail fetch because this is the
   // point at which the tender is known to exist in the database — the document

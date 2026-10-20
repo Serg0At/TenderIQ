@@ -23,7 +23,7 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
-| `gnumner` | HTML scrape of the announcement listings | `*/5 * * * *` sweep | discovery only: `armeps.detail` / `paper.invitation` jobs and a `gnumner` link on each tender |
+| `gnumner` | HTML scrape of the announcement listings, and the paper invitations they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer `parties`, `tender_lots`, `tender_documents` |
 | `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
 | `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
@@ -209,6 +209,47 @@ so a refresh cannot swallow a discovery. The scheduler registers no sweep for a 
 listing and removes any `sweep-{source}` left over (e-auction's key was `armeps` until
 2026-10-19).
 
+### 4c. Paper invitation — `paper.invitation` and `paper.documents`
+
+A paper tender has no page: the file a gnumner notice uploads (`/website/images/original/…`) is
+the whole of it. Code: `libs/adapters/source/gnumner/` (pure `invitation.parser.js`,
+`observation.js`, `invitation.files.js`), `services/paperNotice.service.js` and
+`workers/paper.js`.
+
+1. The URL is rebuilt from the configured base and the notice's path. A response that is HTML
+   (gnumner's 200 for a path it does not have) is **not stored**; the job fails.
+2. **Every file is stored**, readable or not, under ref `detail:{sha256 of the bytes}`, with the
+   sniffed format as the key's extension. The content hash, not the path, is the identity: a
+   buyer sometimes uploads the same file twice under new paths (five byte-identical pairs among
+   56 uploads on 2026-10-19/20). The second is one more `discovery` link on the same tender,
+   reached by re-normalizing the stored file with that notice, a minute later so the two creates
+   do not race.
+3. The normalizer reads the file with the notices that listed it: the job's, and on a replay
+   those already linked, each re-read from the listing page its `source_payloads` row points at.
+   The earliest notice is the publication: the title, the procedure type (the listing's
+   `procedureType` in `sources.config.js`) and the publish datetime the deadline is counted from.
+4. **The format check** (`invitation.parser.js`): only a `.docx`, or a `.docx` one level inside
+   a `.zip`, in which the Armenian announcement template is found, is readable. Everything else
+   — `.doc`, `.rar`, `.7z`, `.pdf`, a zip whose Armenian invitation is itself inside a `.rar`, a
+   pasted scan — becomes an `unsupported_format` unmatched result and no tender. Counted on
+   purpose, and meant to become supported once the counts show which formats matter.
+5. From the template: procedure code (`Ընթացակարգի ծածկագիրը`, else the title's), buyer
+   (`Պատվիրատուն` …), subject (`կնքել … պայմանագիր`, stored as `description`), submission
+   address and deadline (the sentence after «փաստաթղթային ձևով»), and lots from the first
+   `Չափաբաժին…` table. A tender with no readable code is created and recorded `no_code`.
+6. **The deadline is the Yerevan calendar date of publication + N days, at the stated time**,
+   or a date the invitation states. Checked on live notices before it was written (ticket 06):
+   the buyer's own listing close is publication + N in 34 of 36; publication + N − 1 and working
+   days fit none. A day on a holiday is shown as it is. The listing's close is the fallback when
+   the sentence is missing, and a disagreement between the two is logged.
+7. `paper.documents` (no request) stores the invitation as the tender's document — the `.zip` as
+   it is, a `.docx` wrapped in a one-entry ZIP — lists it and writes the lots, through the same
+   `recordDocuments` as the other sources.
+
+**Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
+refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders
+whose deadline has passed while they still say `active` or `amended`, so they close.
+
 ### 5. Document download — `document.download`
 
 1. Stream the attachment, aborting past `SCRAPER.MAX_DOCUMENT_BYTES` (60 MB default).
@@ -255,9 +296,13 @@ Three findings that would change how anyone approaches these:
 stage reads only the `.txt` derived from `hraver.docx`. Wiring the technical specifications in
 would sharpen it, and the natural destination is a **lot-level** field, not `tenders.description`.
 
-#### `tenders.description` has no source and is never written
+#### `tenders.description` has no source for e-auction, and is not written for it
 
-`normalize.tender` sets it to `null` unconditionally, and `applyInvitationFacts` — the only
+A paper invitation (ticket 06) is the one source that states a subject apart from its title —
+its notice headline is a long sentence, and the contract-subject line is not a copy of it — so
+paper tenders carry it. What follows is about e-auction, and still holds.
+
+For e-auction `normalize.tender` sets it to `null` unconditionally, and `applyInvitationFacts` — the only
 other writer — has no parameter for it. The comment beside it in `workers/normalizer.js` pairs
 it with `cpvCode` and promises both arrive at "a later stage"; that promise is kept for CPV and
 never kept for `description`.

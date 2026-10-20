@@ -1,8 +1,8 @@
-import { DelayedError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { fetchListing } from '../libs/adapters/source/gnumner/client.js';
 import { JOB, PRIORITY } from '../queues/names.js';
-import { sha256, stableHash } from '../utils/hash.js';
+import { pathDigest, paperNoticeId, paperNoticeRef } from '../libs/adapters/source/gnumner/observation.js';
+import { stableHash } from '../utils/hash.js';
 
 const SOURCE = 'gnumner';
 
@@ -16,18 +16,8 @@ const SOURCE = 'gnumner';
  */
 const publishedWatermarkKey = (slug) => `sweep:published:${SOURCE}:${slug}`;
 
-/**
- * The paper identity is the uploaded file's path, which can run long and
- * carries runs of spaces (non-ASCII characters in the original name become
- * spaces), so refs and job ids use a digest of it. The path itself travels in
- * the job.
- */
-const pathDigest = (path) => sha256(path).slice(0, 24);
-
 const noticeRef = (item) =>
-  item.kind === 'paper'
-    ? `notice:paper:${pathDigest(item.externalId)}`
-    : `notice:${item.kind}:${item.externalId}`;
+  item.kind === 'paper' ? paperNoticeRef(paperNoticeId(item.externalId)) : `notice:${item.kind}:${item.externalId}`;
 
 /**
  * Fields that define "this notice changed". The link target is the identity
@@ -124,17 +114,4 @@ export const gnumnerBoard = {
     `${changed} new/changed`,
 };
 
-/**
- * Paper discoveries, whose consumer (ticket 06) has not landed yet, are
- * parked, not failed: moved back to delayed without spending an attempt, so
- * they stay recorded in Redis and the real handler picks them up the first
- * time it sees them. Replace this with the handler when it exists.
- */
-const PARK_MS = 6 * 60 * 60 * 1000;
-
-export const parkUntilConsumerExists = async (job, token) => {
-  await job.moveToDelayed(Date.now() + PARK_MS, token);
-  throw new DelayedError();
-};
-
-export default { gnumnerBoard, parkUntilConsumerExists };
+export default { gnumnerBoard };

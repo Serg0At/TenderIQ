@@ -235,6 +235,8 @@ export default class TenderService {
       submissionChannel: row.submission_channel,
       purchaseKind: purchaseKindOf(row.goods_works_services),
       evaluationMethod: row.evaluation_method ?? null,
+      // Where a paper bid is delivered; null for a tender bid online.
+      submissionAddress: row.submission_address ?? null,
       status: row.status,
       sourceStatus: row.source_status,
       estimatedValue: row.estimated_value === null ? null : Number(row.estimated_value),
@@ -250,6 +252,9 @@ export default class TenderService {
     return {
       ...TenderService.present(row),
       buyer: { id: row.buyer_id, name: row.buyer_name, taxId: row.buyer_tax_id ?? null, region: row.buyer_region ?? null },
+      // What is being bought, as the source states it beside the title. Only
+      // a paper invitation states one today; null elsewhere.
+      description: row.description ?? null,
       qnaDeadlineAt: row.qna_deadline_at,
       invitationUrl: row.invitation_url,
       version: row.version,

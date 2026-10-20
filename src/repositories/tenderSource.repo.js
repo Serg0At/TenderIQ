@@ -109,6 +109,21 @@ export default class TenderSourceRepository {
       .update({ last_seen_at: seenAt });
   }
 
+  /**
+   * The links beside one link: every link of the tender that `(source,
+   * externalId)` belongs to whose external id starts with `prefix`, oldest
+   * first. A paper invitation reads its tender's notices (`paper:…`) this way
+   * on a replay, when no job carries them. None when the link is not written.
+   */
+  static async listSiblings({ source, externalId, prefix }, trx = db) {
+    return trx(`${TABLE} as l`)
+      .join(`${TABLE} as s`, 's.tender_id', 'l.tender_id')
+      .where({ 'l.source': source, 'l.external_id': String(externalId), 's.source': source })
+      .where('s.external_id', 'like', `${prefix}%`)
+      .orderBy([{ column: 's.first_seen_at' }, { column: 's.id' }])
+      .select('s.external_id', 's.url', 's.role');
+  }
+
   /** One tender's links, oldest first: the creating source leads. */
   static async listForTender(tenderId, trx = db) {
     return trx(TABLE)

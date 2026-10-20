@@ -41,7 +41,9 @@ const keywordMatches = (haystack, keywords) => {
 export const scoreMatch = (tender, profile) => {
   const codes = tenderCodes({ cpvCode: tender.cpvCode, cpvCodes: tender.cpvCodes, lotCodes: tender.lotCpvCodes });
   const cpv = cpvMatches(codes, profile.cpvCodes ?? []);
-  const haystack = [tender.title, tender.referenceCode, ...(tender.lotNames ?? [])].filter(Boolean).join(' \n ');
+  const haystack = [tender.title, tender.referenceCode, tender.description, ...(tender.lotNames ?? [])]
+    .filter(Boolean)
+    .join(' \n ');
   const keyword = keywordMatches(haystack, profile.keywords ?? []);
 
   if (!cpv.hit && !keyword.hit) return { matched: false, score: 0, reasons: [] };
@@ -97,6 +99,10 @@ export const matchCandidate = (tender) => ({
   lotCpvCodes: (tender.lots ?? []).map((l) => l.cpv_code).filter(Boolean),
   lotNames: (tender.lots ?? []).map((l) => l.name).filter(Boolean),
   title: tender.title,
+  // A paper invitation's contract subject (null elsewhere). Read by keywords,
+  // because a paper tender's lots arrive with its document stage, after the
+  // ingest match has run.
+  description: tender.description ?? null,
   referenceCode: tender.reference_code,
   estimatedValue: tender.estimated_value,
   buyerRegion: tender.buyer_region,

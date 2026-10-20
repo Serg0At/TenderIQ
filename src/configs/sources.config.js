@@ -35,10 +35,25 @@ const sources = {
     // 5 pages is about three days of each listing on a first sweep. History
     // is a backfill's job.
     maxListingPages: 5,
+    // `procedureType` is what a paper tender found on that listing is: the
+    // buyer filed the notice there, and the invitation's own heading agrees.
     listingPaths: [
-      { slug: 'open', path: '/hy/page/bac_mrcuyti_haytararutyun_ev_hraver/' },
-      { slug: 'quotation', path: '/hy/page/gnanshman_harcman_haytararutyun_ev_hraver/' },
+      { slug: 'open', path: '/hy/page/bac_mrcuyti_haytararutyun_ev_hraver/', procedureType: 'open' },
+      { slug: 'quotation', path: '/hy/page/gnanshman_harcman_haytararutyun_ev_hraver/', procedureType: 'quotation' },
     ],
+    /**
+     * A paper tender's file never changes, so nothing re-reads it — and its
+     * status is read off its deadline. This re-normalizes, from storage and
+     * with no request to gnumner, the paper tenders whose deadline has passed
+     * while they still say open, so they close. Hourly; a tender leaves the
+     * set as soon as it closes, so a batch is the day's ~6 quotations.
+     */
+    refreshCron: process.env.SOURCE_GNUMNER_REFRESH_CRON || '41 * * * *',
+    refreshWindowDays: 30,
+    maxRefreshBatch: 200,
+    // The invitation is stored and listed as the tender's document. It costs
+    // no request: it is the file the invitation fetch already downloaded.
+    downloadDocuments: true,
     /**
      * Uploaded files from buyers outside the procurement law, matched on the
      * notice title. Read off the open-tender listing on 2026-10-19, where

@@ -49,6 +49,9 @@ function up(pg) {
       // How the winner is chosen (lowest_price, …), as armeps.am states it. NULL for
       // e-auctions, whose pages state none.
       table.string('evaluation_method');
+      // Where a paper bid is delivered, as the invitation states it. NULL for e-auction and
+      // ARMEPS tenders, which are bid online.
+      table.text('submission_address');
       table.timestamp('auction_at');
       table.string('invitation_url');
       table.string('currency').notNullable().defaultTo('AMD');

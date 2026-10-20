@@ -43,7 +43,9 @@ export default class UnmatchedResultRepository {
       })
       .onConflict(['source', 'external_ref'])
       .merge({
-        procedure_code: newer('procedure_code'),
+        // A re-read that cannot see the code does not forget it: a replayed
+        // paper upload no listing notice travels with knows none.
+        procedure_code: trx.raw('coalesce(?, ??)', [newer('procedure_code'), `${TABLE}.procedure_code`]),
         reason: newer('reason'),
         candidate_tender_ids: newer('candidate_tender_ids'),
         payload_hash: newer('payload_hash'),

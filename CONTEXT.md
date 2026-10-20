@@ -127,7 +127,9 @@ _Avoid_: Attachment, New file, Re-issue (alone)
 **Unmatched result**:
 A bidder or award row from a source that could not be attached to exactly one tender — because
 Tendra holds no such tender, or holds more than one with that procedure code. Kept with its
-reason and counted, never guessed onto a tender and never thrown away.
+reason and counted, never guessed onto a tender and never thrown away. Two more reasons come from
+paper invitations: a file Tendra cannot read (`unsupported_format`, no tender created) and a
+tender created without a readable procedure code (`no_code`), which no result can be matched to.
 _Avoid_: Orphan, Dropped row, Error
 
 **Operator alert**:

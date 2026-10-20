@@ -11,8 +11,9 @@ import { sha256, stableHash } from '../utils/hash.js';
 import { RateLimitedError } from '../utils/rateLimiter.js';
 import { logger } from '../utils/logger.js';
 import { handleTenderDocuments } from './documents.js';
-import { gnumnerBoard, parkUntilConsumerExists } from './gnumner.js';
+import { gnumnerBoard } from './gnumner.js';
 import { handleArmepsDetail, handleArmepsDocuments, armepsRefresher } from './armeps.js';
+import { handlePaperInvitation, handlePaperDocuments, paperRefresher } from './paper.js';
 import { sweepBoard, readListingPage } from './listingChain.js';
 
 /**
@@ -189,13 +190,14 @@ const eauctionRefresher = {
 
 /**
  * Per source: which tenders the refresh re-reads, and the job that does it.
- * The two questions differ — e-auction asks "what has resolved?" after the
- * auction, armeps.am "what has moved?" before the deadline — and the rest is
- * shared.
+ * The questions differ — e-auction asks "what has resolved?" after the
+ * auction, armeps.am "what has moved?" before the deadline, and paper "what
+ * has closed?", since its file never changes — and the rest is shared.
  */
 const REFRESHERS = {
   eauction: eauctionRefresher,
   armeps: armepsRefresher,
+  gnumner: paperRefresher,
 };
 
 /**
@@ -273,7 +275,9 @@ export const processIngestFetch = async (job, token) => {
     case JOB.ARMEPS_DOCUMENTS:
       return handleArmepsDocuments(job, token);
     case JOB.PAPER_INVITATION:
-      return parkUntilConsumerExists(job, token);
+      return handlePaperInvitation(job, token);
+    case JOB.PAPER_DOCUMENTS:
+      return handlePaperDocuments(job);
     case JOB.TENDER_DETAIL:
       return handleTenderDetail(job, token);
     case JOB.TENDER_DOCUMENTS:

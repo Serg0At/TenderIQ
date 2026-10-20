@@ -77,6 +77,9 @@ const fieldHash = (tender) =>
     submissionChannel: tender.submissionChannel,
     goodsWorksServices: tender.goodsWorksServices,
     evaluationMethod: tender.evaluationMethod,
+    // Where a paper bid is delivered: a supplier who drives the envelope to
+    // the old address has lost the bid as surely as one who misses the date.
+    submissionAddress: tender.submissionAddress ?? null,
     status: tender.status,
     // Included so a move between two site states that share one enum value
     // (e.g. Նախաաճուրդային -> Աճուրդ, both `closed`) still registers as an
@@ -101,6 +104,7 @@ const toRow = (tender, buyerId) => ({
   submission_channel: tender.submissionChannel,
   goods_works_services: tender.goodsWorksServices ?? null,
   evaluation_method: tender.evaluationMethod ?? null,
+  submission_address: tender.submissionAddress ?? null,
   status: tender.status,
   source_status: tender.sourceStatus ?? null,
   estimated_value: tender.estimatedValue ?? null,
@@ -271,7 +275,8 @@ const coversAnySql = (alias = 't') =>
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
   't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code', 't.cpv_codes',
-  't.procedure_type', 't.submission_channel', 't.goods_works_services', 't.evaluation_method', 't.status', 't.source_status', 't.estimated_value',
+  't.procedure_type', 't.submission_channel', 't.goods_works_services', 't.evaluation_method', 't.submission_address',
+  't.status', 't.source_status', 't.estimated_value',
   't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
   'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region',
 ];
@@ -948,6 +953,30 @@ export default class TenderRepository {
   }
 
   /**
+   * Paper tenders whose deadline has passed while they still say open — the
+   * paper refresh, which re-normalizes them from storage so they close. A
+   * paper invitation never changes, so nothing else would ever re-read it,
+   * and its status is read off its deadline. The detail link (the file,
+   * keyed by its content hash) names what to re-read; the notice links
+   * (`paper:…`) are left out. Bounded below so a tender that somehow never
+   * closes is not re-read for ever.
+   */
+  static async findPaperPastDeadline({ windowDays, limit }, trx = db) {
+    const now = new Date();
+    const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+
+    return trx(`${TABLE} as t`)
+      .join('tender_sources as s', 's.tender_id', 't.id')
+      .where({ 't.submission_channel': 'paper', 's.source': 'gnumner', 's.role': 'detail' })
+      .whereIn('t.status', BIDDABLE_STATUSES)
+      .andWhere('t.deadline_at', '<', now)
+      .andWhere('t.deadline_at', '>', floor)
+      .orderBy([{ column: 't.deadline_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .limit(limit)
+      .select('t.id', 's.external_id', 't.status', 't.deadline_at');
+  }
+
+  /**
    * The pipeline's only write path into the domain tables.
    *
    * Buyer, tender and ledger land in one transaction: a tender must never be
@@ -1043,6 +1072,7 @@ export default class TenderRepository {
           submissionChannel: existing.submission_channel,
           goodsWorksServices: existing.goods_works_services,
           evaluationMethod: existing.evaluation_method,
+          submissionAddress: existing.submission_address,
           status: existing.status,
           sourceStatus: existing.source_status,
           estimatedValue: existing.estimated_value === null ? null : String(existing.estimated_value),
