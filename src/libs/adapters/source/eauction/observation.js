@@ -67,9 +67,11 @@ export const observeDetail = (html, { externalId, seenAt, baseUrl }) => {
       procedureType: detail.procedureType,
       submissionChannel: SUBMISSION_CHANNEL,
       goodsWorksServices: detail.goodsWorksServices,
-      // Neither is published anywhere in the HTML. `cpvCode` arrives later from
-      // the invitation archive via applyInvitationFacts.
+      // Neither is published anywhere in the HTML. `cpvCode` and `cpvCodes`
+      // arrive later from the invitation archive via applyInvitationFacts, and
+      // null here is silence, which keeps what is stored.
       cpvCode: null,
+      cpvCodes: null,
       // `description` does NOT. It has no writer anywhere and no source to have
       // one: the docx's contract-subject line is the title verbatim, and the real
       // per-item text is already stored as tender_lots.name. The column is an

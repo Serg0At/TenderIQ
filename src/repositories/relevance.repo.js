@@ -1,4 +1,5 @@
 import db from '../libs/knex.js';
+import { tenderCodesSql } from './tender.repo.js';
 
 /** One row per (tender, lot): the lot's first item code, as profile.repo.js reads a lot's category. */
 const lotCategoryCte = (qb) =>
@@ -127,8 +128,8 @@ export default class RelevanceRepository {
   }
 
   /**
-   * Everything this organization is tracking, with each tender's CPV codes —
-   * headline and every lot — and when the team last acted on it.
+   * Everything this organization is tracking, with every CPV code each tender
+   * states (`tenderCodesSql`) and when the team last acted on it.
    *
    * Private tenant data: scoped on `tt.organization_id` here, so one tenant's
    * pursuits can never inform another's ranking.
@@ -143,13 +144,7 @@ export default class RelevanceRepository {
         'tt.status',
         'tt.go_no_go',
         trx.raw('coalesce(tt.updated_at, tt.created_at) as at'),
-        trx.raw(
-          `array_remove(array(
-             select distinct c from unnest(
-               array[t.cpv_code] || array(select l.cpv_code from tender_lots l where l.tender_id = t.id)
-             ) as c
-           ), null) as codes`
-        )
+        trx.raw(`array_remove(array(select distinct c from unnest(${tenderCodesSql('t')}) as c), null) as codes`)
       );
 
     return rows.map((row) => ({

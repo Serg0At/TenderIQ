@@ -4,7 +4,7 @@ import savedSearches from '../repositories/savedSearch.repo.js';
 import notifications from '../repositories/notification.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import { getChannel, channelsForOrg } from '../services/delivery.service.js';
-import { matchesByOrganization, channelsForMatches } from '../services/matcher.service.js';
+import { matchesByOrganization, channelsForMatches, matchCandidate, ALERTABLE_STATUSES } from '../services/matcher.service.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -25,22 +25,11 @@ export const handleTenderMatched = async (job) => {
   const tender = await tenders.findDetail(tenderId);
   if (!tender) return { skipped: 'unknown_tender' };
 
-  // Only live tenders are worth interrupting someone for: an award or a
-  // cancellation is history, and alerting on it trains people to ignore alerts.
-  if (!['active', 'planned', 'amended'].includes(tender.status)) {
+  if (!ALERTABLE_STATUSES.includes(tender.status)) {
     return { skipped: `status_${tender.status}` };
   }
 
-  const candidate = {
-    cpvCode: tender.cpv_code,
-    lotCpvCodes: (tender.lots ?? []).map((l) => l.cpv_code).filter(Boolean),
-    lotNames: (tender.lots ?? []).map((l) => l.name).filter(Boolean),
-    title: tender.title,
-    referenceCode: tender.reference_code,
-    estimatedValue: tender.estimated_value,
-    buyerRegion: tender.buyer_region,
-  };
-
+  const candidate = matchCandidate(tender);
   const profiles = await savedSearches.listAll();
   const type = event === 'TenderAmended' ? 'amendment' : 'tender-match';
   const groups = matchesByOrganization(candidate, profiles);

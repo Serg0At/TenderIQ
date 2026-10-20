@@ -1,4 +1,4 @@
-import { compareCpv } from '../libs/cpv.js';
+import { compareCpv, tenderCodes } from '../libs/cpv.js';
 
 /**
  * Does a tender match a saved search, and how well?
@@ -39,8 +39,8 @@ const keywordMatches = (haystack, keywords) => {
  * hit qualifies, then region and value act as filters rather than boosts.
  */
 export const scoreMatch = (tender, profile) => {
-  const tenderCodes = [tender.cpvCode, ...(tender.lotCpvCodes ?? [])].filter(Boolean);
-  const cpv = cpvMatches(tenderCodes, profile.cpvCodes ?? []);
+  const codes = tenderCodes({ cpvCode: tender.cpvCode, cpvCodes: tender.cpvCodes, lotCodes: tender.lotCpvCodes });
+  const cpv = cpvMatches(codes, profile.cpvCodes ?? []);
   const haystack = [tender.title, tender.referenceCode, ...(tender.lotNames ?? [])].filter(Boolean).join(' \n ');
   const keyword = keywordMatches(haystack, profile.keywords ?? []);
 
@@ -83,6 +83,30 @@ export const scoreMatch = (tender, profile) => {
 
   return { matched: true, score: Math.min(Number(score.toFixed(2)), 1), reasons };
 };
+
+/**
+ * A tender as `scoreMatch` reads it, from `TenderRepository.findDetail`. One
+ * mapping, so the CPV backfill counts the matches it would raise with exactly
+ * the candidate the alert job builds.
+ */
+export const matchCandidate = (tender) => ({
+  cpvCode: tender.cpv_code,
+  // Every code the source states for the tender, including any it could not
+  // put on a lot — a search naming one of those must still hear about it.
+  cpvCodes: tender.cpv_codes ?? [],
+  lotCpvCodes: (tender.lots ?? []).map((l) => l.cpv_code).filter(Boolean),
+  lotNames: (tender.lots ?? []).map((l) => l.name).filter(Boolean),
+  title: tender.title,
+  referenceCode: tender.reference_code,
+  estimatedValue: tender.estimated_value,
+  buyerRegion: tender.buyer_region,
+});
+
+/**
+ * Only live tenders are worth interrupting someone for: an award or a
+ * cancellation is history, and alerting on it trains people to ignore alerts.
+ */
+export const ALERTABLE_STATUSES = ['active', 'planned', 'amended'];
 
 /** Below this a match is too weak to interrupt someone's day. */
 export const MATCH_THRESHOLD = 0.5;
@@ -145,4 +169,4 @@ export const channelsForMatches = (matches) => ({
   useOrgDefault: matches.some((m) => !m.channels.length),
 });
 
-export default { scoreMatch, MATCH_THRESHOLD, matchesByOrganization, channelsForMatches };
+export default { scoreMatch, matchCandidate, ALERTABLE_STATUSES, MATCH_THRESHOLD, matchesByOrganization, channelsForMatches };

@@ -56,6 +56,19 @@ export const closeness = (a, b) => {
   return 'none';
 };
 
+/**
+ * Every code a tender states, primary first, each once: its primary code, every
+ * code its source lists for the tender as a whole, and its lots' codes.
+ *
+ * The one list each reader asks the questions above of. A code the source
+ * states for the tender without saying which lot it belongs to (armeps.am
+ * lists the tender's codes but not which lot is which) is still a fact about
+ * the tender, and a reader that looked only at lots, or only at the primary
+ * code, would miss a tender a supplier asked for.
+ */
+export const tenderCodes = ({ cpvCode = null, cpvCodes = [], lotCodes = [] } = {}) =>
+  [...new Set([cpvCode, ...(cpvCodes ?? []), ...(lotCodes ?? [])].filter(Boolean).map(String))];
+
 /** Both answers for one pair: how close, and whether `wanted` covers `have`. */
 export const compareCpv = (have, wanted) => ({ level: closeness(have, wanted), covered: covers(wanted, have) });
 
@@ -81,4 +94,4 @@ export const bestCpvMatch = (codes = [], wantedCodes = []) => {
   return best;
 };
 
-export default { CPV_LEVELS, compareLevels, significantPrefix, covers, closeness, compareCpv, bestCpvMatch };
+export default { CPV_LEVELS, compareLevels, significantPrefix, covers, closeness, tenderCodes, compareCpv, bestCpvMatch };

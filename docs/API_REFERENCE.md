@@ -918,9 +918,10 @@ For an orgless session `organizationId`, `role` and `plan` are all `null`.
 ## List tenders
 
 Filtered, cursor-paginated search over the public tender corpus. Not tenant-scoped — public
-procurement data is the same for every organization. A CPV filter matches the tender's headline
-code **or any of its lots**, and only `is_latest` rows are returned, so an amended tender
-appears once at its current version.
+procurement data is the same for every organization. A CPV filter matches **any code the tender
+states** — its headline code, every code its source lists for it (`cpvCodes`), or any lot's —
+and only `is_latest` rows are returned, so an amended tender appears once at its current
+version.
 
 **API:**
 `GET /api/v1/tenders`
@@ -934,7 +935,8 @@ No request body
 **Query parameters:**
 
 - `filter[cpv]` (optional): CPV code, or several — repeated params, a comma-separated string,
-  or `filter[cpv][]` array items. Each max 20 chars.
+  or `filter[cpv][]` array items. Each max 20 chars. A tender matches when it states one of them
+  exactly, anywhere: headline, `cpvCodes` or a lot.
 - `filter[keyword]` (optional): free-text search, max 200 chars. Empty string allowed.
 - `filter[buyerId]` (optional): buyer party id, max 40 chars.
 - `filter[region]` (optional): buyer region, max 100 chars.
@@ -955,9 +957,9 @@ No request body
   source's own label on every tender (Ապրանք / Աշխատանք / Ծառայություն). Anything else is a
   `422`, not an empty list.
 - `filter[field]` (optional): one or several [field](#list-fields) ids — repeat the parameter
-  for several; any of them matches. Resolved to the field's CPV prefixes and matched against the
-  headline code **or any lot**, like `filter[cpv]`, so a tender whose lot 7 of 18 is medical is
-  returned for `medical`. A tender with no CPV code anywhere matches no field. An unknown id is a
+  for several; any of them matches. Resolved to the field's CPV prefixes and matched against
+  **every code the tender states**, like `filter[cpv]`, so a tender whose lot 7 of 18 is medical
+  is returned for `medical`. A tender with no CPV code anywhere matches no field. An unknown id is a
   `422`.
 - `page[size]` (optional): 1–100, default 20.
 - `page[cursor]` (optional): opaque cursor from a previous `meta.cursor`, max 200 chars.
@@ -977,6 +979,7 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
       "title": "Շինարարական աշխատանքների գնում",
       "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
       "cpvCode": "45000000",
+      "cpvCodes": ["45000000", "45233120"],
       "procedureType": "e_auction",
       "submissionChannel": "eauction",
       "purchaseKind": "works",
@@ -1073,6 +1076,7 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
       "id": "cm9zx4k1p0010qw8fj3k9d2p1",
       "title": "Բժշկական պարագաների ձեռքբերում",
       "cpvCode": "33141110",
+      "cpvCodes": ["33141110", "33141211"],
       "purchaseKind": "goods",
       "status": "active",
       "deadlineAt": "2026-09-22T11:00:00.000Z",
@@ -1108,7 +1112,8 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
   screen is expected to show it — a number out of one has no units.
 - `relevance.reasons` — strongest first, as **codes plus values**, never prose, so the client
   writes the Armenian. A tender is scored on its **best-matching lot**, and `lot` names it
-  (`null` when the match is the tender's headline code). Empty for a tender that fits nothing.
+  (`null` when the match is a code of the tender's own that no lot carries — its headline code, or
+  one in `cpvCodes`). Empty for a tender that fits nothing.
   `level` is how close the CPV match is: `exact`, `group` (same 3 digits) or `division` (same 2).
 
 | `code` | Meaning | Values |
@@ -1202,6 +1207,7 @@ No request body
     "title": "Շինարարական աշխատանքների գնում",
     "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
     "cpvCode": "45000000",
+    "cpvCodes": ["45000000", "45233120"],
     "procedureType": "e_auction",
     "submissionChannel": "eauction",
     "purchaseKind": "works",
@@ -1255,6 +1261,14 @@ does all three. An ARMEPS tender has two: `armeps` (`detail`, its armeps.am page
 
 `buyer.taxId` (ՀՎՀՀ) is populated only for buyers, and only when the invitation archive was
 parsed. `cpvCode` is `null` for most of the corpus — CPV lives inside the invitation ZIP.
+
+**CPV codes.** `cpvCode` is the tender's primary code: the one an ARMEPS page leads with, or the
+most frequent across an e-auction's lots. `cpvCodes` is **every** code the source states for
+the tender, `cpvCode` included, sorted — `[]` when none is known yet. A code can be in
+`cpvCodes` and on no lot: an ARMEPS page lists the tender's codes without saying which lot each
+belongs to, and a lot gets one only when its name starts with that code's label. Saved-search
+alerts, the CPV and field filters and relevance all read every code — headline, `cpvCodes` and
+lots — so a search naming any of them finds the tender.
 
 **Documents and their files.** Each document is an archive the tender published; `files` lists
 what is inside it, each downloadable on its own through

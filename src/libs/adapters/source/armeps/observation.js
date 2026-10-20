@@ -62,10 +62,12 @@ export const observeDetail = (html, { externalId }) => {
       submissionChannel: SUBMISSION_CHANNEL,
       goodsWorksServices: cft.goodsWorksServices,
       evaluationMethod: cft.evaluationMethod,
-      // The page lists every CPV the tender is in, but has one column to put
-      // it in; the first is the one it leads with. Per-lot codes are written
-      // with the lots, by the document stage.
+      // The page lists every CPV the tender is in. The first is the one it
+      // leads with; all of them are facts about the tender, whether or not
+      // the document stage can put each on a lot (cpvForLots), because the
+      // page does not say which lot is which.
       cpvCode: cft.cpv[0]?.code ?? null,
+      cpvCodes: cft.cpv.map(({ code }) => code),
       description: null,
       estimatedValue: cft.estimatedValue,
       currency: 'AMD',

@@ -55,6 +55,7 @@ const candidateOf = (row) => ({
   title: row.title,
   referenceCode: row.reference_code,
   cpvCode: row.cpv_code,
+  cpvCodes: row.cpv_codes ?? [],
   buyerId: row.buyer_id,
   estimatedValue: row.estimated_value === null ? null : Number(row.estimated_value),
   deadlineAt: row.deadline_at,

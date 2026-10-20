@@ -626,8 +626,20 @@ decision that has already been made.
   of awarded tenders are missing (buyers file late, or never). It supplies results for ARMEPS
   tenders and only the bidder's ՀՎՀՀ for e-auctions. `awards` and `public_tender_bids` already
   have the `source` column it writes through.
-- **Empty on purpose:** `contracts` (post-award, phase 6) and `cpv_code` / `parties.tax_id` (both
-  live only inside the invitation ZIP — see the document stage).
+- **Empty on purpose:** `contracts` (post-award, phase 6) and, for e-auctions, `cpv_code` /
+  `cpv_codes` / `parties.tax_id` (all live only inside the invitation ZIP — see the document stage).
+- **A tender keeps every CPV code its source states** (ticket 17): `tenders.cpv_codes`, a sorted
+  `text[]` beside `cpv_code`, which stays the primary one. armeps.am lists a tender's codes without
+  saying which lot is which, so a code can be on the tender and on no lot — and it is still a fact
+  about the tender. The matcher, the discovery CPV and field filters and relevance all read
+  primary ∪ `cpv_codes` ∪ lot codes: `libs/cpv.js#tenderCodes` in JS, its SQL twin
+  `tender.repo.js#tenderCodesSql`, which must move together. A page-stated list (armeps.am) that
+  moves is an amendment; a **blank** stored list filled by a re-read is not, or the first refresh
+  after the deploy would re-notify every old tender. An e-auction's list is replaced by its
+  invitation archive and raises no event, like its lots — which is why its codes miss the ingest
+  alert today (ticket 25).
+  `npm run cpv:backfill` fills old rows from storage, writes the column only and raises no alert
+  (dry run by default; it reports the alerts the codes would have raised).
 - **Still no writer:** `contracts`, `subscriptions`, `invoices`, `audit_logs` — all phase 5/6.
 - **Telegram and email are the two live delivery channels**, driven by one policy engine.
   `services/notifier.service.js` owns recipient resolution, outcome mapping and delivery

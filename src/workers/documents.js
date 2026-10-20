@@ -156,6 +156,7 @@ export const handleTenderDocuments = async (job, token) => {
     storageKey: archiveKey,
     taxId: parsed.taxId,
     cpvCode: parsed.dominantCpv,
+    cpvCodes: parsed.cpvCodes,
     lots: parsed.lots,
     manifest,
   });

@@ -30,6 +30,15 @@ const money = (value) => {
 };
 
 /**
+ * A set of CPV codes in its stored form: each once, in order. A set, not a
+ * list — the order a page happens to print them in is not a fact about the
+ * tender, and must not read as an amendment when it moves.
+ */
+const codeSet = (codes) => [...new Set((codes ?? []).filter(Boolean).map(String))].sort();
+
+const sameCodes = (a, b) => codeSet(a).join() === codeSet(b).join();
+
+/**
  * Fields whose movement constitutes an amendment. Anything a supplier would
  * act on belongs here; bookkeeping (fetched_at, storage keys) does not.
  */
@@ -39,6 +48,7 @@ const fieldHash = (tender) =>
     buyerId: tender.buyerId,
     referenceCode: tender.referenceCode,
     cpvCode: tender.cpvCode,
+    cpvCodes: codeSet(tender.cpvCodes),
     procedureType: tender.procedureType,
     submissionChannel: tender.submissionChannel,
     goodsWorksServices: tender.goodsWorksServices,
@@ -62,6 +72,7 @@ const toRow = (tender, buyerId) => ({
   buyer_id: buyerId,
   reference_code: tender.referenceCode ?? null,
   cpv_code: tender.cpvCode ?? null,
+  cpv_codes: codeSet(tender.cpvCodes),
   procedure_type: tender.procedureType,
   submission_channel: tender.submissionChannel,
   goods_works_services: tender.goodsWorksServices ?? null,
@@ -210,9 +221,19 @@ const codeKeySql = (column) =>
   `upper(btrim(regexp_replace(regexp_replace(translate(replace(${column}, 'և', 'ԵՒ'), ` +
   `'‐‑‒–—―', '------'), '[«»"''“”„‘’]', '', 'g'), '\\s+', ' ', 'g')))`;
 
+/**
+ * Every code a tender states, as SQL over a `tenders` alias: the twin of
+ * libs/cpv.js#tenderCodes — primary code, the tender's own list, every lot's —
+ * so a filter in SQL reads the same list the matcher does. It may hold NULLs
+ * and repeats, which neither overlap (`&&`) nor `like any` is disturbed by.
+ */
+export const tenderCodesSql = (alias = 't') =>
+  `(array[${alias}.cpv_code]::text[] || ${alias}.cpv_codes || ` +
+  `array(select l.cpv_code::text from tender_lots l where l.tender_id = ${alias}.id))`;
+
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
-  't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
+  't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code', 't.cpv_codes',
   't.procedure_type', 't.submission_channel', 't.goods_works_services', 't.evaluation_method', 't.status', 't.source_status', 't.estimated_value',
   't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
   'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region',
@@ -226,10 +247,11 @@ export const BIDDABLE_STATUSES = ['active', 'amended'];
  * `parties as b`. One function for both lists, so every filter the plain list
  * has, the relevant list has too, and they cannot drift.
  *
- * CPV matches the tender headline code OR any of its lots. That is the whole
- * point of tender_lots: a tender whose lot 7 of 18 is a supplier's category
- * must surface for them, and matching only `tenders.cpv_code` would silently
- * hide it. A missed tender is the product's #1 churn cause.
+ * CPV matches any code the tender states — its primary code, every code its
+ * source lists for it, or any lot's (`tenderCodesSql`). A tender whose lot 7 of
+ * 18 is a supplier's category must surface for them, and so must one whose
+ * page names a code no lot carries; reading fewer codes would silently hide
+ * it. A missed tender is the product's #1 churn cause.
  */
 const applyDiscoveryFilters = (query, {
   cpvCodes = [],
@@ -247,11 +269,7 @@ const applyDiscoveryFilters = (query, {
   cpvPrefixes = [],
 } = {}) => {
   if (cpvCodes.length) {
-    query.where((q) =>
-      q.whereIn('t.cpv_code', cpvCodes).orWhereExists((sub) =>
-        sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereIn('l.cpv_code', cpvCodes)
-      )
-    );
+    query.whereRaw(`${tenderCodesSql('t')} && ?::text[]`, [cpvCodes]);
   }
 
   if (keyword) {
@@ -278,17 +296,15 @@ const applyDiscoveryFilters = (query, {
   if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
   if (purchaseKindLabels.length) query.whereIn('t.goods_works_services', purchaseKindLabels);
 
-  // A Field resolves to CPV prefixes, matched on the headline code OR any lot —
+  // A Field resolves to CPV prefixes, matched on every code the tender states —
   // the same reach as `cpvCodes` above, so the field filter is never a second,
   // narrower answer to "is this tender in my category". A tender with no CPV
   // anywhere cannot match, and that is accepted rather than guessed from text.
   if (cpvPrefixes.length) {
     const patterns = cpvPrefixes.map((prefix) => `${prefix}%`);
-    query.where((q) =>
-      q.whereRaw('t.cpv_code like any(?::text[])', [patterns]).orWhereExists((sub) =>
-        sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id')
-          .whereRaw('l.cpv_code like any(?::text[])', [patterns])
-      )
+    query.whereRaw(
+      `exists (select 1 from unnest(${tenderCodesSql('t')}) as c(code) where c.code like any(?::text[]))`,
+      [patterns]
     );
   }
   return query;
@@ -427,6 +443,29 @@ export default class TenderRepository {
       .andWhere('t.published_at', '<=', at)
       .andWhere('t.deadline_at', '>', at)
       .select(...LIST_COLUMNS, lotsColumn(trx, []));
+  }
+
+  /**
+   * Tenders with no CPV code list recorded, keyset by id — the ones stored
+   * before `cpv_codes` existed, for the backfill from storage. A tender whose
+   * source states no code at all stays in this set; that is what it states.
+   */
+  static async findWithoutCpvCodes({ afterId = null, limit = 200 } = {}, trx = db) {
+    const query = trx(TABLE).whereRaw('cardinality(cpv_codes) = 0').orderBy('id').limit(limit);
+    if (afterId) query.where('id', '>', afterId);
+    return query.select('id', 'source_id');
+  }
+
+  /**
+   * Record a tender's code list where none is recorded yet. A blank only, so
+   * the backfill can never overwrite what a live fetch wrote since it read the
+   * row. Writes the column and nothing else: no version, no event, no alert.
+   */
+  static async fillCpvCodes(id, codes, trx = db) {
+    const list = codeSet(codes);
+    if (!list.length) return false;
+    const updated = await trx(TABLE).where({ id }).whereRaw('cardinality(cpv_codes) = 0').update({ cpv_codes: list });
+    return updated > 0;
   }
 
   /** Full detail for one tender, including its lots, documents and source links. */
@@ -632,7 +671,8 @@ export default class TenderRepository {
 
   /**
    * Apply what the invitation archive revealed: the buyer's tax ID, the CPV
-   * code, and a `tender_documents` row for the archive itself.
+   * code, every CPV code it states, and a `tender_documents` row for the
+   * archive itself.
    *
    * These three fields exist nowhere in the HTML — only inside hraver.docx —
    * so this is the only path that can ever populate them. One transaction, so
@@ -646,6 +686,7 @@ export default class TenderRepository {
     storageKey,
     taxId,
     cpvCode,
+    cpvCodes = [],
     lots = [],
     manifest = null,
   }) {
@@ -658,6 +699,15 @@ export default class TenderRepository {
       if (cpvCode && !tender.cpv_code) {
         await trx(TABLE).where({ id: tender.id }).update({ cpv_code: cpvCode });
       }
+
+      // Replaced, not filled: for a source whose codes live only in the archive
+      // (e-auction), the archive is the authority on them, as it is on the lots
+      // below — and only when something parsed, for the same reason. A source
+      // whose page states its codes (armeps.am) passes none, and the page's
+      // list stands.
+      const codes = codeSet(cpvCodes);
+      const codesReplaced = codes.length > 0 && !sameCodes(tender.cpv_codes, codes);
+      if (codesReplaced) await trx(TABLE).where({ id: tender.id }).update({ cpv_codes: codes });
 
       const taxIdSet = taxId ? await parties.setTaxId(tender.buyer_id, taxId, trx) : false;
 
@@ -713,6 +763,7 @@ export default class TenderRepository {
       return {
         tenderId: tender.id,
         cpvSet: Boolean(cpvCode && !tender.cpv_code),
+        codesReplaced,
         taxIdSet,
         lotsSeen: lots.length,
         lotsWritten,
@@ -824,8 +875,22 @@ export default class TenderRepository {
       // applyInvitationFacts writes it after this row exists. A detail with no
       // CPV is silence, not a change — treating it as one wiped every stored
       // code and re-notified each tender as amended on every replay.
-      const candidate = { ...tender, buyerId, cpvCode: tender.cpvCode ?? existing?.cpv_code ?? null };
+      const candidate = {
+        ...tender,
+        buyerId,
+        cpvCode: tender.cpvCode ?? existing?.cpv_code ?? null,
+        // Same silence for the full list: e-auction's comes from the archive.
+        cpvCodes: tender.cpvCodes ?? existing?.cpv_codes ?? [],
+      };
       const row = toRow(candidate, buyerId);
+
+      // A tender stored before `cpv_codes` existed has an empty list, and the
+      // page re-read now states its codes. Filling that blank is recording what
+      // the tender always said, not a change: as an amendment it would
+      // re-notify every matching organization about every old tender the first
+      // time each was re-read after a deploy (ticket 17). A list that was
+      // recorded and then moves is an amendment like any other field.
+      const storedCodes = existing?.cpv_codes?.length ? existing.cpv_codes : row.cpv_codes;
 
       if (!existing) {
         const id = createId();
@@ -848,6 +913,7 @@ export default class TenderRepository {
           buyerId: existing.buyer_id,
           referenceCode: existing.reference_code,
           cpvCode: existing.cpv_code,
+          cpvCodes: storedCodes,
           procedureType: existing.procedure_type,
           submissionChannel: existing.submission_channel,
           goodsWorksServices: existing.goods_works_services,
@@ -865,6 +931,9 @@ export default class TenderRepository {
       await tenderSources.upsert({ ...link, tenderId: existing.id }, trx);
 
       if (unchanged) {
+        if (!sameCodes(existing.cpv_codes, row.cpv_codes)) {
+          await trx(TABLE).where({ id: existing.id }).update({ cpv_codes: row.cpv_codes });
+        }
         return { event: null, tenderId: existing.id, version: existing.version };
       }
 
@@ -884,7 +953,7 @@ export default class TenderRepository {
         event: 'TenderAmended',
         tenderId: existing.id,
         version: existing.version + 1,
-        changedFields: changedKeys(existing, row),
+        changedFields: changedKeys({ ...existing, cpv_codes: storedCodes }, row),
         ...ledger,
       };
     });

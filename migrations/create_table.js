@@ -24,7 +24,12 @@ function up(pg) {
       table.text('title').notNullable();
       table.text('description');
       table.string('buyer_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
+      // The primary CPV code: the one the source leads with (armeps.am) or the most frequent
+      // across the lots (e-auction's invitation).
       table.string('cpv_code');
+      // Every CPV code the source states, the primary one included, whether or not it can be
+      // put on a lot. Never NULL — "none recorded" is the empty list. GIN index in indexes().
+      table.specificType('cpv_codes', 'text[]').notNullable().defaultTo('{}');
       table.string('procedure_type').notNullable();
       // How a supplier submits: eauction | armeps | paper (CHECK in indexes()). No
       // default — a source that forgets to say must fail its insert rather than file a
@@ -658,6 +663,8 @@ async function indexes(pg) {
   await pg.raw(`ALTER TABLE organizations ADD CONSTRAINT organizations_type_max_chk
      CHECK (cardinality(type) <= 3)`);
 
+  // The discovery CPV filter asks for overlap (`&&`) with a set of codes.
+  await pg.raw('CREATE INDEX IF NOT EXISTS tenders_cpv_codes_idx ON tenders USING gin (cpv_codes)');
   await pg.raw(`ALTER TABLE tenders ADD CONSTRAINT tenders_submission_channel_chk
      CHECK (submission_channel IN ('eauction','armeps','paper'))`);
   await pg.raw(`ALTER TABLE tender_sources ADD CONSTRAINT tender_sources_role_chk
