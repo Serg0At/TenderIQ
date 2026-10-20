@@ -38,7 +38,7 @@ point, so nothing could consume a job, and none was added (below).
 **Schema.** `migrations/add_tender_cpv_codes.js` (`tenders.cpv_codes text[] NOT NULL DEFAULT '{}'`
 and a GIN index `tenders_cpv_codes_idx`) run twice on `tendra` (`columnAdded: true`, then
 `false`), mirrored into `create_table.js`, deleted in the next commit
-(`git show <that commit>~1:migrations/add_tender_cpv_codes.js`). **Neon is not touched**:
+(`git show 68d5740:migrations/add_tender_cpv_codes.js`). **Neon is not touched**:
 whoever migrates it runs that script, then `npm run cpv:backfill` (dry run), then
 `npm run cpv:backfill -- --apply`, with tickets 01, 05 and 14's scripts.
 
