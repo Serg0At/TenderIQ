@@ -3,7 +3,7 @@ import tenders from '../repositories/tender.repo.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import { ALERTABLE_STATUSES } from './matcher.service.js';
 import { alertsQueue } from '../queues/index.js';
-import { JOB, PRIORITY, matchJobId, codesMatchJobId } from '../queues/names.js';
+import { JOB, PRIORITY, matchJobId, documentsMatchJobId } from '../queues/names.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -59,18 +59,6 @@ export const isChanged = (change) =>
 export const isOpen = ({ status, deadlineAt }, now) =>
   ALERTABLE_STATUSES.includes(status) && (!deadlineAt || new Date(deadlineAt).getTime() > now.getTime());
 
-/**
- * Pure: whether codes that just landed re-run the ingest match (ticket 25).
- * An e-auction page states no CPV, so its ingest match ran before the archive
- * did and a CPV-only saved search never saw it. Guarded twice against
- * alerting on history: a backfill job never re-matches, and neither does a
- * tender a supplier can no longer bid on — which alone keeps
- * `documents:backfill` and the archive seed silent, their tenders being long
- * closed.
- */
-export const shouldRematchOnCodes = ({ codesLanded, tender }, priority, now) =>
-  Boolean(codesLanded) && priority !== PRIORITY.BACKFILL && isOpen(tender, now);
-
 /** `amended` replaces `active` only; a planned tender stays planned. */
 const statusAfter = (status, open) => (open && status === 'active' ? 'amended' : status);
 
@@ -95,10 +83,15 @@ export default class AddendumService {
    * amendment's and the document alert is lost; and two document jobs for one
    * tender running at once both compare with the same previous set.
    *
-   * The first set to carry CPV codes also re-runs the ingest match
-   * (`shouldRematchOnCodes`). A crash between the commit and that enqueue loses the
-   * re-match — the retry finds the codes already there — and leaves the
-   * ingest match's alerts as they were; accepted for the same reason.
+   * Every set stored for an open tender also runs the match again, as
+   * `TenderIngested` (ticket 25). An e-auction page states no CPV, so its
+   * ingest match ran before the archive's codes existed and a CPV-only saved
+   * search never saw it. Whether codes were there before is not asked: the
+   * notification dedupe makes a match that finds nothing new send nothing, so
+   * a retry, a re-issue (ticket 27) or an ARMEPS set whose codes the page
+   * already stated only ever adds. Open is the whole guard against history —
+   * what `documents:backfill` and the archive seed store is long closed, while
+   * an open tender whose live download failed is exactly the one to catch.
    */
   static async recordDocuments({ facts, ref, priority = PRIORITY.LIVE }, now = new Date()) {
     const previousStorageKey = (await sourcePayloads.findLatestByRef(facts.source, ref))?.storage_key ?? null;
@@ -125,15 +118,14 @@ export default class AddendumService {
     });
 
     // A `tender-match`, not an amendment: the organizations it adds have never
-    // heard of this tender. One already alerted by keyword is deduped by
-    // `notifications_dedupe_uq`, so this only ever adds.
-    if (!result.skipped && shouldRematchOnCodes(result, priority, now)) {
+    // heard of this tender. One already alerted is deduped by
+    // `notifications_dedupe_uq`.
+    if (!result.skipped && isOpen(result.tender, now)) {
       await alertsQueue.add(
         JOB.MATCH_TENDER,
         { tenderId: result.tenderId, event: 'TenderIngested', version: result.tender.version },
-        { jobId: codesMatchJobId(result.tenderId), priority }
+        { jobId: documentsMatchJobId(result.tenderId, facts.storageKey), priority }
       );
-      logger.info(`[documents] ${facts.sourceId}: CPV codes landed, re-matching`);
     }
 
     const { addendum } = result;

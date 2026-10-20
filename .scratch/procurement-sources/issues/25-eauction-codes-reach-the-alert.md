@@ -21,17 +21,32 @@ re-runs it once the codes land: `applyInvitationFacts` raises no event.
   its speed, and the second catches what codes add.
 - Notification dedupe makes the second run silent for an organization already alerted.
 
-The decisions below are therefore settled as follows:
+**Revised the same day, after review (owner's decision):** the trigger is broader and the priority
+guard is gone. The bullets below are struck where they no longer hold.
 
-- **Trigger:** the document stage writes a code list where the tender had none ("first land").
-  A later change of codes is an amendment and goes through that path, not this one.
+- **Trigger: an open tender's archive is stored.** Not "codes first land": that needs a "were there
+  codes before?" check, and a crash between the commit and the enqueue fell between it and the
+  retry, which found the codes already there. Storing an archive of an open tender → match has no
+  such state; the retry re-matches and dedupe absorbs the duplicate. It is cheap (an archive is
+  stored once per tender, plus the rare re-issue) and works with ticket 27: a re-issue with new
+  codes alerts newly matching organizations with a `tender-match`, while its addendum goes through
+  the amendment path ticket 18 built.
+- **One guard: the tender is open.** The backfill-priority guard did no work the open-tender guard
+  does not already do — what the archive seed and `documents:backfill` store is long closed — and
+  it did harm: a failed live download recovered by `documents:backfill` on a tender still open is
+  exactly the missed tender this ticket exists to catch, and it silenced that.
+
+The original decisions, as triaged:
+
+- ~~**Trigger:** the document stage writes a code list where the tender had none ("first land").
+  A later change of codes is an amendment and goes through that path, not this one.~~ Revised.
 - **Event and job:** `TenderIngested`, so the organization gets a `tender-match` for a tender it
-  has never heard of, under its own job id (for example `match-{id}-codes`), distinct from
-  `match-{id}-v{version}`.
+  has never heard of, under its own job id, distinct from `match-{id}-v{version}` — built as
+  `match-{id}-docs-{sha256(storage key)[:12]}`, one per stored archive.
 - **No alert on old tenders, guarded twice:** the tender must be alertable at the moment of the
   re-match (`ALERTABLE_STATUSES`, deadline not passed). This alone keeps `documents:backfill`
-  and the archive seed silent, since their tenders are long closed. Also, a job enqueued at
-  `PRIORITY.BACKFILL` never re-matches. Record both in the verification.
+  and the archive seed silent, since their tenders are long closed. ~~Also, a job enqueued at
+  `PRIORITY.BACKFILL` never re-matches.~~ Revised: removed. Record both in the verification.
 
 Measured on the local `tendra` database and Redis, 2026-10-20: of 851 e-auction `match-…-v1`
 jobs in `bull:alerts`, 787 had a stored invitation and **all 787 were queued before it was
@@ -64,35 +79,32 @@ Decisions this needs, not taken here:
 
 ## What was built — 2026-10-20
 
-- `tender.repo.js#applyInvitationFacts` returns `codesLanded`: codes parsed and the tender's stored
-  `cpv_codes` blank before this write. Codes are only ever replaced by a non-empty list, so this is
-  true at most once per tender.
-- `addendum.service.js#shouldRematchOnCodes` (pure): `codesLanded`, not `PRIORITY.BACKFILL`, and
-  `isOpen` — the same alertable-status-and-deadline rule the addendum alert uses. When it holds,
-  `recordDocuments` queues `match.tender` `{ event: 'TenderIngested', version }` under
-  `codesMatchJobId(id)` = `match-{id}-codes` (`queues/names.js`), at the job's own priority.
-- ARMEPS passes no `cpvCodes` to the document stage (its page states them), so it never triggers.
-- Known and accepted, as with the addendum's windows: a crash between the commit and the enqueue
-  loses the re-match, since the retry finds the codes already there. The ingest match's alerts are
-  unaffected.
-- Two edges, both rare and accepted: a first set that parsed no codes followed by a changed one
-  that does raises both the addendum's `amendment` and this `tender-match` (different types, so
-  dedupe keeps both); and an open tender with `cpv_code` set but `cpv_codes` blank (one
-  `cpv:backfill` has not reached) re-matches when its archive is next stored — deduped for any
-  organization its ingest match already alerted.
-- A replay only reaches this if a parser change makes it raise an event for an open e-auction
-  tender with no stored archive; that one would re-match at LIVE, which is the decision's intent (an
-  open tender nobody was CPV-matched on).
+- `AddendumService.recordDocuments` (`services/addendum.service.js`): after the transaction that
+  records a document set, if the tender is open (`isOpen`: an alertable status and a deadline
+  ahead or none — the rule the addendum alert already uses), it queues `match.tender`
+  `{ event: 'TenderIngested', version }` under `documentsMatchJobId(id, storageKey)` =
+  `match-{id}-docs-{sha256(storageKey)[:12]}` (`queues/names.js`), at the document job's priority.
+- That method is reached only for a new archive identity — e-auction's content hash, ARMEPS'
+  `documentSetHash`, both checked against `source_payloads` before it is called — and the storage
+  key names that identity. So it is one match per stored archive: a retry reuses the id (BullMQ
+  drops the add while the finished job is retained, notification dedupe after that), and a
+  re-issue gets its own.
+- Both sources: ARMEPS sets stored for an open tender re-match too. Their lot names arrive with
+  the documents, so a keyword on a lot name now fires there as well; otherwise dedupe keeps it
+  silent.
+- When an addendum and a re-match fall on one set, both are queued: the `amendment` for
+  organizations already matched, the `tender-match` for any the new set newly matches (different
+  types, so dedupe keeps both).
 - No test runner exists (CLAUDE.md), so the verification below is the check, as for ticket 18.
 
 ## Verification — 2026-10-20
 
 Against the local database `tendra`, the local MinIO bucket and the local Redis. No worker was
 running. The handlers ran directly (`handleTenderDocuments`, `handleTenderMatched`,
-`normalizeTender`); the invitation was fetched from the source through the production client and
-rate limiter. Local `tendra` had no saved searches and no live channel subscriptions, so nothing
-could be delivered anywhere; a throwaway organization with one saved search, `cpv_codes:
-['31161110']` and no keywords, was created and deleted afterwards.
+`normalizeTender`); every invitation was fetched from the source through the production client
+and rate limiter. Local `tendra` had no saved searches and no live channel subscriptions, so
+nothing could be delivered anywhere; a throwaway organization with one saved search,
+`cpv_codes: ['31161110']` and no keywords, was created and deleted afterwards.
 
 Tender `eauction:48112` (`yc48ii1eicbq617wp3ogbbnz`, active, deadline 2026-11-02, v1, one code,
 `31161110`, which only its invitation states), reset to "just published": no codes, no lots, no
@@ -100,24 +112,32 @@ document row, no invitation payload.
 
 | step | result |
 |---|---|
-| 1. ingest match, before the archive | 1 profile, **0 matched**, 0 notifications — the bug |
-| 2. documents stage, `PRIORITY.LIVE` | `codesLanded: true`; queued `match-yc48ii1eicbq617wp3ogbbnz-codes`, `TenderIngested`, v1, priority 1 |
-| — that job, run | 1 matched, **1 `tender-match`** (subject NULL), delivered to the org's `log` default |
-| — the same job re-run (a retry) | 0 notified; still 1 notification (dedupe) |
-| 3. replay: `normalizeTender` on the latest `detail:48112` payload, `normalize:replay`'s job data | `event: null`; no alert job, no document job (fetch queue delta 0) |
-| — documents stage re-run | `{ unchanged: true }` (content hash); no codes job |
-| 4. reset again, documents stage at `PRIORITY.BACKFILL` on the **open** tender | `codesLanded: true`, **no codes job** — the priority guard on its own |
-| tender after | `cpv_code`, `cpv_codes`, 1 lot, v1, `active` — as before |
+| 1. ingest match, before the archive | 0 matched, 0 notifications — the bug |
+| 2. archive stored, `PRIORITY.LIVE` | queued `match-yc48ii1eicbq617wp3ogbbnz-docs-dadae06eb9c0`, `TenderIngested` |
+| — that job, run | **1 `tender-match`** |
+| 3. crash before the payload row: payload row deleted, document stage re-run | the archive is stored again; the add is a no-op — still one job, same id, same timestamp |
+| — the match run again | 0 notified; still 1 notification (dedupe) |
+| 4. replay: `normalizeTender` on the latest `detail:48112` payload, `normalize:replay`'s job data | `event: null`; no match job, no document job (fetch queue delta 0) |
+| — document stage re-run | `{ unchanged: true }` (content hash); no match job |
+| 5. reset again; archive stored by a `PRIORITY.BACKFILL` job (a live download recovered by `documents:backfill`) | **queued** the same id at priority 10; run, 0 notified (already alerted) |
+| tender after | `cpv_code`, `cpv_codes`, v1, `active` — as before |
 
-`documents:backfill`, on its real jobs: the fetch queue held 500 `tender.documents` jobs at
-`PRIORITY.BACKFILL`; 64 of them for tenders with no codes yet (45 awarded, 17 cancelled, 2
-closed). Three were run through the handler and removed from the queue:
+`documents:backfill` on its real jobs: the fetch queue held ~500 `tender.documents` jobs at
+`PRIORITY.BACKFILL`, 64 of them for tenders with no codes yet (45 awarded, 17 cancelled, 2
+closed — none open). Six were run through the handler and removed from the queue; each stored its
+codes and queued **no match**:
 
-| tender | status | codes landed | codes job |
-|---|---|---|---|
-| `eauction:46862` | cancelled | `09132200` | none |
-| `eauction:46870` | awarded | `92111210` | none |
-| `eauction:46905` | awarded | `09132200` | none |
+| tender | status | codes |
+|---|---|---|
+| `eauction:46862` | cancelled | `09132200` |
+| `eauction:46870` | awarded | `92111210` |
+| `eauction:46905` | awarded | `09132200` |
+| `eauction:46834` | awarded | `63521200` |
+| `eauction:46835` | awarded | six codes |
+| `eauction:46836` | awarded | three codes |
 
-The status guard on its own: `eauction:47781` (closed, ten codes), reset and run at
-`PRIORITY.LIVE` — `codesLanded: true`, **no codes job**; its ten codes were restored by the run.
+(The first three ran under the first build, which also had the priority guard; the last three
+under this one, where the open-tender guard alone kept them silent.)
+
+The open-tender guard at live priority: `eauction:47781` (closed, ten codes), reset and stored at
+`PRIORITY.LIVE` — **no match job**; its ten codes were restored by the run.

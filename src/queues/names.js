@@ -1,3 +1,5 @@
+import { sha256 } from '../utils/hash.js';
+
 /**
  * Producers (scheduler, API) and consumers (workers) live in different
  * processes, so a mistyped queue or job name does not crash anything — it
@@ -171,11 +173,13 @@ export const PRIORITY = {
 export const matchJobId = (tenderId, version) => `match-${tenderId}-v${version}`;
 
 /**
- * The second ingest match of a tender whose CPV codes reached it only after
- * the first one ran — an e-auction's live in its invitation archive (ticket
- * 25). Its own id because the first match holds `matchJobId(id, 1)` and BullMQ
- * keeps a finished job's id; once per tender, since codes land only once.
+ * The match that runs again when a tender's archive is stored (ticket 25): an
+ * e-auction's CPV codes, and both sources' lot names, arrive with it, after the
+ * ingest match has run. One per stored archive, keyed on its storage key —
+ * which names the archive's identity — so a retry reuses the id and a re-issue
+ * gets its own. Hashed because the key holds slashes.
  */
-export const codesMatchJobId = (tenderId) => `match-${tenderId}-codes`;
+export const documentsMatchJobId = (tenderId, storageKey) =>
+  `match-${tenderId}-docs-${sha256(storageKey).slice(0, 12)}`;
 
-export default { QUEUE, JOB, PRIORITY, matchJobId, codesMatchJobId };
+export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId };

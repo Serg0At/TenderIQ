@@ -438,17 +438,19 @@ re-normalize would revert it and alert a status change. e-auction's invitation i
 document job is keyed on the invitation URL, which never changes, so a re-issue is downloaded
 again only when the detail page changes more than a day after the last download (ticket 27).
 
-**CPV codes that land after the ingest match.** An e-auction page states no CPV; the codes are in
-the invitation archive, whose download waits on the politeness budget while the ingest match runs
-at once, so that match never sees them. When the document stage writes a code list where the
-tender had none, `services/addendum.service.js` queues a second `match.tender` with `event:
-TenderIngested` under `match-{tenderId}-codes` — a `tender-match`, since the organizations it adds
-have never heard of the tender, and silent for one already alerted by keyword (notification
-dedupe). The ingest match is not held back for it: that would delay every e-auction alert by the
-archive queue's wait, and a download that failed for good would mean no alert at all. Guarded
-twice against alerting on history: the tender must be open (alertable status, deadline ahead) and
-the job must not be `PRIORITY.BACKFILL`, which keeps `documents:backfill` and the archive seed
-silent. A later change of codes is not this — it goes through the amendment path.
+**What arrives with the archive.** An e-auction page states no CPV; the codes are in the
+invitation archive, whose download waits on the politeness budget while the ingest match runs at
+once, so that match never sees them. So every document set stored for an **open** tender (alertable
+status, deadline ahead) queues a second `match.tender` with `event: TenderIngested`, under
+`match-{tenderId}-docs-{sha256(storageKey)[:12]}` — one per stored archive, so a retry reuses the
+id and a re-issue gets its own. It is a `tender-match`, since the organizations it adds have never
+heard of the tender, and silent for one already alerted (notification dedupe). Whether codes were
+there before is deliberately not asked: there is no state for a crash between commit and enqueue
+to fall between. Both sources do it; ARMEPS lot names arrive the same way. The ingest match is not
+held back for it: that would delay every e-auction alert by the archive queue's wait, and a
+download that failed for good would mean no alert at all. Open is the only guard against history,
+and it is enough — what `documents:backfill` and the archive seed store is long closed — while an
+open tender whose live download `documents:backfill` recovers is exactly the one to alert on.
 
 **Redis outage.** Producers fail fast, queues are durable, workers resume on recovery. The API
 keeps serving last-known data from PostgreSQL.
