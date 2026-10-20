@@ -639,6 +639,12 @@ decision that has already been made.
   tender's first set is not an addendum, and an unknown previous list raises nothing.
   `deriveStatus` keeps `amended` over a page that says "open". Both sources, one rule; but an
   e-auction re-issue is rarely re-downloaded at all (ticket 27).
+- **An amendment reaches trackers too** (ticket 28): the matcher's recipients for an amendment
+  are the matched organizations ∪ those tracking the tender at `considering`, `preparing` or
+  `submitted` (`AMENDMENT_PURSUITS`) — `submitted` because a sealed ARMEPS or paper bid can be
+  withdrawn before the deadline. One job, one producer, one `(amendment, v{version})` dedupe
+  key, so matching and tracking is one alert. Ingest alerts stay saved-search only. The matcher
+  applies the open rule (deadline ahead) to every amendment, the normalizer's included.
 - **A tender keeps every CPV code its source states** (ticket 17): `tenders.cpv_codes`, a sorted
   `text[]` beside `cpv_code`, which stays the primary one. armeps.am lists a tender's codes without
   saying which lot is which, so a code can be on the tender and on no lot — and it is still a fact

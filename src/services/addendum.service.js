@@ -1,7 +1,7 @@
 import { withTransaction } from '../libs/knex.js';
 import tenders from '../repositories/tender.repo.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
-import { ALERTABLE_STATUSES } from './matcher.service.js';
+import { isOpen } from './matcher.service.js';
 import { alertsQueue } from '../queues/index.js';
 import { JOB, PRIORITY, matchJobId, documentsMatchJobId } from '../queues/names.js';
 import { logger } from '../utils/logger.js';
@@ -48,16 +48,6 @@ export const documentChange = (previous, next) => {
 
 export const isChanged = (change) =>
   Boolean(change && (change.added.length || change.replaced.length || change.removed.length));
-
-/**
- * Pure: whether a supplier could still act on an addendum — a status the
- * matcher alerts on (planned, active, amended) and a deadline ahead or none.
- * Past the deadline, closed, awarded or cancelled, the version is recorded and
- * nobody is told. The deadline half is the one tender.repo.js#findRankable
- * applies in SQL for a biddable tender; they move together.
- */
-export const isOpen = ({ status, deadlineAt }, now) =>
-  ALERTABLE_STATUSES.includes(status) && (!deadlineAt || new Date(deadlineAt).getTime() > now.getTime());
 
 /** `amended` replaces `active` only; a planned tender stays planned. */
 const statusAfter = (status, open) => (open && status === 'active' ? 'amended' : status);

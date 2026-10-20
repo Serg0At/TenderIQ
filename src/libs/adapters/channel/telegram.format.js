@@ -126,9 +126,10 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
   // is more precise than re-deriving it from the deadline at send time.
   if (payload.hoursRemaining) facts.push(`⏳ ${escapeHtml(`${payload.hoursRemaining}h remaining`)}`);
 
-  // The pipeline stage, on countdowns only. "still considering" three hours out
-  // is a different message from "preparing", and it is the whole reason this
-  // alert is separate from the matched reminder. Must be pushed BEFORE `facts`
+  // The pipeline stage, on countdowns and on an amendment to a tracked tender.
+  // "still considering" three hours out is a different message from
+  // "preparing", and it is the whole reason the countdown is separate from the
+  // matched reminder. Must be pushed BEFORE `facts`
   // is spread into `lines` — after it, the array is already copied.
   if (payload.pipelineStatus) facts.push(`📋 ${escapeHtml(payload.pipelineStatus)}`);
 

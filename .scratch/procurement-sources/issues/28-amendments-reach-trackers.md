@@ -8,7 +8,7 @@ only organizations whose saved searches match.
 
 **Blocked by:** None. Ticket 18 is done.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Triage (2026-10-20):**
 
@@ -28,9 +28,9 @@ only organizations whose saved searches match.
 
 Acceptance:
 
-- [ ] A tracking organization with no matching saved search gets exactly one alert per amendment
+- [x] A tracking organization with no matching saved search gets exactly one alert per amendment
       version. One that also matches gets one, not two. `won`, `lost` and `dropped` get none.
-- [ ] Verified with throwaway organizations on a real amended tender (ticket 18's 12544122 is
+- [x] Verified with throwaway organizations on a real amended tender (ticket 18's 12544122 is
       v2 `amended`). Delete them afterwards.
 
 Open questions, now answered above:
@@ -43,3 +43,50 @@ Open questions, now answered above:
   type and subject.
 - Do saved-search matches and tracking share one job (the matcher resolves both), or does each
   get its own producer?
+
+## Done (2026-10-20)
+
+`workers/matcher.js` resolves an amendment's recipients with `alertRecipients`
+(`services/matcher.service.js`): the matched organizations ∪ `trackedTenders.trackersOf(tender,
+AMENDMENT_PURSUITS)`, one recipient per organization. A tracker no search matched gets
+`matchedSearches: []`, `score: null`, `reasons: []`; every tracker gets `pipelineStatus`, which
+both channels already render (the countdown's "📋 preparing" / "Your pipeline status").
+
+**Verified** on 12544122 (v2, `amended`, deadline 2026-11-20) with 7 throwaway organizations, then
+deleted (7 orgs, 1 user; the database is back to its one real organization):
+
+| Organization | Alerts |
+|---|---|
+| tracks `preparing`, no search | 1 |
+| tracks `submitted` + a matching search | 1, carrying both the search and `submitted` |
+| matching search only | 1 |
+| tracks `won` / `lost` / `dropped` | 0 each |
+| tracks `considering` | 1 |
+
+A second run of the same job created 0. A `TenderIngested` run alerted only the two organizations
+with a search. An amendment job on an `active` tender whose deadline had passed returned
+`skipped: deadline_passed`.
+
+**Decided while building. Sergey to confirm:**
+
+- **The deadline half of the open rule now applies to every amendment.** That covers the
+  normalizer's field amendments and organizations that only match, not just addenda. Before this,
+  a field amendment past the deadline alerted every matching organization as long as the status
+  was alertable. Without the rule, a results page landing on a tracked tender would reach its
+  trackers as an "amendment", which the triage rules out. `isOpen` moved into
+  `matcher.service.js`, next to `ALERTABLE_STATUSES`, and `addendum.service.js` imports it from
+  there. Side effect: a job that retries past the deadline is dropped as `deadline_passed`.
+- **Tracking widens channels the way an empty search does.** An organization that tracks gets
+  every channel it has linked, even if its only matching search names one (`channelsForMatches(…,
+  { tracking })`). Tracking names no channel, so it means "however we can reach you". Before
+  this, a search naming only Telegram kept that organization's amendment on Telegram alone.
+
+**Review (`/code-review`).** Fixed:
+- the stale "countdowns only" comments in both formatters;
+- the recipient shape was built twice, and now has one builder;
+- the channel rule moved out of the worker;
+- `isOpen` moved to `matcher.service.js`;
+- the counter was renamed.
+
+Left as is: `trackersOf` reads across organizations, the same way `dueForCountdown` does. Its
+result only leaves the method as a notification raised inside each organization.

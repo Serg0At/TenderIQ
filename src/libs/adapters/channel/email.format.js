@@ -169,8 +169,8 @@ const tenderBody = (notification, payload, now) => {
   // Computed by the reminder worker against the threshold it fired at, which is
   // more precise than re-deriving it from the deadline at send time.
   if (payload.hoursRemaining) facts.push(['Remaining', `${payload.hoursRemaining}h`]);
-  // The pipeline stage, on countdowns only. "still considering" three hours out
-  // is a different message from "preparing".
+  // The pipeline stage, on countdowns and on an amendment to a tracked tender.
+  // "still considering" three hours out is a different message from "preparing".
   if (payload.pipelineStatus) facts.push(['Your pipeline status', payload.pipelineStatus]);
 
   const lines = [];

@@ -4007,7 +4007,7 @@ No request body
 | Type | Raised by | Extra payload fields |
 |---|---|---|
 | `tender-match` | matcher | `score`, `reasons`, `matchedSearches` |
-| `amendment` | matcher | `score`, `reasons`, `matchedSearches`, `changedFields`; an addendum adds `documentChanges` (`added`, `replaced`, `removed` file names) and has `changedFields: []` |
+| `amendment` | matcher | `score`, `reasons`, `matchedSearches`, `changedFields`; an addendum adds `documentChanges` (`added`, `replaced`, `removed` file names) and has `changedFields: []`; a tracking organization adds `pipelineStatus` |
 | `reminder-72h`, `reminder-24h` | reminder (matched safety net) | `hoursRemaining` |
 | `countdown-48h`, `countdown-12h`, `countdown-3h` | reminder (pipeline countdown) | `hoursRemaining`, `trackedTenderId`, `pipelineStatus` |
 | `vault-expiry-30d`, `vault-expiry-7d`, `vault-expiry-1d` | vault expiry sweep | `documentId`, `kind`, `filename`, `validUntil`, `daysRemaining` |
@@ -4024,6 +4024,13 @@ schema-constrained. `tenderId` is `null` on vault alerts — those dedupe on
 `(organization_id, type, tender_id, subject_id)` with `NULLS NOT DISTINCT`. An `amendment`
 carries `subject_id` = `v{version}`, so each amendment of a tender alerts once and a second one
 is a new alert.
+
+An `amendment` reaches every organization whose saved searches match the tender **and** every
+organization tracking it at `considering`, `preparing` or `submitted` — one alert per
+organization, however many reasons it has. A tracker that no search matched gets
+`matchedSearches: []`, `score: null` and `reasons: []`; `pipelineStatus` says why it was told.
+Only while the tender is open (`planned`, `active` or `amended`, deadline ahead or none). A
+`tender-match` reaches saved searches only.
 
 **Errors:**
 

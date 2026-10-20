@@ -193,6 +193,23 @@ export default class TrackedTenderRepository {
   }
 
   /**
+   * Every organization pursuing one tender, in one of `statuses` — who hears
+   * about its amendments besides the saved searches that match it.
+   *
+   * Across organizations by design, like `dueForCountdown`: the question is
+   * "who is chasing this tender", and the answer only ever leaves this method
+   * as a notification raised inside each organization's own tenant. Ordered by
+   * organization so a run's alerts go out in a stable order.
+   */
+  static async trackersOf(tenderId, statuses, trx = db) {
+    return trx(TABLE)
+      .where({ tender_id: tenderId })
+      .whereIn('status', statuses)
+      .orderBy('organization_id')
+      .select('organization_id', 'status');
+  }
+
+  /**
    * Tracked tenders with a deadline inside the window — the countdown's input.
    *
    * Deliberately narrower than `notifications.dueForReminder`, which fires on
