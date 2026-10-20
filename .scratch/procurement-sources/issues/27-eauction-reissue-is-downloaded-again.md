@@ -8,7 +8,7 @@ measuring for ticket 18 on 2026-10-20.
 **Blocked by:** None. Ticket 18 is done; the rule already applies to e-auction once a second
 archive is stored.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Triage (2026-10-20):** the ticket is right as written. One preference and one budget:
 
@@ -42,15 +42,74 @@ Why a re-issue is missed:
 
 Acceptance criteria:
 
-- [ ] Find out on a live tender whether an invitation re-issue changes the e-auction detail page
-      (a new link, a date, a status). Record it here.
-- [ ] Open e-auction tenders have their invitation re-checked on a schedule, within the 20/min
-      budget, the counterpart of ARMEPS's refresh. Or, if the detail page does change on a
-      re-issue, the document job id carries something that changes with it. Record which, and
-      what it costs in requests per day.
-- [ ] A re-check of an unchanged invitation writes nothing (byte-hash dedupe already does this).
-- [ ] Verified by hand on one real re-issue: two archives stored, a new `version`, and one
-      `TenderAmended` alert job naming the new file.
+- [x] Find out on a live tender whether an invitation re-issue changes the e-auction detail page
+      (a new link, a date, a status). Record it here. **There is no in-place re-issue to find.**
+      An e-auction amendment is a new tender. See *Outcome* below.
+- [x] Open e-auction tenders have their invitation re-checked on a schedule… **Not built, by
+      decision (2026-10-20).** It would cost 728 requests a day and, on the evidence below,
+      never find anything. Its cost and the server's conditional-request support are recorded
+      below, for the day a source does rewrite a file in place.
+- [x] A re-check of an unchanged invitation writes nothing. Already true: byte-hash dedupe. The
+      server would not even send the bytes (304).
+- [ ] ~~Verified by hand on one real re-issue~~. No in-place re-issue exists to verify. The real
+      mechanism is ticket 29.
+
+## Outcome (2026-10-20)
+
+**An e-auction invitation is written once, at publication, and never again.** All 266 open
+e-auction invitations were checked with a HEAD request, 3 s apart. Every `Last-Modified` fell
+within 10 minutes of the tender's `published_at`, and none was later than our download. 0 of 266
+had changed.
+
+**An amendment is published as a new tender with a new tid**, and the original disappears:
+
+- The replacement's detail page carries a block «Աճուրդի սկզբնական հրավեր(ներ)» (initial
+  auction invitation(s)): a table of code, publish time and a link to every predecessor tid.
+  Example: 48185 (published 2026-10-16 16:44, deadline 10-27) links to 48159 (published
+  11:26 the same day, deadline 10-26). Both carry code `ՌՀԱԲԿ ԷԱԱՊՁԲ 27/02`. Some link two
+  predecessors (46964 → 46826, 46963), which is an amendment of an amendment.
+- The original's page says **Կարգավիճակ: Փոփոխված** (amended). `detail.parser.js#STATUS` has
+  no mapping for that label. The original's own invitation file is unchanged: 48159's
+  `Last-Modified` is still its publish time.
+- **The public listing hides Փոփոխված tenders.** Listing page 3 runs from 48177 to 48147 and
+  skips 48159. So the original stops being reachable by the sweep the moment it is amended.
+- `popoxutyan_pastatuxt.*` (the amendment notice) is the replacement's archive, not a re-issue
+  of the original's. In the local database: every one of the 84 archives holding it belongs to
+  a tender whose page links a predecessor. There are 90 such replacement tenders, linking 113
+  predecessors, and **none of the 113 is in the database**. Local ingestion started after they
+  were amended, and the listing never showed them again.
+
+**So ticket 18's addendum rule never fires for e-auction**, and that is correct: no tender ever
+gets a second archive. What goes wrong is elsewhere. With a live sweep running continuously, an
+original *is* ingested while it is Հրապարակված, and then:
+
+- it stays `active` with the old deadline and old documents, because no sweep sees it again;
+- after the deadline, `tender.refresh` reads Փոփոխված. That label is unmapped, so status
+  degrades to `closed`, which is non-terminal, so the tender is re-read hourly for
+  `refreshWindowDays` (30) and wastes about 720 requests;
+- an organization tracking it gets no amendment alert (ticket 28 cannot help, because no
+  amendment is raised);
+- the replacement arrives as a separate new tender. A saved search hears of it as new; a
+  tracker of the original does not.
+
+That is ticket 29.
+
+**Cost of the schedule as specified, measured, not built:**
+
+| | |
+|---|---|
+| Open e-auction tenders (status `active`/`amended`, deadline ahead) | 182 |
+| Rows with status `active` regardless of deadline | 267 |
+| Requests/day at every 6 hours | **728** (1,068 counting every `active` row) |
+| Budget (`rateLimit` 20/min, the ticket's figure) | 28,800/day; at the uncommitted 32/min, 46,080 |
+| Cost of an unchanged invitation | one 304, 0 bytes |
+| Changes it would have found today | 0 of 266 |
+
+**The invitation host (nginx) honours conditional requests.** Its headers are `ETag`
+(`"690c2-65df6dc339902"` form), `Last-Modified`, and `Accept-Ranges: bytes`. Both
+`If-None-Match` and `If-Modified-Since` answer `304` with an empty body, and a stale `ETag`
+answers 200 with the full file. `utils/http.js#fetchPage` already sends both headers when given
+them; `fetchDocument` does not pass any today.
 
 Side finding, not this ticket: of the 396 archives without a `source_payloads` row (ticket 14
 called them "older content hashes of a re-issued invitation"; they are not), 332 belong to no

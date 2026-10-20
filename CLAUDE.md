@@ -641,8 +641,11 @@ decision that has already been made.
   ordinary amendment alert with `changedFields: []` and `documentChanges` — the alert names
   files, never a field. Past the deadline, closed, awarded or cancelled: version only, no alert. A
   tender's first set is not an addendum, and an unknown previous list raises nothing.
-  `deriveStatus` keeps `amended` over a page that says "open". Both sources, one rule; but an
-  e-auction re-issue is rarely re-downloaded at all (ticket 27).
+  `deriveStatus` keeps `amended` over a page that says "open". Both sources, one rule, but it
+  only ever fires for ARMEPS: an e-auction invitation is written once and never re-issued
+  (ticket 27). An e-auction amendment is a **new tid** linking its predecessor under
+  «Աճուրդի սկզբնական հրավեր(ներ)»; the original turns Փոփոխված (unmapped) and leaves the
+  listing. Nothing handles that yet — ticket 29.
 - **An amendment reaches trackers too** (ticket 28): the matcher's recipients for an amendment
   are the matched organizations ∪ those tracking the tender at `considering`, `preparing` or
   `submitted` (`AMENDMENT_PURSUITS`) — `submitted` because a sealed ARMEPS or paper bid can be

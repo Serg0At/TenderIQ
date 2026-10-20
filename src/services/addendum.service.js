@@ -78,7 +78,7 @@ export default class AddendumService {
    * ingest match ran before the archive's codes existed and a CPV-only saved
    * search never saw it. Whether codes were there before is not asked: the
    * notification dedupe makes a match that finds nothing new send nothing, so
-   * a retry, a re-issue (ticket 27) or an ARMEPS set whose codes the page
+   * a retry, a re-download or an ARMEPS set whose codes the page
    * already stated only ever adds. Open is the whole guard against history —
    * what `documents:backfill` and the archive seed store is long closed, while
    * an open tender whose live download failed is exactly the one to catch.

@@ -433,10 +433,11 @@ status, deadline ahead), and queues
 the deadline, closed, awarded or cancelled, the version is recorded and nothing is queued. A tender's
 first set is its documents, not an addendum, and a set whose previous list is unknown raises
 nothing (logged). `deriveStatus` keeps `amended` over a page that says "open", or the next
-re-normalize would revert it and alert a status change. e-auction's invitation is a static file
-(byte-identical across downloads), so its byte-hash dedupe and the file-set rule agree; but its
-document job is keyed on the invitation URL, which never changes, so a re-issue is downloaded
-again only when the detail page changes more than a day after the last download (ticket 27).
+re-normalize would revert it and alert a status change. e-auction never needs it: its invitation
+is a static file written once at publication (266 of 266 open tenders, ticket 27). An amendment
+there is a **new tid** whose page links its predecessor under «Աճուրդի սկզբնական հրավեր(ներ)»,
+while the original turns Փոփոխված and leaves the listing — ticket 29. So the document job's
+URL-keyed id is right, and no scheduled re-check of the invitation exists.
 
 **What arrives with the archive.** An e-auction page states no CPV; the codes are in the
 invitation archive, whose download waits on the politeness budget while the ingest match runs at

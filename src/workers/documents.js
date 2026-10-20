@@ -109,8 +109,9 @@ export const handleTenderDocuments = async (job, token) => {
     );
   }
 
-  // Content-hash dedupe, identical to the detail stage: a re-issued invitation
-  // is a new object, an unchanged one costs a request and nothing more.
+  // Content-hash dedupe, identical to the detail stage: an unchanged invitation
+  // costs a request and nothing more. The site writes the file once, at
+  // publication (ticket 27), so a second hash here is not expected.
   const ref = DOC_REF(sourceId);
   const hash = sha256(bytes);
   if (await sourcePayloads.existsWithHash(source, ref, hash)) {
@@ -154,9 +155,9 @@ export const handleTenderDocuments = async (job, token) => {
     log.warn(`invitation archive could not be listed: ${error.message}`);
   }
 
-  // The invitation lives at one URL for the tender's whole life, and a
-  // re-issue replaces it there. What it replaced is the set stored last; if
-  // the buyer's files differ from it, that is an addendum.
+  // The invitation lives at one URL for the tender's whole life. If its files
+  // ever differ from the set stored last, that is an addendum — but e-auction
+  // amends by publishing a new tid, not a new file here (ticket 29).
   const facts = await AddendumService.recordDocuments({
     facts: {
       source,
