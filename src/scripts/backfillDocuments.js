@@ -45,7 +45,8 @@ const run = async () => {
 
   let queued = 0;
   for (const tender of pending) {
-    const sourceId = tender.source_id.slice(source.length + 1);
+    // The current link: an amended e-auction's creating id is a dead run (ticket 29).
+    const sourceId = tender.external_id;
     await ingestFetchQueue.add(
       JOB.TENDER_DOCUMENTS,
       { source, sourceId, invitationUrl: tender.invitation_url },

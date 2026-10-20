@@ -77,6 +77,25 @@ items are skipped, because they point by a `tmid` UUID that no stored eauction p
 
 **The source key `armeps` is renamed `eauction`** before armeps.am becomes a second source.
 
+## E-auction amendments (2026-10-21, ticket 29)
+
+eauction.armeps.am amends a tender by publishing a **new tid**. The new page lists every run it
+replaced under «Աճուրդի սկզբնական հրավեր(ներ)»; the old page turns Փոփոխված and leaves the
+listing. That list is a pointer in the sense of rule 2, so **the replacement joins the tender
+of the run it names**, and the join is an amendment: `version + 1`, one alert naming the moved
+fields and the archive's changed files. Two consequences:
+
+- **The pointer decides, not the code.** A same-code tender that names no predecessor is a
+  re-announcement and a new run, as above. The six re-announced codes checked on 2026-10-21 carry
+  no block; the one block among them (48135 → 48118) is a separate amendment, cancelled
+  afterwards and re-announced as 48140.
+- **A tender's current link is not its creating link.** The named runs become `superseded` links
+  (`tender_sources.observed_status`, sticky), recorded with no request, even for a predecessor
+  Tendra never fetched. A superseded link is never refreshed, and its pages and archives write
+  nothing but the link. The refresh and the document stage read the one current link per
+  source; `tenders.source_id` stays the creating link. Predecessors on two different tenders are
+  `ambiguous` and are not merged.
+
 ## Considered options
 
 - **A tender is a procedure code, with runs inside it.** One card per code, but alerts, pursuits

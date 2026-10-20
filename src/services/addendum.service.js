@@ -1,6 +1,5 @@
 import { withTransaction } from '../libs/knex.js';
 import tenders from '../repositories/tender.repo.js';
-import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import { isOpen } from './matcher.service.js';
 import { alertsQueue } from '../queues/index.js';
 import { JOB, PRIORITY, matchJobId, documentsMatchJobId } from '../queues/names.js';
@@ -58,11 +57,11 @@ export default class AddendumService {
    * before it, raise the addendum: a new `version`, `amended` while the tender
    * is biddable, and the amendment alert through the matcher.
    *
-   * `facts` are `tenders.applyInvitationFacts`' input; `ref` is the document
-   * set's `source_payloads` ref. What it is compared with is the set stored
-   * last under that ref — read before this one is recorded, which the caller
-   * does after this returns. With none, this is the tender's first set: its
-   * documents, not an addendum.
+   * `facts` are `tenders.applyInvitationFacts`' input. What it is compared
+   * with is the set the tender held before this one — by tender, not by the
+   * archive's ref, so a joined replacement's first archive is compared with
+   * its predecessor's (ticket 29). With none, this is the tender's first set:
+   * its documents, not an addendum.
    *
    * The version moves in the transaction that writes the new document row,
    * and only when that row is new — so a retried job does not count the same
@@ -82,18 +81,25 @@ export default class AddendumService {
    * already stated only ever adds. Open is the whole guard against history —
    * what `documents:backfill` and the archive seed store is long closed, while
    * an open tender whose live download failed is exactly the one to catch.
+   *
+   * `amendment` is a replacement's join (ticket 29), handed over by the
+   * normalizer: the version is already raised, so none is raised here, and the
+   * one alert goes out with the join's moved fields and this set's file
+   * changes together.
    */
-  static async recordDocuments({ facts, ref, priority = PRIORITY.LIVE }, now = new Date()) {
-    const previousStorageKey = (await sourcePayloads.findLatestByRef(facts.source, ref))?.storage_key ?? null;
+  static async recordDocuments({ facts, priority = PRIORITY.LIVE, amendment = null }, now = new Date()) {
     const result = await withTransaction(async (trx) => {
       const applied = await tenders.applyInvitationFacts(facts, trx);
-      if (applied.skipped || !previousStorageKey || previousStorageKey === facts.storageKey) return applied;
+      if (applied.skipped) return applied;
 
-      const previous = await tenders.findDocumentManifest(applied.tenderId, previousStorageKey, trx);
-      const change = documentChange(previous?.manifest, facts.manifest);
+      const previous = await tenders.findPreviousDocument(applied.tenderId, facts.storageKey, trx);
+      if (!previous) return applied;
+
+      const change = documentChange(previous.manifest, facts.manifest);
+      if (amendment) return { ...applied, joinChanges: isChanged(change) ? change : null };
       if (!change) {
         logger.warn(
-          `[addendum] ${facts.sourceId}: a new document set, but ${previous ? 'a file list is missing' : 'the previous set has no row'} — ` +
+          `[addendum] ${facts.sourceId}: a new document set, but a file list is missing — ` +
             'cannot tell what changed, so no version is raised'
         );
         return applied;
@@ -118,6 +124,11 @@ export default class AddendumService {
       );
     }
 
+    if (amendment && !result.skipped) {
+      await AddendumService.raiseJoin(amendment, { documentChanges: result.joinChanges ?? null, priority });
+      return { ...result, amendmentRaised: true };
+    }
+
     const { addendum } = result;
     if (addendum?.notify) {
       await alertsQueue.add(
@@ -137,5 +148,28 @@ export default class AddendumService {
       logger.info(`[addendum] ${facts.sourceId} v${addendum.version}${addendum.notify ? '' : ' (not open, no alert)'}`, addendum.documentChanges);
     }
     return result;
+  }
+
+  /**
+   * The alert of a replacement joining its predecessor's tender (ticket 29):
+   * one `TenderAmended` under the join's version, naming the fields that
+   * moved and, when the archive was stored and could be compared, the files.
+   * The matcher applies the open rule and adds the trackers (ticket 28), as
+   * for every amendment. Raised exactly once per version: a second call is
+   * absorbed by the job id and the notification dedupe.
+   */
+  static async raiseJoin({ tenderId, version, changedFields = [] }, { documentChanges = null, priority = PRIORITY.LIVE } = {}) {
+    await alertsQueue.add(
+      JOB.MATCH_TENDER,
+      {
+        tenderId,
+        event: 'TenderAmended',
+        version,
+        changedFields,
+        ...(documentChanges ? { documentChanges } : {}),
+      },
+      { jobId: matchJobId(tenderId, version), priority }
+    );
+    logger.info(`[addendum] tender ${tenderId} v${version}: a replacement joined`, { changedFields, documentChanges });
   }
 }

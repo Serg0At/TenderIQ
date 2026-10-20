@@ -1259,8 +1259,9 @@ No request body
 read from, oldest first. `source` is `eauction` (eauction.armeps.am), `armeps` (armeps.am),
 `gnumner` (gnumner.minfin.am) or `ppcm`; `url` is the page on that site; `role` is what the site
 contributed — `discovery` (it announced the tender), `detail` (deadline, terms, documents) or
-`results` (bidders and prices). An e-auction tender has one `detail` link today, since one site
-does all three. An ARMEPS tender has two: `armeps` (`detail`, its armeps.am page) and `gnumner`
+`results` (bidders and prices). An e-auction tender has one `detail` link, since one site
+does all three. An amended e-auction still shows one: the site publishes the amendment under a
+new page, and the page it replaced is not listed, since it shows the old deadline. An ARMEPS tender has two: `armeps` (`detail`, its armeps.am page) and `gnumner`
 (`discovery`, the announcement listing that pointed at it).
 
 `buyer.taxId` (ՀՎՀՀ) is populated only for buyers, and only when the invitation archive was

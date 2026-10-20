@@ -3,7 +3,7 @@ import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
 import { stableHash } from '../utils/hash.js';
 import parties from './party.repo.js';
-import tenderSources from './tenderSource.repo.js';
+import tenderSources, { SUPERSEDED } from './tenderSource.repo.js';
 
 const TABLE = 'tenders';
 
@@ -12,6 +12,19 @@ const TABLE = 'tenders';
  * live enough to be worth re-checking.
  */
 const TERMINAL_STATUSES = ['awarded', 'cancelled'];
+
+/**
+ * A tender's *current* link for one source: the one whose run has not been
+ * replaced. `tenders.source_id` names the link that created the tender, and an
+ * e-auction amendment is a new tid that joins it (ticket 29), so every reader
+ * that fetches or reads a page by its id — the refresh, the document stage —
+ * goes through this rather than the creating id, which may be a dead run.
+ */
+const currentLink = (query, source) =>
+  query
+    .join('tender_sources as s', 's.tender_id', 't.id')
+    .where('s.source', source)
+    .whereRaw('s.observed_status is distinct from ?', [SUPERSEDED]);
 
 /**
  * Money to a canonical form before hashing or diffing.
@@ -593,16 +606,19 @@ export default class TenderRepository {
    * board.
    */
   static async findMissingInvitationDocuments({ source = 'eauction', limit = 500 }, trx = db) {
-    return trx(`${TABLE} as t`)
-      .leftJoin('tender_documents as d', 'd.tender_id', 't.id')
+    // The current link names the page whose invitation `invitation_url` is.
+    // Missing means no row for *that* invitation: a joined replacement whose
+    // archive never landed still holds its predecessor's, which is not it.
+    return currentLink(trx(`${TABLE} as t`), source)
+      .leftJoin('tender_documents as d', (join) =>
+        join.on('d.tender_id', 't.id').andOn('d.url', 't.invitation_url'))
       .whereNotNull('t.invitation_url')
       .whereNull('d.id')
-      .andWhere('t.source_id', 'like', `${source}:%`)
       // Newest first: recent tenders are the ones a supplier might still act
       // on, so they get their category filled in first.
       .orderBy('t.published_at', 'desc')
       .limit(limit)
-      .select('t.id', 't.source_id', 't.invitation_url');
+      .select('t.id', 's.external_id', 't.invitation_url');
   }
 
 
@@ -658,7 +674,7 @@ export default class TenderRepository {
    * resolution module's job, never this one's: the code lookup may return more
    * than one run, and that is the point.
    */
-  static async findCandidates({ link, pointer, code }, trx = db) {
+  static async findCandidates({ link, pointer, predecessors = [], code }, trx = db) {
     const candidates = (query) =>
       query.select(
         't.id', 't.status', 't.reference_code', 't.submission_channel', 't.published_at', 't.deadline_at',
@@ -674,6 +690,17 @@ export default class TenderRepository {
           trx(`${TABLE} as t`)
             .join('tender_sources as s', 's.tender_id', 't.id')
             .where({ 's.source': ref.source, 's.external_id': ref.externalId })
+        ).select('s.observed_status as link_status')
+        : [];
+    // The tenders holding any run this one replaced: one, and it joins; two,
+    // and resolution calls it ambiguous rather than merge them.
+    const byPredecessors = async () =>
+      predecessors.length
+        ? candidates(
+          trx(`${TABLE} as t`)
+            .join('tender_sources as s', 's.tender_id', 't.id')
+            .where('s.source', predecessors[0].source)
+            .whereIn('s.external_id', predecessors.map((p) => p.externalId))
         )
         : [];
     const byCode = async () =>
@@ -696,10 +723,12 @@ export default class TenderRepository {
     });
     const linked = await byLink(link);
     const pointed = await byLink(pointer);
+    const predecessorTenders = await byPredecessors();
     const coded = await byCode();
     return {
-      linked: linked.map(toCandidate),
+      linked: linked.map((row) => ({ ...toCandidate(row), linkSuperseded: row.link_status === SUPERSEDED })),
       pointed: pointed.map(toCandidate),
+      predecessorTenders: predecessorTenders.map(toCandidate),
       byCode: coded.map(toCandidate),
     };
   }
@@ -716,10 +745,16 @@ export default class TenderRepository {
    * The tender row is locked, and its status, deadline and version returned,
    * so the caller can raise an addendum in the same transaction
    * (services/addendum.service.js) without racing the normalizer's version.
+   *
+   * The tender is found through the archive's own link, `(source,
+   * externalId)`, not `tenders.source_id`: a replacement's archive belongs to
+   * the tender it joined, whose creating id is the run it replaced (ticket 29).
+   * A superseded link's archive is the dead run's and is not applied — its
+   * lots and codes would overwrite the replacement's.
    */
   static async applyInvitationFacts({
     source = 'eauction',
-    sourceId,
+    externalId,
     kind = 'invitation',
     url,
     storageKey,
@@ -731,8 +766,13 @@ export default class TenderRepository {
     textHash = null,
   }, trx = db) {
     const run = async (trx) => {
-      const tender = await trx(TABLE).where({ source_id: sourceId }).forUpdate().first();
+      const tender = await trx(`${TABLE} as t`)
+        .join('tender_sources as s', 's.tender_id', 't.id')
+        .where({ 's.source': source, 's.external_id': String(externalId) })
+        .forUpdate('t')
+        .first('t.*', 's.observed_status as link_status');
       if (!tender) return { skipped: 'unknown_tender' };
+      if (tender.link_status === SUPERSEDED) return { skipped: 'superseded_link' };
 
       // Only fills a blank: the detail page is authoritative for everything it
       // publishes, and re-running this must not churn `version`.
@@ -815,9 +855,17 @@ export default class TenderRepository {
     return trx === db ? db.transaction(run) : run(trx);
   }
 
-  /** The file list of one stored document of a tender, by its storage key. */
-  static async findDocumentManifest(tenderId, storageKey, trx = db) {
-    return trx('tender_documents').where({ tender_id: tenderId, storage_key: storageKey }).first('id', 'manifest');
+  /**
+   * The set a tender held before this one: its newest document row other than
+   * `storageKey`. Read by tender, not by the archive's ref, because a joined
+   * replacement's first archive is still the tender's next set (ticket 29).
+   */
+  static async findPreviousDocument(tenderId, storageKey, trx = db) {
+    return trx('tender_documents')
+      .where({ tender_id: tenderId })
+      .whereNot({ storage_key: storageKey })
+      .orderBy(NEWEST_DOCUMENT_FIRST)
+      .first('id', 'storage_key', 'manifest');
   }
 
   /**
@@ -852,21 +900,24 @@ export default class TenderRepository {
    * The lower bound stops this from re-checking a tender forever. A tender
    * that never leaves `closed` is a source-side dead end, not something to
    * re-fetch hourly until the end of time.
+   *
+   * It re-reads the tender's current link (ticket 29). A superseded run says
+   * Փոփոխված for good, so re-reading it would only spend the budget — once
+   * hourly for the whole window — and the ledger appears on the replacement.
    */
   static async findNeedingRefresh({ source, windowDays = 30, limit = 200 }, trx = db) {
     const now = new Date();
     const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
-    return trx(TABLE)
-      .whereNotIn('status', TERMINAL_STATUSES)
-      .andWhere('source_id', 'like', `${source}:%`)
-      .andWhereRaw('COALESCE(auction_at, deadline_at) < ?', [now])
-      .andWhereRaw('COALESCE(auction_at, deadline_at) > ?', [floor])
+    return currentLink(trx(`${TABLE} as t`), source)
+      .whereNotIn('t.status', TERMINAL_STATUSES)
+      .andWhereRaw('COALESCE(t.auction_at, t.deadline_at) < ?', [now])
+      .andWhereRaw('COALESCE(t.auction_at, t.deadline_at) > ?', [floor])
       // Oldest first: the ones most likely to have settled, and it makes the
       // batch cap drain a backlog in order instead of starving the tail.
-      .orderByRaw('COALESCE(auction_at, deadline_at) ASC')
+      .orderByRaw('COALESCE(t.auction_at, t.deadline_at) ASC')
       .limit(limit)
-      .select('id', 'source_id', 'status', 'auction_at', 'deadline_at');
+      .select('t.id', 's.external_id', 't.status', 't.auction_at', 't.deadline_at');
   }
 
   /**
@@ -918,8 +969,15 @@ export default class TenderRepository {
    * observation links to, or null to create one under `sourceId`. Which tender
    * is never re-decided here. A linked tender deleted since it was resolved
    * throws, so the retry resolves again rather than resurrecting it.
+   *
+   * `supersedes` are the runs this page replaced (an e-auction amendment,
+   * ticket 29), written as superseded links of the tender in the same
+   * transaction, so the tender is never visible joined but with its old run
+   * still current. `replaces` is resolution's word that this page has just
+   * joined that tender: it is an amendment even if no stored field moved,
+   * because the run itself did.
    */
-  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, tender, lots, link }) {
+  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, tender, lots, link, supersedes = [], replaces = false }) {
     return db.transaction(async (trx) => {
       const buyerId = await parties.upsertBuyer({ source, name: buyerName }, trx);
       if (!buyerId) {
@@ -962,6 +1020,7 @@ export default class TenderRepository {
         const id = createId();
         await trx(TABLE).insert({ ...row, id, source_id: sourceId, version: 1, is_latest: true });
         await tenderSources.upsert({ ...link, tenderId: id }, trx);
+        await tenderSources.markSuperseded({ tenderId: id, source, runs: supersedes, seenAt: link.seenAt }, trx);
         const ledger = await replaceLedger(trx, {
           source,
           tenderId: id,
@@ -995,8 +1054,9 @@ export default class TenderRepository {
         });
 
       await tenderSources.upsert({ ...link, tenderId: existing.id }, trx);
+      await tenderSources.markSuperseded({ tenderId: existing.id, source, runs: supersedes, seenAt: link.seenAt }, trx);
 
-      if (unchanged) {
+      if (unchanged && !replaces) {
         if (!sameCodes(existing.cpv_codes, row.cpv_codes)) {
           await trx(TABLE).where({ id: existing.id }).update({ cpv_codes: row.cpv_codes });
         }

@@ -92,6 +92,8 @@ export const PROCEDURE_TYPE = 'e_auction';
  * The dividing line for `active` is "can a supplier still submit a bid?" — only
  * Հրապարակված qualifies. Everything from Նախաաճուրդային onward has closed
  * submission, even though the procedure is still running.
+ *
+ * Փոփոխված is the eleventh label and is not here: see SUPERSEDED_STATUS.
  */
 const STATUS = {
   Հրապարակված: 'active', // published, accepting bids
@@ -113,6 +115,39 @@ const STATUS = {
  * unknown label.
  */
 export const mapStatus = (raw) => STATUS[String(raw ?? '').trim()] ?? null;
+
+/**
+ * "Amended" — and deliberately NOT in STATUS, because it is a fact about this
+ * run, not about the tender. An e-auction amendment is published as a new tid
+ * whose page names this one as its predecessor (see `predecessorsOf`); this
+ * page is then a dead run, off the listing for good, and the tender's status is
+ * the replacement's to say (ticket 29).
+ */
+const SUPERSEDED_STATUS = 'Փոփոխված';
+
+/**
+ * The tids this page replaced, from «Աճուրդի սկզբնական հրավեր(ներ)»: a table
+ * of code, publish time and a `tender_details/tid/N/` link per predecessor.
+ * Only the current run carries it, and it lists every run before it — 46964
+ * names both 46826 and 46963 — while a superseded page shows none. Verified
+ * 2026-10-21: of 90 stored pages with the block, 84 hold the amendment notice
+ * (`popoxutyan_pastatuxt.*`) in their archive; the six re-announced codes of
+ * ADR 0004 carry no block, so the pointer, not the code, is what makes an
+ * amendment.
+ */
+const PREDECESSOR_LABEL = 'Աճուրդի սկզբնական հրավեր(ներ)';
+const TID_RE = /\/tender_details\/tid\/(\d+)\//;
+
+const predecessorsOf = ($) => {
+  const tids = new Set();
+  valueOf($, PREDECESSOR_LABEL)
+    .find('a[href]')
+    .each((_, a) => {
+      const tid = ($(a).attr('href') || '').match(TID_RE)?.[1];
+      if (tid) tids.add(tid);
+    });
+  return [...tids].sort((a, b) => Number(a) - Number(b));
+};
 
 /**
  * Returns the value node for a label, or an empty selection.
@@ -287,6 +322,8 @@ export const parseDetail = (html, { baseUrl } = {}) => {
     procedureType: PROCEDURE_TYPE,
     status: mapStatus(rawStatus),
     rawStatus,
+    superseded: String(rawStatus ?? '').trim() === SUPERSEDED_STATUS,
+    predecessors: predecessorsOf($),
     publishedAt: toDate(textOf($, 'Հրապարակման ժամանակ')),
     deadlineAt: toDate(textOf($, 'Հայտերի ընդունման վերջնաժամկետ')),
     auctionAt: toDate(textOf($, 'Հակադարձ աճուրդ')),

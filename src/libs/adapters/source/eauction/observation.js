@@ -46,6 +46,14 @@ export const observeDetail = (html, { externalId, seenAt, baseUrl }) => {
     externalId: String(externalId),
     url: detailUrl(externalId),
     pointer: null,
+    // The runs this one replaced: an e-auction amendment is a new tid that
+    // names its predecessors, and joins the tender they belong to (ticket 29).
+    supersedes: detail.predecessors
+      .filter((tid) => tid !== String(externalId))
+      .map((tid) => ({ externalId: tid, url: detailUrl(tid) })),
+    // This page is such a predecessor: a dead run, which says nothing more
+    // about the tender than that it was replaced.
+    superseded: detail.superseded,
     seenAt,
     procedureCode: detail.code,
     submissionChannel: SUBMISSION_CHANNEL,

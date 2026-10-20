@@ -73,7 +73,7 @@ function up(pg) {
       table.string('external_id').notNullable();    // eauction tid, armeps.am resourceId, gnumner URL, …
       table.text('url');
       table.string('role').notNullable();           // discovery | detail | results (CHECK in indexes())
-      table.string('observed_status');              // what this source last said, verbatim
+      table.string('observed_status');              // what this source last said, verbatim — or `superseded`, sticky (ticket 29)
       table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
       table.timestamp('last_seen_at').notNullable().defaultTo(pg.fn.now());
       table.unique(['source', 'external_id'], { indexName: 'tender_sources_source_external_uq' });

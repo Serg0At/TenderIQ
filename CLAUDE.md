@@ -643,9 +643,20 @@ decision that has already been made.
   tender's first set is not an addendum, and an unknown previous list raises nothing.
   `deriveStatus` keeps `amended` over a page that says "open". Both sources, one rule, but it
   only ever fires for ARMEPS: an e-auction invitation is written once and never re-issued
-  (ticket 27). An e-auction amendment is a **new tid** linking its predecessor under
-  «Աճուրդի սկզբնական հրավեր(ներ)»; the original turns Փոփոխված (unmapped) and leaves the
-  listing. Nothing handles that yet — ticket 29.
+  (ticket 27). The previous set is read by tender, not by the archive's ref.
+- **An e-auction amendment is a new tid that joins the old one's tender** (ticket 29, ADR
+  0004). The page names its predecessors under «Աճուրդի սկզբնական հրավեր(ներ)»; the old page
+  turns Փոփոխված and leaves the listing. **The pointer decides, never the code**: a same-code
+  tender with no block is a re-announcement. The named runs become `superseded` links
+  (`tender_sources.observed_status`, sticky, written with no request) — Փոփոխված is a link
+  status, not a tender status, and is deliberately absent from `detail.parser.js#STATUS`. A
+  superseded link is never refreshed, and a page or archive read through one writes only the
+  link. **Readers that fetch by id follow the current link** (`tender.repo.js#currentLink`):
+  the refresh, the document stage, `documents:backfill`; `tenders.source_id` stays the creating
+  link and may be a dead run. The join's one alert waits for the replacement's archive (the
+  document job carries `amendment`) so it can name moved fields and changed files together, and
+  is raised without the files if the download never lands. Predecessors on two tenders are
+  `ambiguous`, never merged.
 - **An amendment reaches trackers too** (ticket 28): the matcher's recipients for an amendment
   are the matched organizations ∪ those tracking the tender at `considering`, `preparing` or
   `submitted` (`AMENDMENT_PURSUITS`) — `submitted` because a sealed ARMEPS or paper bid can be

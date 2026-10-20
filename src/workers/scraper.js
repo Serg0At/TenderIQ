@@ -176,8 +176,9 @@ const eauctionRefresher = {
   find: ({ refreshWindowDays, maxRefreshBatch }) =>
     tenders.findNeedingRefresh({ source: EAUCTION, windowDays: refreshWindowDays, limit: maxRefreshBatch }),
   job: (tender, bucket) => {
-    // findNeedingRefresh already constrains source_id to this source's prefix.
-    const sourceId = tender.source_id.slice(`${EAUCTION}:`.length);
+    // The tender's current link, never its creating `source_id`: after an
+    // amendment that is a dead run (ticket 29).
+    const sourceId = tender.external_id;
     return {
       name: JOB.TENDER_DETAIL,
       data: { source: EAUCTION, sourceId, reason: 'refresh' },

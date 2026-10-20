@@ -1,4 +1,5 @@
 import tenders from '../../repositories/tender.repo.js';
+import { SUPERSEDED } from '../../repositories/tenderSource.repo.js';
 import relevance from '../../repositories/relevance.repo.js';
 import { rankTenders, basisOf, compareRanked, isPursued, hasAnyCode } from '../../services/relevance.service.js';
 import { purchaseKindOf, purchaseKindLabels } from '../../libs/purchaseKinds.js';
@@ -255,8 +256,13 @@ export default class TenderService {
       lots: (row.lots ?? []).map((l) => ({ lotNumber: l.lot_number, cpvCode: l.cpv_code, name: l.name })),
       documents: TenderDocumentService.present(row),
       // Where this tender was read from. The external id stays internal: the
-      // URL is what a supplier can use, and the id is our join key.
-      sources: (row.sources ?? []).map((s) => ({ source: s.source, url: s.url, role: s.role })),
+      // URL is what a supplier can use, and the id is our join key. A
+      // superseded run is left out: its page is the amended-away version, and
+      // offering it as a source would send a supplier to the old deadline
+      // (ticket 29).
+      sources: (row.sources ?? [])
+        .filter((s) => s.observed_status !== SUPERSEDED)
+        .map((s) => ({ source: s.source, url: s.url, role: s.role })),
     };
   }
 }

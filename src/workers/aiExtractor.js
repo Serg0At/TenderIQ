@@ -4,6 +4,7 @@ import tenders from '../repositories/tender.repo.js';
 import ChecklistExtractionService from '../services/checklistExtraction.service.js';
 import { getStorage, tenderDocTextKeyOf } from '../libs/storage/index.js';
 import { logger } from '../utils/logger.js';
+import { isFinalAttempt } from '../utils/attempts.js';
 
 /**
  * The AI checklist stage — read a tender invitation, produce the list of things
@@ -120,13 +121,6 @@ const THROWN_REASON = {
   RATE_LIMITED: 'rate_limited',
   DEPENDENCY_UNAVAILABLE: 'ai_unavailable',
 };
-
-/**
- * Whether BullMQ will retry this job if it throws now. `attemptsMade` counts
- * the attempts already over, so the current one is `attemptsMade + 1`. A job
- * built by hand (a script, a replay) has neither and counts as final.
- */
-const isFinalAttempt = (job) => (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
 
 /**
  * Record a thrown extraction as `failed`, on the last attempt only.

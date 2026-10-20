@@ -13,6 +13,7 @@ import { sha256 } from '../utils/hash.js';
 import { JOB } from '../queues/names.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
+import { isFinalAttempt } from '../utils/attempts.js';
 
 /**
  * Invitation archive -> CPV code, buyer tax ID, per-lot item descriptions.
@@ -55,8 +56,30 @@ export const eauctionDocumentsJob = (observation, { sourceId, result, priority }
   };
 };
 
+/**
+ * A job carrying a replacement's join (`data.amendment`, ticket 29) owes the
+ * tender one amendment alert, and owes it whatever becomes of the archive: a
+ * download that is disabled, already stored, refused or out of attempts still
+ * raises it, only without the file list. A throttle is not an end — the job
+ * comes back — so it raises nothing.
+ */
 export const handleTenderDocuments = async (job, token) => {
-  const { source, sourceId, invitationUrl } = job.data;
+  const { amendment = null } = job.data;
+  const owed = () => AddendumService.raiseJoin(amendment, { priority: job.opts?.priority });
+  let result;
+  try {
+    result = await storeInvitation(job, token);
+  } catch (error) {
+    const ends = !(error instanceof DelayedError) && (error instanceof UnrecoverableError || isFinalAttempt(job));
+    if (amendment && ends) await owed();
+    throw error;
+  }
+  if (amendment && !result.amendmentRaised) await owed();
+  return result;
+};
+
+const storeInvitation = async (job, token) => {
+  const { source, sourceId, invitationUrl, amendment = null } = job.data;
   const log = logger.child({ job: job.name, source, sourceId });
 
   if (!source || !sourceId || !invitationUrl) {
@@ -161,6 +184,7 @@ export const handleTenderDocuments = async (job, token) => {
   const facts = await AddendumService.recordDocuments({
     facts: {
       source,
+      externalId: sourceId,
       sourceId: `${source}:${sourceId}`,
       url: invitationUrl,
       storageKey: archiveKey,
@@ -171,8 +195,8 @@ export const handleTenderDocuments = async (job, token) => {
       manifest,
       textHash,
     },
-    ref,
     priority: job.opts?.priority,
+    amendment,
   });
 
   // Rows parsed but not one usable lot number means the first column of the

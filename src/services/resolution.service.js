@@ -13,13 +13,23 @@
  *
  *   { source, role: 'discovery' | 'detail' | 'results', externalId,
  *     pointer: { source, externalId } | null,   // another source's id it links to
+ *     supersedes: [{ externalId, url }],        // earlier runs of this source it replaced
+ *     superseded: boolean,                      // this run was itself replaced
  *     procedureCode, submissionChannel, procedureType, buyerName,
  *     publishedAt, deadlineAt, lotNumbers: number[],
  *     status }                                  // the source's status as a domain value, null if unmapped
  *
  * A candidate is a stored tender:
  *
- *   { id, status, referenceCode, submissionChannel, publishedAt, deadlineAt, lotNumbers }
+ *   { id, status, referenceCode, submissionChannel, publishedAt, deadlineAt, lotNumbers,
+ *     linkSuperseded }                          // linked candidates only: that link is a dead run
+ *
+ * **An e-auction amendment** is a new tid whose page names the runs it
+ * replaced (ticket 29). It joins their tender — rule 2, the pointer being the
+ * page's own word that it is the same procurement — and is that tender's
+ * *current* link from then on; the runs it names are `superseded` links. A
+ * same-code tender that names no predecessor is a re-announcement and a new
+ * run: the pointer decides, never the code.
  */
 
 /**
@@ -56,6 +66,10 @@ export const lookupsFor = (observation) => {
     pointer: observation.pointer
       ? { source: observation.pointer.source, externalId: String(observation.pointer.externalId) }
       : null,
+    predecessors: (observation.supersedes ?? []).map((run) => ({
+      source: observation.source,
+      externalId: String(run.externalId),
+    })),
     code:
       observation.role === 'results' && key
         ? { key, submissionChannel: observation.submissionChannel }
@@ -119,6 +133,12 @@ const unique = (tenders) => [...new Map(tenders.map((t) => [t.id, t])).values()]
 
 /** `tender` is the candidate itself: its stored status is what `deriveStatus` moves forward from. */
 const link = (tender, rule) => ({ action: 'link', tenderId: tender.id, tender, rule });
+/**
+ * A dead run's page: it updates its own link, as superseded, and nothing else.
+ * Its deadline and documents are the old run's, and writing them would walk
+ * the tender back to the version its replacement amended.
+ */
+const supersededRun = (tender) => ({ action: 'superseded', tenderId: tender.id, tender, rule: 'link' });
 const unmatched = (reason, tenders = []) => ({
   action: 'unmatched',
   reason,
@@ -130,7 +150,8 @@ const unmatched = (reason, tenders = []) => ({
  * reason. ADR 0004's order, and the first decisive rule wins:
  *
  *   1. the `(source, external_id)` pair is already linked;
- *   2. the source points at another source's id that is linked;
+ *   2. the source points at another source's id that is linked, or names
+ *      earlier runs of its own that are (an e-auction amendment);
  *   3. a result is matched on normalized code + submission channel + dates and lots;
  *   4. anything else is unmatched — never guessed onto a tender.
  *
@@ -139,13 +160,31 @@ const unmatched = (reason, tenders = []) => ({
  * rows. ADR 0004's one exception, a PPCM history backfill whose tenders are
  * never biddable, is its own decision and adds its own mode when it is built.
  *
- * `candidates` is `{ linked, pointed, byCode }`, the answers to `lookupsFor`.
+ * A page from a superseded run — one that says so, or whose link its
+ * replacement already marked — is `superseded` when linked, and `skip` when
+ * not: nothing is created for a dead run, and its replacement records it
+ * when it arrives.
+ *
+ * `candidates` is `{ linked, pointed, predecessorTenders, byCode }`, the
+ * answers to `lookupsFor`; `predecessorTenders` hold the observation's
+ * predecessors.
  */
-export const resolve = (observation, { linked = [], pointed = [], byCode = [] } = {}) => {
+export const resolve = (observation, { linked = [], pointed = [], predecessorTenders = [], byCode = [] } = {}) => {
   const byLink = unique(linked);
-  if (byLink.length === 1) return link(byLink[0], 'link');
+  if (byLink.length === 1) {
+    if (observation.superseded || byLink[0].linkSuperseded) return supersededRun(byLink[0]);
+    return link(byLink[0], 'link');
+  }
   // The unique key makes this impossible; if it ever happens, it is not ours to pick.
   if (byLink.length > 1) return unmatched('ambiguous', byLink);
+
+  if (observation.superseded) return { action: 'skip', reason: 'superseded' };
+
+  // Predecessors on two tenders Tendra holds apart: joining would merge them,
+  // and which one the replacement belongs to is not ours to pick.
+  const byPredecessor = unique(predecessorTenders);
+  if (byPredecessor.length === 1) return link(byPredecessor[0], 'supersedes');
+  if (byPredecessor.length > 1) return unmatched('ambiguous', byPredecessor);
 
   const byPointer = unique(pointed);
   if (byPointer.length === 1) return link(byPointer[0], 'pointer');
@@ -196,8 +235,19 @@ const TERMINAL = new Set(['awarded', 'cancelled']);
  * `amended` is kept over `active`: no source says it — an addendum does
  * (services/addendum.service.js) — so a page re-read that says "open" has
  * not undone it, and reverting would re-notify as a status change.
+ *
+ * `replaces` is a replacement joining its predecessor's tender (ticket 29).
+ * The status is then the replacement's alone: what the old run reached short
+ * of a terminal state is not carried (a `closed` read off a deadline the
+ * amendment moved), and an open replacement is `amended`, which the source
+ * itself says of the run it replaced.
  */
-export const deriveStatus = ({ submissionChannel, links = [], current = null, deadlineAt = null }, now) => {
+export const deriveStatus = ({ submissionChannel, links = [], current = null, deadlineAt = null, replaces = false }, now) => {
+  if (replaces) {
+    if (TERMINAL.has(current)) return current;
+    const next = deriveStatus({ submissionChannel, links, current: null, deadlineAt }, now);
+    return next === 'active' ? 'amended' : next;
+  }
   const owners = STATUS_OWNERS[submissionChannel];
   if (!owners) throw new Error(`no status owners for submission channel "${submissionChannel}"`);
 

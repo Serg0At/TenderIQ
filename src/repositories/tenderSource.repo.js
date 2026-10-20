@@ -4,6 +4,17 @@ import db from '../libs/knex.js';
 const TABLE = 'tender_sources';
 
 /**
+ * A link's `observed_status` once its run has been replaced: an e-auction
+ * amendment is a new tid, and the tids it names are dead runs (ticket 29).
+ * Not a label any source prints — Փոփոխված is the page's word for it — but the
+ * one state every reader of links asks about: a superseded link is never
+ * refreshed, never fetched for documents, and its pages write nothing but
+ * itself. It is sticky: a replaced run does not come back, so no later or
+ * replayed page overwrites it.
+ */
+export const SUPERSEDED = 'superseded';
+
+/**
  * Every source a tender came from (ADR 0004): one row per `(source, external_id)`
  * link, with what that source last said about the tender's status.
  */
@@ -46,9 +57,44 @@ export default class TenderSourceRepository {
       .merge({
         url: newer('url'),
         role: newer('role'),
-        observed_status: newer('observed_status'),
+        // Sticky: a replaced run does not come back, whatever page is read.
+        observed_status: trx.raw(
+          'case when ?? = ? or excluded.observed_status = ? then ? else ? end',
+          [`${TABLE}.observed_status`, SUPERSEDED, SUPERSEDED, SUPERSEDED, newer('observed_status')]
+        ),
         last_seen_at: trx.raw('greatest(??, excluded.last_seen_at)', [`${TABLE}.last_seen_at`]),
       });
+  }
+
+  /**
+   * Record the runs a replacement names as superseded links of its tender
+   * (ticket 29), with no request made: a predecessor Tendra never saw is
+   * still a link, so anything that later names it resolves here by rule 1.
+   *
+   * `seenAt` is the replacement's fetch: the moment a source last told us
+   * about the run. A link already on this tender is marked superseded; one on
+   * another tender is left alone — moving a link is a resolution decision, and
+   * resolution refused it (`ambiguous`) or never asked.
+   */
+  static async markSuperseded({ tenderId, source, runs = [], seenAt = new Date() }, trx = db) {
+    if (!runs.length) return;
+    await trx(TABLE)
+      .insert(
+        runs.map((run) => ({
+          id: createId(),
+          tender_id: tenderId,
+          source,
+          external_id: String(run.externalId),
+          url: run.url ?? null,
+          role: 'detail',
+          observed_status: SUPERSEDED,
+          first_seen_at: seenAt,
+          last_seen_at: seenAt,
+        }))
+      )
+      .onConflict(['source', 'external_id'])
+      .merge({ observed_status: SUPERSEDED })
+      .where(`${TABLE}.tender_id`, tenderId);
   }
 
   /**

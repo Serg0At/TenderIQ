@@ -6,6 +6,7 @@ import * as armeps from '../libs/adapters/source/armeps/observation.js';
 import { lookupsFor, resolve, deriveStatus } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
+import tenderSources, { SUPERSEDED } from '../repositories/tenderSource.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
 import { ingestFetchQueue, alertsQueue, maintenanceQueue } from '../queues/index.js';
 import { JOB, PRIORITY, matchJobId } from '../queues/names.js';
@@ -112,6 +113,33 @@ export const normalizeTender = async ({
     return { event: null, skipped: 'unmatched', reason: decision.reason };
   }
 
+  // A replaced run nothing links to: its replacement records it when it
+  // arrives, which the sweep sees within minutes as a new tid (ticket 29).
+  if (decision.action === 'skip') {
+    logger.info(`[normalizer] ${source}:${sourceId} skipped — ${decision.reason}, no tender links it yet`);
+    return { event: null, skipped: decision.reason };
+  }
+
+  // A dead run's page writes its own link and nothing else: the tender keeps
+  // its status until the replacement joins, and its fields are the
+  // replacement's to set. A superseded link is never refreshed again.
+  if (decision.action === 'superseded') {
+    await tenderSources.upsert({
+      tenderId: decision.tenderId,
+      source,
+      externalId: observation.externalId,
+      url: observation.url,
+      role: observation.role,
+      observedStatus: SUPERSEDED,
+      seenAt,
+    });
+    logger.info(`[normalizer] ${source}:${sourceId} is a superseded run of tender ${decision.tenderId}`);
+    return { event: null, tenderId: decision.tenderId, superseded: true };
+  }
+
+  // This page has just joined the tender of a run it replaced (ticket 29).
+  const replaces = decision.rule === 'supersedes';
+
   // Only this observation's status is passed: every tender today has one link.
   // A second source's link stores its label verbatim, so deriving across links
   // needs each label mapped by its own adapter first — the work of the ticket
@@ -122,6 +150,7 @@ export const normalizeTender = async ({
       links: [{ source, status: observation.status }],
       current: decision.tender?.status ?? null,
       deadlineAt: observation.deadlineAt,
+      replaces,
     },
     new Date()
   );
@@ -155,6 +184,8 @@ export const normalizeTender = async ({
       observedStatus: observation.observedStatus,
       seenAt,
     },
+    supersedes: observation.supersedes ?? [],
+    replaces,
   });
 
   if (result.skipped === 'no_buyer') {
@@ -189,13 +220,27 @@ export const normalizeTender = async ({
     (priority !== PRIORITY.BACKFILL || sourceConfig.backfillDocuments === true);
 
   const documents = documentsWanted ? documentsJob(observation, { sourceId, result, fresh, priority }) : null;
+
+  // A join is one amendment, and it names both what moved and which files the
+  // replacement's archive changed. The files are only known once that archive
+  // is stored, so the alert travels with the document job, which raises it
+  // whatever becomes of the download. With no document job, it goes now.
+  const amendment =
+    replaces && result.event === 'TenderAmended'
+      ? { tenderId: result.tenderId, version: result.version, changedFields: result.changedFields ?? [] }
+      : null;
+
   if (documents) {
-    await ingestFetchQueue.add(documents.name, documents.data, documents.opts);
+    await ingestFetchQueue.add(
+      documents.name,
+      amendment ? { ...documents.data, amendment } : documents.data,
+      documents.opts
+    );
   }
 
   // The domain event, delivered as a job. Only on a real change, so a
   // re-normalize that moved nothing cannot re-alert anyone.
-  if (result.event) {
+  if (result.event && !(amendment && documents)) {
     await alertsQueue.add(
       JOB.MATCH_TENDER,
       { tenderId: result.tenderId, event: result.event, version: result.version, changedFields: result.changedFields ?? [] },

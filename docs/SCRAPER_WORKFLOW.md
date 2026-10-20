@@ -433,11 +433,23 @@ status, deadline ahead), and queues
 the deadline, closed, awarded or cancelled, the version is recorded and nothing is queued. A tender's
 first set is its documents, not an addendum, and a set whose previous list is unknown raises
 nothing (logged). `deriveStatus` keeps `amended` over a page that says "open", or the next
-re-normalize would revert it and alert a status change. e-auction never needs it: its invitation
-is a static file written once at publication (266 of 266 open tenders, ticket 27). An amendment
-there is a **new tid** whose page links its predecessor under «Աճուրդի սկզբնական հրավեր(ներ)»,
-while the original turns Փոփոխված and leaves the listing — ticket 29. So the document job's
-URL-keyed id is right, and no scheduled re-check of the invitation exists.
+re-normalize would revert it and alert a status change. The previous set is the tender's, not
+the archive ref's, so a joined e-auction replacement (below) is compared with its predecessor's.
+
+**e-auction amendments** (ticket 29, ADR 0004). An invitation file is written once at
+publication (266 of 266 open tenders, ticket 27), so the addendum rule above never fires for a
+tid. An amendment is a **new tid** whose page lists every run it replaced under
+«Աճուրդի սկզբնական հրավեր(ներ)»; the old page turns Փոփոխված and leaves the listing. The
+replacement's observation carries `supersedes`, resolution joins it to the tender those runs
+belong to (rule 2), and `saveNormalized` writes the named runs as `superseded` links in the same
+transaction, with no request even for a run never fetched. The join raises `version`, takes its
+status from the replacement alone (`amended` while open), and its alert waits for the
+replacement's archive: the document job carries `amendment`, compares the new set with the
+predecessor's, and raises one `TenderAmended` with `changedFields` and `documentChanges`. A
+download that is disabled, already stored, refused or out of attempts raises it without the file
+list. Superseded links are sticky and never refreshed, and a page or archive read through one
+writes the link and nothing else; a Փոփոխված page no tender links is skipped. The refresh, the
+document stage and `documents:backfill` read the **current link**, never `tenders.source_id`.
 
 **What arrives with the archive.** An e-auction page states no CPV; the codes are in the
 invitation archive, whose download waits on the politeness budget while the ingest match runs at

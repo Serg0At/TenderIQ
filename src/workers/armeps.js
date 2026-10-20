@@ -247,6 +247,7 @@ export const handleArmepsDocuments = async (job, token) => {
   const facts = await AddendumService.recordDocuments({
     facts: {
       source: SOURCE,
+      externalId: String(resourceId),
       sourceId: `${SOURCE}:${resourceId}`,
       kind: 'contract_documents',
       url: documentsUrl(resourceId),
@@ -256,7 +257,6 @@ export const handleArmepsDocuments = async (job, token) => {
       lots: lots.map(({ lotNumber, cpvCode, name }) => ({ lotNumber, itemSequence: 0, cpvCode, name })),
       manifest,
     },
-    ref,
     priority: job.opts?.priority,
   });
   // The normalizer queues this only after the tender is saved, so a miss is

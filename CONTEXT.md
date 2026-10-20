@@ -74,8 +74,23 @@ _Avoid_: Supplier match, Party link, Company profile
 **Tender**:
 One run of a procurement procedure — one announcement with its own deadline, bidders and
 outcome. A procedure cancelled and announced again is two tenders, even under the same
-procedure code.
+procedure code. An amended e-auction is one tender, although the site publishes the amendment
+under a new tid (see **Superseded run**).
 _Avoid_: Procurement, Procedure, Notice, Competition
+
+**Superseded run**:
+An e-auction page that an amendment replaced. eauction.armeps.am amends a tender by publishing
+a new tid whose page names its predecessors («Աճուրդի սկզբնական հրավեր(ներ)»), and marks the
+old page Փոփոխված. The new tid joins the old one's tender; the old one stays a link of that
+tender, marked superseded, and is never read again. What makes it an amendment is that pointer,
+never a shared procedure code.
+_Avoid_: Re-issue, Old version, Duplicate
+
+**Current link**:
+The link of a tender, for one source, whose run has not been superseded: the page Tendra re-reads
+and whose documents it fetches. Distinct from the **creating link** (`tenders.source_id`), which
+after an e-auction amendment is a superseded run.
+_Avoid_: Source ID (for the current page), Main link
 
 **Procedure code**:
 The code a buyer gives a procurement procedure (ծածկագիր), such as `ԵՔ-ԷԱՃԱՇՁԲ-26/11`. Shared by
