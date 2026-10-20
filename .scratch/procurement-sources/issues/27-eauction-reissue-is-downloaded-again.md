@@ -8,7 +8,19 @@ measuring for ticket 18 on 2026-10-20.
 **Blocked by:** None. Ticket 18 is done; the rule already applies to e-auction once a second
 archive is stored.
 
-**Status:** needs-triage
+**Status:** ready-for-agent
+
+**Triage (2026-10-20):** the ticket is right as written. One preference and one budget:
+
+- **Prefer the signal.** If a re-issue visibly changes the detail page, carry that change in the
+  document job id. That is zero extra requests.
+- **Otherwise, a scheduled re-check of open tenders only**, using a conditional request
+  (`If-None-Match` / `If-Modified-Since`) if the static file's server honours it, so an
+  unchanged invitation costs a 304.
+  - Record whether it does. Start at every 6 hours.
+  - With about 270 open e-auctions, that is about 1,100 requests a day against a budget of
+    28,800, and it is never allowed to delay live sweeps (`PRIORITY` below `LIVE`).
+  - Record the measured figure.
 
 What ticket 18 measured (local `tendra` database and MinIO bucket):
 
