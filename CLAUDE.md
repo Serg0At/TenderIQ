@@ -647,8 +647,9 @@ decision that has already been made.
   `tender.repo.js#tenderCodesSql`, which must move together. A page-stated list (armeps.am) that
   moves is an amendment; a **blank** stored list filled by a re-read is not, or the first refresh
   after the deploy would re-notify every old tender. An e-auction's list is replaced by its
-  invitation archive and raises no event, like its lots — which is why its codes miss the ingest
-  alert today (ticket 25).
+  invitation archive and raises no event, like its lots. Its ingest match runs before the archive
+  arrives, so the document stage re-runs it — `TenderIngested`, `match-{id}-codes` — when the codes
+  **first** land on an open tender outside a backfill (ticket 25).
   `npm run cpv:backfill` fills old rows from storage, writes the column only and raises no alert
   (dry run by default; it reports the alerts the codes would have raised).
 - **Still no writer:** `contracts`, `subscriptions`, `invoices`, `audit_logs` — all phase 5/6.

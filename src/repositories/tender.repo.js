@@ -710,7 +710,11 @@ export default class TenderRepository {
       // whose page states its codes (armeps.am) passes none, and the page's
       // list stands.
       const codes = codeSet(cpvCodes);
-      const codesReplaced = codes.length > 0 && !sameCodes(tender.cpv_codes, codes);
+      const stored = codeSet(tender.cpv_codes);
+      const codesReplaced = codes.length > 0 && !sameCodes(stored, codes);
+      // The first list this tender has ever had — what the ingest match could
+      // not see (ticket 25). A later change of codes is not this.
+      const codesLanded = codes.length > 0 && stored.length === 0;
       if (codesReplaced) await trx(TABLE).where({ id: tender.id }).update({ cpv_codes: codes });
 
       const taxIdSet = taxId ? await parties.setTaxId(tender.buyer_id, taxId, trx) : false;
@@ -769,6 +773,7 @@ export default class TenderRepository {
         tender: { status: tender.status, deadlineAt: tender.deadline_at, version: tender.version },
         cpvSet: Boolean(cpvCode && !tender.cpv_code),
         codesReplaced,
+        codesLanded,
         taxIdSet,
         lotsSeen: lots.length,
         lotsWritten,

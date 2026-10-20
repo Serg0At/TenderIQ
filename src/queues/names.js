@@ -170,4 +170,12 @@ export const PRIORITY = {
  */
 export const matchJobId = (tenderId, version) => `match-${tenderId}-v${version}`;
 
-export default { QUEUE, JOB, PRIORITY, matchJobId };
+/**
+ * The second ingest match of a tender whose CPV codes reached it only after
+ * the first one ran — an e-auction's live in its invitation archive (ticket
+ * 25). Its own id because the first match holds `matchJobId(id, 1)` and BullMQ
+ * keeps a finished job's id; once per tender, since codes land only once.
+ */
+export const codesMatchJobId = (tenderId) => `match-${tenderId}-codes`;
+
+export default { QUEUE, JOB, PRIORITY, matchJobId, codesMatchJobId };
