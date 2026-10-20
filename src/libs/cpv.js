@@ -3,10 +3,11 @@
  * closely".
  *
  * CPV codes are 8 digits read left to right: 33141110 sits in group 331, in
- * division 33. Two callers ask about it, differently:
+ * division 33. Two questions are asked of it:
  *
- *   - the alert matcher asks a yes/no question — does a saved search's code
- *     COVER this tender's code? A search for 33000000 covers 33141110; a search
+ *   - the alert matcher and the Discovery CPV and field filters ask a yes/no
+ *     question — does a saved search's or a filter's code COVER this tender's
+ *     code? A search for 33000000 covers 33141110; a search
  *     for 33141110 does not cover 33000000. Directional, because a supplier who
  *     asked for a whole division wants every child, and one who asked for a
  *     single item does not want its whole division.
@@ -31,11 +32,20 @@ export const compareLevels = (a, b) => (RANK[a] ?? 0) - (RANK[b] ?? 0);
  * The part of a code that carries meaning: trailing zeros are padding, so
  * 33100000 means "group 331, anything under it".
  *
- * Known sharp edge, kept because the alert matcher's behaviour must not move
- * under a refactor: a division whose second digit is 0 (30, 60, 80, 90…) loses
- * that zero too, so 30000000 reduces to "3" and covers every 3x division.
+ * Never shorter than a division. The division is the first two digits, and a
+ * zero there is part of it rather than padding: 30000000 is "division 30"
+ * (office machinery), not "anything starting with 3" — which would cover
+ * electrical machinery, medical equipment and the rest of 31–39 too.
+ *
+ * What `covers` reduces to, and so the prefix the SQL filters match with
+ * (tender.repo.js#coversAnySql): a code covers exactly the codes that start
+ * with this.
  */
-export const significantPrefix = (code) => String(code ?? '').replace(/0+$/, '');
+export const significantPrefix = (code) => {
+  const text = String(code ?? '');
+  const stripped = text.replace(/0+$/, '');
+  return stripped.length >= 2 ? stripped : text.slice(0, 2);
+};
 
 /** Does `wanted` cover `have` — the same code, or `have` sits under it? */
 export const covers = (wanted, have) => {

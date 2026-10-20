@@ -558,10 +558,14 @@ ADR 0003) — what building it decided, beyond the spec:
 - **Relevance is not a Match.** `services/relevance.service.js#rankTenders` is pure and reads
   nothing the alert pipeline reads; the matcher and `MATCH_THRESHOLD` share only `libs/cpv.js`.
   Tuning relevance weights can never change which alerts fire.
-- **One CPV rule, two questions.** `libs/cpv.js` answers the matcher's *covers* (directional) and
-  relevance's *closeness* (exact / group / division). Its `significantPrefix` strips a division's
-  own trailing zero, so a saved search for 30000000 covers every 3x division — kept, because
-  fixing it changes which alerts fire; it wants its own ticket.
+- **One CPV rule, two questions.** `libs/cpv.js` answers *covers* (directional) and relevance's
+  *closeness* (exact / group / division). The alert matcher, `filter[cpv]` and `filter[field]`
+  all ask *covers*, the filters through its SQL twin `tender.repo.js#coversAnySql` — the two
+  must move together — so a filter returns exactly what a saved search on the same code alerts
+  on. `significantPrefix` strips
+  trailing zeros but never below the 2-digit division: 30000000 covers division 30, not 30–39
+  (ticket 26 — it once did, and sent false alerts). `libs/fields.js` refuses a prefix that is not
+  a significant prefix, which is what lets the field filter share the rule.
 - **Fields are `organizations.type`, a `text[]` of ids from `libs/fields.js`, ≤ 3.** That constant
   is the only definition of each field's CPV prefixes and refuses to load if two overlap. There is
   no `other`: optional fields mean "none of these" is choosing none.

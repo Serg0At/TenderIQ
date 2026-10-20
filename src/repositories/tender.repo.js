@@ -1,5 +1,6 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
+import { significantPrefix } from '../libs/cpv.js';
 import { stableHash } from '../utils/hash.js';
 import parties from './party.repo.js';
 import tenderSources from './tenderSource.repo.js';
@@ -225,11 +226,24 @@ const codeKeySql = (column) =>
  * Every code a tender states, as SQL over a `tenders` alias: the twin of
  * libs/cpv.js#tenderCodes — primary code, the tender's own list, every lot's —
  * so a filter in SQL reads the same list the matcher does. It may hold NULLs
- * and repeats, which neither overlap (`&&`) nor `like any` is disturbed by.
+ * and repeats, which `coversAnySql` is not disturbed by: a NULL starts with
+ * nothing, and a repeat inside `exists` counts once.
  */
 export const tenderCodesSql = (alias = 't') =>
   `(array[${alias}.cpv_code]::text[] || ${alias}.cpv_codes || ` +
   `array(select l.cpv_code::text from tender_lots l where l.tender_id = ${alias}.id))`;
+
+/**
+ * SQL twin of libs/cpv.js#covers: does any code the tender states start with
+ * one of the bound `?::text[]` prefixes. A wanted code covers exactly the codes
+ * that start with its `significantPrefix`, so the CPV filter binds those and
+ * the field filter binds its field's prefixes, and both answer the matcher's
+ * question. `starts_with` rather than `like`: a `%` or `_` in a filter value is
+ * a character, not a wildcard. It moves with `covers`: change one, change both.
+ */
+const coversAnySql = (alias = 't') =>
+  `exists (select 1 from unnest(${tenderCodesSql(alias)}) as c(code) ` +
+  `join unnest(?::text[]) as p(prefix) on starts_with(c.code, p.prefix))`;
 
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
@@ -251,7 +265,8 @@ export const BIDDABLE_STATUSES = ['active', 'amended'];
  * source lists for it, or any lot's (`tenderCodesSql`). A tender whose lot 7 of
  * 18 is a supplier's category must surface for them, and so must one whose
  * page names a code no lot carries; reading fewer codes would silently hide
- * it. A missed tender is the product's #1 churn cause.
+ * it. A missed tender is the product's #1 churn cause. Both CPV filters match
+ * by the alert's rule (`coversAnySql`).
  */
 const applyDiscoveryFilters = (query, {
   cpvCodes = [],
@@ -269,7 +284,7 @@ const applyDiscoveryFilters = (query, {
   cpvPrefixes = [],
 } = {}) => {
   if (cpvCodes.length) {
-    query.whereRaw(`${tenderCodesSql('t')} && ?::text[]`, [cpvCodes]);
+    query.whereRaw(coversAnySql('t'), [cpvCodes.map(significantPrefix).filter(Boolean)]);
   }
 
   if (keyword) {
@@ -296,17 +311,10 @@ const applyDiscoveryFilters = (query, {
   if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
   if (purchaseKindLabels.length) query.whereIn('t.goods_works_services', purchaseKindLabels);
 
-  // A Field resolves to CPV prefixes, matched on every code the tender states —
-  // the same reach as `cpvCodes` above, so the field filter is never a second,
-  // narrower answer to "is this tender in my category". A tender with no CPV
+  // A Field resolves to CPV prefixes — significant prefixes, or libs/fields.js
+  // refuses to load — so it binds them as they are. A tender with no CPV
   // anywhere cannot match, and that is accepted rather than guessed from text.
-  if (cpvPrefixes.length) {
-    const patterns = cpvPrefixes.map((prefix) => `${prefix}%`);
-    query.whereRaw(
-      `exists (select 1 from unnest(${tenderCodesSql('t')}) as c(code) where c.code like any(?::text[]))`,
-      [patterns]
-    );
-  }
+  if (cpvPrefixes.length) query.whereRaw(coversAnySql('t'), [cpvPrefixes]);
   return query;
 };
 

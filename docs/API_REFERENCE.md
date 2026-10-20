@@ -935,8 +935,12 @@ No request body
 **Query parameters:**
 
 - `filter[cpv]` (optional): CPV code, or several — repeated params, a comma-separated string,
-  or `filter[cpv][]` array items. Each max 20 chars. A tender matches when it states one of them
-  exactly, anywhere: headline, `cpvCodes` or a lot.
+  or `filter[cpv][]` array items. Each max 20 chars. **Hierarchical**: a tender matches when a
+  code it states anywhere — headline, `cpvCodes` or a lot — is one of them or sits under one,
+  by the same rule a saved search alerts on. Trailing zeros are padding, down to the 2-digit
+  division: `33100000` returns everything in group 331, `30000000` everything in division 30 and
+  nothing in 31–39, and `33141110` only that code. So this filter returns exactly the tenders a
+  saved search on the same codes would alert on (before its keyword, region and value rules).
 - `filter[keyword]` (optional): free-text search, max 200 chars. Empty string allowed.
 - `filter[buyerId]` (optional): buyer party id, max 40 chars.
 - `filter[region]` (optional): buyer region, max 100 chars.
@@ -958,8 +962,8 @@ No request body
   `422`, not an empty list.
 - `filter[field]` (optional): one or several [field](#list-fields) ids — repeat the parameter
   for several; any of them matches. Resolved to the field's CPV prefixes and matched against
-  **every code the tender states**, like `filter[cpv]`, so a tender whose lot 7 of 18 is medical
-  is returned for `medical`. A tender with no CPV code anywhere matches no field. An unknown id is a
+  **every code the tender states** by the same rule as `filter[cpv]`, so a tender whose lot 7
+  of 18 is medical is returned for `medical`. A tender with no CPV code anywhere matches no field. An unknown id is a
   `422`.
 - `page[size]` (optional): 1–100, default 20.
 - `page[cursor]` (optional): opaque cursor from a previous `meta.cursor`, max 200 chars.
@@ -4538,7 +4542,9 @@ more useful than a corpus-wide average.
 
 **Query parameters:**
 
-- `filter[cpv]` (optional): CPV code, max 20 chars.
+- `filter[cpv]` (optional): CPV code, max 20 chars. The `cpv_family` tier is every code under
+  it, trailing zeros read as padding down to the 2-digit division: `30000000`'s family is
+  division 30, never 31–39.
 - `filter[buyerId]` (optional): buyer party id, max 40 chars.
 - `filter[sinceMonths]` (optional): integer 1–120. Defaults to `INTELLIGENCE.RECENCY_MONTHS`.
 

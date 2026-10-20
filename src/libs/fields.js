@@ -1,3 +1,5 @@
+import { significantPrefix } from './cpv.js';
+
 /**
  * Field: the industry an organization works in, chosen from this list.
  *
@@ -60,6 +62,18 @@ for (const a of allPrefixes) {
     if (a !== b && b.prefix.startsWith(a.prefix)) {
       throw new Error(`[fields] CPV prefix ${b.prefix} (${b.id}) sits inside ${a.prefix} (${a.id})`);
     }
+  }
+}
+
+/**
+ * Refuse a prefix that is not a code's significant prefix. The field filter
+ * matches its prefixes the way `covers` matches a code (tender.repo.js#
+ * coversAnySql), which holds only while each prefix IS one: "3010" would match
+ * class 3010 while the code it stands for, 30100000, covers all of group 301.
+ */
+for (const { id, prefix } of allPrefixes) {
+  if (significantPrefix(prefix.padEnd(8, '0')) !== prefix) {
+    throw new Error(`[fields] CPV prefix ${prefix} (${id}) is not the significant prefix of a code`);
   }
 }
 
