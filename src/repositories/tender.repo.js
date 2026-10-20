@@ -497,7 +497,11 @@ export default class TenderRepository {
 
     const [lots, documents, sources] = await Promise.all([
       trx('tender_lots').where({ tender_id: id }).orderBy('lot_number').select('lot_number', 'cpv_code', 'name'),
-      trx('tender_documents').where({ tender_id: id }).orderBy('id').select('id', 'kind', 'url', 'parsed', 'manifest'),
+      // Newest set first, the same order the checklist reads its invitation in.
+      trx('tender_documents')
+        .where({ tender_id: id })
+        .orderBy(NEWEST_DOCUMENT_FIRST)
+        .select('id', 'kind', 'url', 'parsed', 'manifest'),
       tenderSources.listForTender(id, trx),
     ]);
 

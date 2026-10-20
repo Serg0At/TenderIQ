@@ -96,9 +96,18 @@ fills it from stored text, blanks only. The changes are mirrored into `create_ta
 The text key next to an archive now comes from one storage-port helper,
 `tenderDocTextKeyOf`. The worker and the migration both use it.
 
+**Follow-up (decided 2026-10-20): the tender page lists the newest set first.** `findDetail` used
+to order the document list by `id`, which is arbitrary. It now uses `NEWEST_DOCUMENT_FIRST`, like
+`findCurrentInvitation` and `loadInvitationText`, and `docs/API_REFERENCE.md` says so.
+
+Checked on `armeps:12544122`, the one local tender with two sets (both `contract_documents`):
+
+| | First listed | Second listed |
+|---|---|---|
+| Before | the older set (2026-10-19, 4 files) | the newer set (2026-10-20, 5 files) |
+| After | the newer set (2026-10-20, 5 files) | the older set (2026-10-19, 4 files) |
+
 **Known, not changed.**
-- `findDetail`, the tender page's document list, still orders by `id`. It lists every set and picks
-  none, so nothing reads the wrong one, but its order is arbitrary.
 - An e-auction invitation that returns to bytes stored before (A → B → A) is skipped by the
   payload dedupe. The tender then still "holds" B. This predates the ticket, and the addendum
   check has the same blind spot.

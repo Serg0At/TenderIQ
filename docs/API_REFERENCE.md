@@ -1274,8 +1274,9 @@ belongs to, and a lot gets one only when its name starts with that code's label.
 alerts, the CPV and field filters and relevance all read every code — headline, `cpvCodes` and
 lots — so a search naming any of them finds the tender.
 
-**Documents and their files.** Each document is an archive the tender published; `files` lists
-what is inside it, each downloadable on its own through
+**Documents and their files.** Each document is an archive the tender published, newest first: a
+buyer that re-issues its documents adds a set, and the first one is what the tender holds now.
+`files` lists what is inside it, each downloadable on its own through
 [Download a tender file](#download-a-tender-file). Every file is served from our stored copy
 of the archive — never fetched from the source on click. `availability` says whether there is
 anything to list:
