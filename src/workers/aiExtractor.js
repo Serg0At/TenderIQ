@@ -165,19 +165,20 @@ const extractInto = async (checklist, tracked, { force }) => {
     return { status: 'unavailable', reason };
   }
 
-  const result = await ChecklistExtractionService.extract({ documentText: text, tenderTitle: title });
-
-  // Skip the model when the stored checklist already came from this exact
-  // document. Checked after loading the text because the hash IS the document.
-  if (
-    !force &&
-    checklist.status === 'ready' &&
-    checklist.document_hash &&
-    checklist.document_hash === result.documentHash
-  ) {
+  // Skip the model when the stored items already came from this exact
+  // document; `force` re-reads anyway, for when the prompt or model changed.
+  // Manual items are not touched on this path, as on every other.
+  const stored = {
+    documentHash: checklist.document_hash,
+    aiItemCount: await checklists.countAiItems(checklist.id, organizationId),
+  };
+  if (!force && ChecklistExtractionService.isCurrent(stored, text)) {
+    await checklists.markStatus(checklist.id, { status: 'ready' });
     logger.info(`[ai] checklist for ${trackedTenderId} is already current — not re-extracting`);
     return { status: 'unchanged' };
   }
+
+  const result = await ChecklistExtractionService.extract({ documentText: text, tenderTitle: title });
 
   if (result.status !== 'ready') {
     await checklists.markStatus(checklist.id, {

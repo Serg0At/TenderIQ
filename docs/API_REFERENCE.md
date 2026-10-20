@@ -2208,7 +2208,17 @@ is a stronger act than viewing.
 ```
 
 - `force` (optional, default `false`): re-run an extraction the worker would otherwise skip as
-  unchanged. It exists for the case the document hash cannot detect — the *prompt* changed.
+  unchanged. It exists for the case the document hash cannot detect — the prompt or the model
+  changed.
+
+Regenerating when the invitation has not changed since the stored items were extracted makes
+**no model call**. The answer is still `202` and `pending`, and the next
+[GET](#get-checklist) shows `status: "ready"` with the stored items as they are: the same ids,
+`generatedAt` and `model`, and an AI item a user deleted stays deleted. This holds even if a later
+run failed, because a failed run leaves the stored items as they were. That includes a failed
+`force`, so a plain regenerate after one brings back the items from before it. Manual items are
+kept either way. A changed invitation, a stored extraction that kept no items, or `force` makes
+the worker extract again.
 
 The body may be omitted entirely.
 

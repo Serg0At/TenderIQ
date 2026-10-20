@@ -140,6 +140,28 @@ const normalize = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().toLow
 export const __evalParts = { SYSTEM_PROMPT, OUTPUT_SCHEMA };
 
 export default class ChecklistExtractionService {
+  /** The identity of a document, as `checklists.document_hash` stores it. */
+  static documentHash(documentText) {
+    return sha256(documentText);
+  }
+
+  /**
+   * Whether the stored extraction already answers for this document, so the
+   * model need not be called — decided before `extract`, from what is stored.
+   *
+   * `document_hash` is written only by `replaceItems`, in the same transaction
+   * as the AI items, so a matching hash means those items were read from this
+   * text; a failed run since leaves both as they were. The row's status is not
+   * the test — `generate` has already moved it to `pending`.
+   *
+   * An extraction that kept no items is never current. An empty checklist reads
+   * as "nothing is required", and skipping would make that answer permanent for
+   * everyone who does not know to send `force`.
+   */
+  static isCurrent({ documentHash, aiItemCount }, documentText) {
+    return aiItemCount > 0 && documentHash === ChecklistExtractionService.documentHash(documentText);
+  }
+
   /**
    * Drop any item whose evidence is not actually in the source document.
    *
@@ -199,7 +221,7 @@ export default class ChecklistExtractionService {
       return { status: 'unavailable', reason: 'ai_not_configured' };
     }
 
-    const documentHash = sha256(documentText);
+    const documentHash = ChecklistExtractionService.documentHash(documentText);
 
     /**
      * Streamed, not because the output is huge but because the INPUT is: a
