@@ -8,7 +8,7 @@ formats).
 
 **Blocked by:** 03, 04
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] A pure paper-invitation parser reads `.docx` and `.docx` inside `.zip`. It yields procedure
       code, buyer, subject, delivery address, deadline and lots where present.
@@ -159,8 +159,9 @@ is not registered in Redis yet.
 - **The listing's typed close is the fallback** when the invitation's sentence is not found, and
   a disagreement is logged with the document's figure winning.
 - **`tenders.submission_address`** (text, nullable) added with the four-step workflow: script
-  run twice on `tendra`, mirrored into `create_table.js`, deleted in the next commit. Neon is not
-  touched.
+  run twice on `tendra`, mirrored into `create_table.js`, deleted in the next commit
+  (`git show b5cd180:migrations/add_submission_address.js`). Neon is not touched; whoever
+  migrates it runs that script with the earlier tickets'.
 - **`tenders.description` carries the paper subject.** SCRAPER_WORKFLOW's "no source, never
   written" was about e-auction, whose subject line is its title; a paper notice's title is a
   long headline and the subject is not a copy of it. Reversible: drop it from `observation.js`.
