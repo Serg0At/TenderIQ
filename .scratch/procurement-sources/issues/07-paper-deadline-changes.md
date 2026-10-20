@@ -4,7 +4,7 @@
 and gets an alert about the change. For paper this is the only place a change is published.
 Spec: *Sources and parsers → gnumner* (amendment listing). User stories 6–7.
 
-**Blocked by:** 06, 15
+**Blocked by:** 06, 15, 18
 
 **Status:** ready-for-agent
 
@@ -15,6 +15,8 @@ Spec: *Sources and parsers → gnumner* (amendment listing). User stories 6–7.
 - [ ] A changed deadline raises a new `version`, sets `amended` and re-notifies through the
       existing amendment path with a change summary. `notifications_dedupe_uq` prevents
       duplicates.
-- [ ] An amendment that changes nothing Tendra stores writes no version.
+- [ ] An amendment notice that moves no stored field is still an addendum (decided 2026-10-20,
+      ticket 18). It raises a new version and notifies with a change summary that names the
+      document, not a field, and only while the tender is open.
 - [ ] Unreadable amendment files count as `unsupported_format`.
 - [ ] Verified by hand on two real amendments. Record them here.
