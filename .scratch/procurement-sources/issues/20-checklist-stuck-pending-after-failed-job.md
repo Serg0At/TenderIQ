@@ -121,3 +121,19 @@ the job.
 `ChecklistExtractionService.extract`, which has already called the model and been charged for it.
 `generate` also always leaves the row `pending`, so `checklist.status === 'ready'` never holds
 there and the skip can never fire. That wants its own ticket.
+
+## Not tested
+
+Closed without AI access. Every model failure above was simulated: an unreachable base URL, or a
+patched `ChecklistExtractionService.extract`. These paths were not exercised:
+
+- **A real provider 429.** `rate_limited` was produced by a stubbed `ApiError('RATE_LIMITED')`,
+  not by the SDK's `RateLimitError` going through `translateError`.
+- **A real 401 or 402 from the gateway.** Both map to `DEPENDENCY_UNAVAILABLE` → `ai_unavailable`
+  by reading the code; neither was observed after the fix.
+- **A transient failure followed by a real success.** In scenario F, the attempt that succeeded
+  returned a stubbed refusal, not extracted items.
+- **The worker process and HTTP.** Jobs ran on a scratch queue through the real `processMatch`,
+  not in `npm run worker`. `generate` was called as a service, not over HTTP.
+- **The races, live.** The "settled row, job still live" case was set up by hand with a queued
+  job, not an `active` one. Two concurrent generate clicks were never actually run.

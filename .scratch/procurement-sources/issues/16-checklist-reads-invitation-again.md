@@ -6,7 +6,7 @@ in passing during ticket 05.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-human
+**Status:** done
 
 Since `6f22fab` (per-tender file list and single-file downloads), `tenders.findDetail` selects
 `tender_documents` as `id, kind, url, parsed, manifest`, without `storage_key`. The extractor's
@@ -24,7 +24,7 @@ raises no alarm.
 - [x] ARMEPS invitations (ticket 05, `kind` and archive shape may differ from e-auction's) are
       either read the same way or explicitly answer `unavailable` with a reason. The checklist on
       ARMEPS documents is a spec follow-up, so record which one applies.
-- [ ] After the fix, the same tender produces items, each with verbatim evidence that passes
+- [ ] **Not tested — no AI access (2026-10-20).** After the fix, the same tender produces items, each with verbatim evidence that passes
       `verifyEvidence`. Record the item count and one evidence span here.
 - [x] Grep for other readers of `findDetail(...).documents` that expect `storage_key`, and fix or
       list them.
@@ -34,10 +34,10 @@ raises no alarm.
 
 ## Results (2026-10-20)
 
-**Code is done; one check is left, and it is a billing problem, not a code one.** The last open box
-needs one model call, and the OpenRouter account behind `ANTHROPIC_BASE_URL` is out of credits
-(402: "requested up to 16000 tokens, but can only afford 1168"). Top it up, run the command at the
-end, record the item count and one evidence span, and set `Status: done`.
+**Done, with one acceptance check not tested.** Closed on 2026-10-20 without AI access. The
+OpenRouter account behind `ANTHROPIC_BASE_URL` is out of credits (402: "requested up to 16000
+tokens, but can only afford 1168"). What that leaves unproven is listed under *Not tested* at the
+end.
 
 **The regression, confirmed on the local DB.** It had no organization, so a throwaway one was
 created (`Ticket 16 repro`, user `ticket16-repro@example.invalid`, org `bida9tbed1qwbc336m0t8y1n`). It
@@ -89,13 +89,29 @@ checklist at all.**
   one.
 - A job that fails for good still leaves the row `pending`. That is ticket 20.
 
-**To finish:** add OpenRouter credits, then run this from the repo root. `.env`'s
-`AI_MODEL=claude/claude-opus-5` is not a valid OpenRouter id ("is not a valid model ID"), so the
-command overrides it; fix `.env` to `anthropic/claude-opus-5` as well.
+## Not tested
+
+Everything above was verified on the local DB, MinIO and Redis. These were not, because no
+AI model call could be made:
+
+- **A real extraction.** Nobody has seen tender `pm62ubvysdar7vjlbb3e94y3` produce items, nobody
+  has checked that each item's evidence passes `verifyEvidence`, and no item count or evidence
+  span is recorded. The fix is proven only up to the point where the 144,542-character text
+  reaches the model call.
+- **Anything downstream of a model answer** for a checklist built from this path: `replaceItems`,
+  `needs_review` flagging, and the "already current" skip, which ticket 20 found can never fire.
+- **The generate → worker path over HTTP.** `ChecklistService.generate` was called directly, not
+  through `POST /tracked-tenders/:id/checklist/generate`, and no `npm run worker` process ran the
+  job (ticket 20 used a scratch queue with the real dispatcher).
+- **Neon.** How many production checklists were wrongly stored as `unavailable` is unknown.
+  They re-run on their next generate.
+
+To check it once AI is available, run this from the repo root:
 
 ```bash
-AI_MODEL=anthropic/claude-opus-5 node --input-type=module -e "const { handleChecklistExtract } = await import('./src/workers/aiExtractor.js'); console.log(await handleChecklistExtract({ data: { trackedTenderId: 'xc3jbzh2c9idopep7fm883j5', organizationId: 'bida9tbed1qwbc336m0t8y1n' } })); process.exit(0)"
+node --input-type=module -e "const { handleChecklistExtract } = await import('./src/workers/aiExtractor.js'); console.log(await handleChecklistExtract({ data: { trackedTenderId: 'xc3jbzh2c9idopep7fm883j5', organizationId: 'bida9tbed1qwbc336m0t8y1n' } })); process.exit(0)"
 ```
 
-Then record `kept` from the result and one `evidence` from `checklist_items` for checklist
-`avfj7wgoditx8c37o8zo3yzs`. Delete the repro organization and user once done.
+Record `kept` from the result and one `evidence` from `checklist_items` for checklist
+`avfj7wgoditx8c37o8zo3yzs`. Then delete the repro organization `Ticket 16 repro` and user
+`ticket16-repro@example.invalid` from the local DB.
