@@ -117,15 +117,22 @@ export default class ChecklistService {
     const checklist = await checklists.ensure({ trackedTenderId, organizationId });
     if (existing) await checklists.markStatus(checklist.id, { status: 'pending' });
 
+    // The tracked tender is the natural idempotency key: two clicks while one
+    // extraction is in flight must not buy two model calls. Hyphenated, because
+    // BullMQ throws on a `:` id that does not split into three parts — and here
+    // that throw came after the row was marked pending, so it stayed pending.
+    const jobId = `checklist-${trackedTenderId}`;
+
+    // A FINISHED job keeps its id — completed ones for a day, failed ones for
+    // good — and adding under a taken id is a silent no-op. Without this a
+    // regenerate would mark the checklist pending and never run.
+    const previous = await alertsQueue.getJob(jobId);
+    if (previous && ['completed', 'failed'].includes(await previous.getState())) await previous.remove();
+
     await alertsQueue.add(
       JOB.EXTRACT_CHECKLIST,
       { trackedTenderId, organizationId, force },
-      {
-        priority: PRIORITY.LIVE,
-        // The tracked tender is the natural idempotency key: two clicks while
-        // one extraction is in flight must not buy two model calls.
-        jobId: `checklist:${trackedTenderId}`,
-      }
+      { priority: PRIORITY.LIVE, jobId }
     );
 
     return { id: checklist.id, status: 'pending', advisory: true };

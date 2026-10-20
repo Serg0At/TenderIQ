@@ -2163,6 +2163,13 @@ Generated:
   every read, so a certificate that lapsed since being attached shows as expired here.
 - `advisory: true` on every response: this is model output assisting a bid decision, not a
   legal reading of the tender.
+- `failureReason`: `null` unless `status` is `unavailable` or `failed`. `unavailable` is
+  `no_document` (no invitation is stored for this tender — the common case),
+  `unsupported_document` (a document is stored but its text is not read yet — every ARMEPS
+  tender today), `no_text` (the invitation is stored but its extracted text is missing) or
+  `ai_not_configured`. `failed` is `document_too_large` (refused, never truncated),
+  `invalid_output`, or the model's own `refused` / `truncated` / `empty` / `unparseable`.
+  Generating again re-runs an `unavailable` or `failed` checklist; no `force` is needed.
 
 **Errors:**
 

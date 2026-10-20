@@ -27,15 +27,25 @@ import { logger } from '../utils/logger.js';
  * the text key is derived rather than stored a second time — two columns that
  * must agree is one more thing to keep in step.
  *
- * Returns null rather than throwing when there is no document. Most tenders do
- * not have one: the invitation archive is only fetched for some, and a settled
- * tender never emits the event that would enqueue it. "No document" is the
- * common case, not an error.
+ * Returns a null text with a reason rather than throwing when there is no
+ * document. Most tenders do not have one: the invitation archive is only
+ * fetched for some, and a settled tender never emits the event that would
+ * enqueue it. "No document" is the common case, not an error.
+ *
+ * An ARMEPS tender's archive (`contract_documents`) is stored, but nothing
+ * extracts text from it yet — only the e-auction document stage writes the
+ * `.txt`. That answers `unsupported_document` rather than `no_document`: the
+ * file exists, and saying otherwise would hide the gap behind the common path,
+ * the same way this function once hid a lost storage key.
  */
 export const loadInvitationText = async (tenderId) => {
-  const detail = await tenders.findDetail(tenderId);
-  const invitation = detail?.documents?.find((d) => d.kind === 'invitation');
-  if (!invitation?.storage_key) return { text: null, title: detail?.title ?? null };
+  const tender = await tenders.findWithStoredDocuments(tenderId);
+  const title = tender?.title ?? null;
+  const invitation = tender?.documents.find((d) => d.kind === 'invitation');
+  if (!invitation) {
+    const reason = tender?.documents.length ? 'unsupported_document' : 'no_document';
+    return { text: null, title, reason };
+  }
 
   const storage = await getStorage();
   const textKey = invitation.storage_key.replace(/\.zip$/, '.txt');
@@ -43,7 +53,7 @@ export const loadInvitationText = async (tenderId) => {
   try {
     const body = await storage.get(textKey);
     const text = Buffer.isBuffer(body) ? body.toString('utf8') : String(body ?? '');
-    return { text: text || null, title: detail?.title ?? null };
+    return { text: text || null, title, reason: text ? null : 'no_text' };
   } catch (error) {
     /**
      * A missing text object is not a missing document — the archive exists and
@@ -52,7 +62,7 @@ export const loadInvitationText = async (tenderId) => {
      * re-running the document stage is the repair.
      */
     logger.warn(`[ai] no extracted text at ${textKey}: ${error.message}`);
-    return { text: null, title: detail?.title ?? null };
+    return { text: null, title, reason: 'no_text' };
   }
 };
 
@@ -82,7 +92,7 @@ export const handleChecklistExtract = async (job) => {
   }
 
   const checklist = await checklists.ensure({ trackedTenderId, organizationId });
-  const { text, title } = await loadInvitationText(tracked.tender_id);
+  const { text, title, reason } = await loadInvitationText(tracked.tender_id);
 
   if (!text) {
     /**
@@ -92,9 +102,9 @@ export const handleChecklistExtract = async (job) => {
      * empty list reads as "nothing is required for this tender", which is the
      * most dangerous thing this feature could tell a supplier.
      */
-    await checklists.markStatus(checklist.id, { status: 'unavailable', failureReason: 'no_document' });
-    logger.info(`[ai] tender ${tracked.tender_id} has no invitation text — checklist unavailable`);
-    return { status: 'unavailable', reason: 'no_document' };
+    await checklists.markStatus(checklist.id, { status: 'unavailable', failureReason: reason });
+    logger.info(`[ai] tender ${tracked.tender_id} has no invitation text (${reason}) — checklist unavailable`);
+    return { status: 'unavailable', reason };
   }
 
   const result = await ChecklistExtractionService.extract({ documentText: text, tenderTitle: title });

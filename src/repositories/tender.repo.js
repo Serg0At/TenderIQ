@@ -462,6 +462,26 @@ export default class TenderRepository {
   }
 
   /**
+   * One tender's stored documents with their storage keys, for a worker that
+   * reads them out of the bucket.
+   *
+   * Its own method rather than a column on `findDetail`: that one serves the
+   * API, and a storage key is an internal address that must not reach a
+   * response just to feed a worker. The AI checklist read the key off
+   * `findDetail` until the file list narrowed its select, and from then on
+   * found no document for every tender without anything failing.
+   */
+  static async findWithStoredDocuments(tenderId, trx = db) {
+    const tender = await trx(TABLE).where({ id: tenderId }).first('id', 'title');
+    if (!tender) return null;
+    const documents = await trx('tender_documents')
+      .where({ tender_id: tenderId })
+      .orderBy('id')
+      .select('id', 'kind', 'storage_key');
+    return { ...tender, documents };
+  }
+
+  /**
    * Stored documents whose file list was never taken — every row written
    * before `manifest` existed, and any whose archive could not be listed.
    * Keyset by id so a long run can resume, and so a row that fails again is

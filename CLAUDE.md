@@ -748,7 +748,8 @@ decision that has already been made.
     notification and queues `notify.deliver` on ALERTS, so no HTTP response waits on Telegram or SMTP.
     A notification recorded but never delivered is re-queued on the next raise. `user_id` is the
     actor. BullMQ refuses a custom job id containing `:` unless it splits into exactly three parts —
-    use hyphens (`checklist.service.js` still uses `checklist:${id}`, which throws).
+    use hyphens. A finished job keeps its id, so re-queueing under a fixed id removes a
+    completed or failed one first (`checklist.service.js#generate`).
   - **Deleting an organization** refuses while a pending vault upload is younger than the upload-URL
     TTL, and locks the organization row `FOR UPDATE` before re-checking vault keys and membership, so
     nothing registered concurrently is cascaded away with its object left in the bucket.
