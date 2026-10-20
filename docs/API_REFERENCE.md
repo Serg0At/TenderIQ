@@ -2168,11 +2168,15 @@ Generated:
   `unsupported_document` (a document is stored but its text is not read yet — every ARMEPS
   tender today), `no_text` (the invitation is stored but its extracted text is missing) or
   `ai_not_configured`. `failed` is `document_too_large` (refused, never truncated),
-  `invalid_output`, the model's own `refused` / `truncated` / `empty` / `unparseable`, or —
+  `invalid_output`, `no_items` (the model returned no requirements, usually because the text is
+  unusable), `no_verifiable_items` (it returned items but none quoted the document, so all were
+  dropped), the model's own `refused` / `truncated` / `empty` / `unparseable`, or —
   once every retry has thrown — `ai_unavailable` (the AI service could not be reached),
   `rate_limited` or `internal_error`. Between retries the checklist stays `pending`.
   Generating again re-runs any checklist whose job is no longer queued or running — a `pending`
-  one included; no `force` is needed.
+  one included; no `force` is needed. A `failed` checklist keeps the AI items of its last
+  successful extraction, shown beside the failure. An extraction that keeps nothing is not
+  stored as `ready`; a row stored that way before 2026-10-20 re-extracts on its next generate.
 
 **Errors:**
 

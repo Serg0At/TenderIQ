@@ -154,9 +154,10 @@ export default class ChecklistExtractionService {
    * text; a failed run since leaves both as they were. The row's status is not
    * the test — `generate` has already moved it to `pending`.
    *
-   * An extraction that kept no items is never current. An empty checklist reads
-   * as "nothing is required", and skipping would make that answer permanent for
-   * everyone who does not know to send `force`.
+   * No AI items is never current. `extract` no longer stores an empty result,
+   * so this guards the rows stored as an empty `ready` before it stopped — and a
+   * checklist whose AI items a user deleted one by one. Skipping either would
+   * make "nothing is required" permanent for anyone who does not send `force`.
    */
   static isCurrent({ documentHash, aiItemCount }, documentText) {
     return aiItemCount > 0 && documentHash === ChecklistExtractionService.documentHash(documentText);
@@ -253,6 +254,30 @@ export default class ChecklistExtractionService {
         `[ai] dropped ${rejected.length} checklist item(s) whose evidence was not found ` +
           `in the source document: ${rejected.map((r) => r.label).slice(0, 3).join(' | ')}`
       );
+    }
+
+    /**
+     * Nothing kept is a failure, never a `ready` checklist with no items: an
+     * empty list reads as "nothing is required for this tender". A `failed`
+     * result carries no items, so the previous extraction's items and
+     * `document_hash` stay as they were.
+     *
+     * Prompt rule 8 still tells the model that an empty answer is valid, and it
+     * is — for the MODEL, padding the list is worse. What changes is what the
+     * supplier is shown: the model's "nothing here" means the document or the
+     * prompt needs a look, not that the tender asks for nothing.
+     *
+     * Two reasons, because the repair differs: an empty answer puts the prompt
+     * or the document in question, while items that quote nothing put evidence
+     * verification in question.
+     */
+    if (!kept.length) {
+      const reason = value.items.length ? 'no_verifiable_items' : 'no_items';
+      logger.warn(
+        `[ai] checklist extraction kept no items (${reason}): ${value.items.length} returned, ` +
+          `${rejected.length} dropped as unverifiable, quality=${value.documentQuality}`
+      );
+      return { status: 'failed', reason, documentHash };
     }
 
     const items = kept.map((item, index) => ({

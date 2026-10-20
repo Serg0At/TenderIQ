@@ -185,6 +185,8 @@ const extractInto = async (checklist, tracked, { force }) => {
       status: result.status === 'unavailable' ? 'unavailable' : 'failed',
       failureReason: result.reason ?? null,
     });
+    // The service's own log line has the counts but cannot name the row.
+    logger.warn(`[ai] checklist for ${trackedTenderId} not extracted: ${result.status} (${result.reason})`);
     return { status: result.status, reason: result.reason };
   }
 
