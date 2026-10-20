@@ -137,7 +137,9 @@ Acceptance criteria (to be sharpened at triage):
   «Աճուրդի սկզբնական հրավեր(ներ)») and `superseded` (Փոփոխված, deliberately absent from
   `STATUS`). The observation carries `supersedes: [{ externalId, url }]`.
 - **Resolution (`resolution.service.js`).** A predecessor on one tender joins it (rule
-  `supersedes`); predecessors on two tenders are `ambiguous`. A page from a superseded run,
+  `supersedes`). When the predecessors are on two tenders, the replacement is created as a new
+  run and the join is recorded as an `ambiguous` unmatched result naming both (follow-up,
+  below). A page from a superseded run,
   whether it says Փոփոխված or its link is already marked, becomes `superseded` (link-only) when
   linked and `skip` when not. `deriveStatus({ replaces })` takes the replacement's status alone:
   a non-terminal status of the old run is dropped, and `active` becomes `amended`.
@@ -189,9 +191,22 @@ Acceptance criteria (to be sharpened at triage):
 
 **Known and accepted:**
 
-- **A replacement whose predecessors are on two tenders creates nothing.** It is an
-  `unmatched_results` row (`ambiguous`), which is what triage asked for. It is also a missed
-  tender, which the planned operator alert should count.
+- ~~A replacement whose predecessors are on two tenders creates nothing.~~ **Changed
+  2026-10-21, by decision.** Triage's "do not merge them" meant the two tenders, not "create
+  nothing". The replacement is now created as a new run, with status `active`, its own link
+  current, and the two held tenders and their links untouched. The join it could not make is an
+  `unmatched_results` row (`ambiguous`, both tender ids in `candidate_tender_ids`). It stays
+  unresolved: a re-read of the replacement resolves by rule 1 and never marks it resolved. The
+  operator alert should count it as a join to settle by hand, not as a missed tender.
+  - Verified with `node:assert` on `resolve()`. Two predecessor tenders give `create` with
+    `unmatched: { reason: 'ambiguous', candidateIds: [t1, t2] }`, de-duplicated. One gives a
+    plain join. A later read of the replacement resolves by rule 1. All 18 cases pass.
+  - A throwaway case on a clone of `tendra` (local storage, Redis db 9, both cleared; no live
+    requests). 46826 and 46963 were reconstructed as published and held as two tenders, then
+    the stored 46964 page arrived naming both. It became a new tender (v1, its own `Ավարտված`
+    link, ledger written: 7 awards, 34 bids). One `ambiguous` row recorded both tender ids,
+    with `resolved_tender_id` null. Both held tenders and their links were byte-for-byte
+    unchanged. A re-read of 46964 linked by rule 1 and left the row unresolved.
 - **If the original's own archive job is still queued when the replacement joins,** that job is
   refused (`superseded_link`). The replacement's archive then has no previous set, and the alert
   names moved fields without files.

@@ -93,8 +93,9 @@ fields and the archive's changed files. Two consequences:
   (`tender_sources.observed_status`, sticky), recorded with no request, even for a predecessor
   Tendra never fetched. A superseded link is never refreshed, and its pages and archives write
   nothing but the link. The refresh and the document stage read the one current link per
-  source; `tenders.source_id` stays the creating link. Predecessors on two different tenders are
-  `ambiguous` and are not merged.
+  source; `tenders.source_id` stays the creating link. When the predecessors are on two different
+  tenders, the replacement is created as a new run and the join is recorded as an `ambiguous`
+  unmatched result naming both. Nothing is merged, and the tender is not missed.
 
 ## Considered options
 

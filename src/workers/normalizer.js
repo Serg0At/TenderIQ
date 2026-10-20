@@ -193,10 +193,28 @@ export const normalizeTender = async ({
     return result;
   }
 
-  // A result that was once unmatched and has now found its tender. Only when
-  // the link is new: an observation already linked was never left unmatched
-  // since, and the e-auction path skips a pointless UPDATE per page.
-  if (decision.rule !== 'link') {
+  // A replacement whose predecessors are on two tenders: created as a new run,
+  // and the join it could not make recorded beside it, unresolved — the two
+  // tenders are left exactly as they were (ticket 29). Recorded after the save,
+  // so a page with no buyer leaves no row pointing at a tender never written.
+  if (decision.unmatched) {
+    await unmatchedResults.record({
+      source,
+      externalRef: observation.externalId,
+      procedureCode: observation.procedureCode,
+      reason: decision.unmatched.reason,
+      candidateTenderIds: decision.unmatched.candidateIds,
+      payloadHash: hash,
+      seenAt,
+    });
+    logger.warn(`[normalizer] ${source}:${sourceId} created as a new run; its join is ${decision.unmatched.reason}`, {
+      tenderId: result.tenderId,
+      candidates: decision.unmatched.candidateIds,
+    });
+  } else if (decision.rule !== 'link') {
+    // A result that was once unmatched and has now found its tender. Only when
+    // the link is new: an observation already linked was never left unmatched
+    // since, and the e-auction path skips a pointless UPDATE per page.
     await unmatchedResults.markResolved({
       source,
       externalRef: observation.externalId,

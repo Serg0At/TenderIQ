@@ -655,8 +655,9 @@ decision that has already been made.
   the refresh, the document stage, `documents:backfill`; `tenders.source_id` stays the creating
   link and may be a dead run. The join's one alert waits for the replacement's archive (the
   document job carries `amendment`) so it can name moved fields and changed files together, and
-  is raised without the files if the download never lands. Predecessors on two tenders are
-  `ambiguous`, never merged.
+  is raised without the files if the download never lands. Predecessors on two tenders: the
+  replacement is created as a new run, the join is an `ambiguous` unmatched result naming
+  both, and nothing is merged.
 - **An amendment reaches trackers too** (ticket 28): the matcher's recipients for an amendment
   are the matched organizations ∪ those tracking the tender at `considering`, `preparing` or
   `submitted` (`AMENDMENT_PURSUITS`) — `submitted` because a sealed ARMEPS or paper bid can be

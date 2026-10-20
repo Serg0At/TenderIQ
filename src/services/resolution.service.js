@@ -160,6 +160,10 @@ const unmatched = (reason, tenders = []) => ({
  * rows. ADR 0004's one exception, a PPCM history backfill whose tenders are
  * never biddable, is its own decision and adds its own mode when it is built.
  *
+ * A replacement whose predecessors are on two tenders is `create` with an
+ * `unmatched` beside it: a new run, the two tenders untouched, and the join
+ * recorded as ambiguous.
+ *
  * A page from a superseded run — one that says so, or whose link its
  * replacement already marked — is `superseded` when linked, and `skip` when
  * not: nothing is created for a dead run, and its replacement records it
@@ -181,10 +185,13 @@ export const resolve = (observation, { linked = [], pointed = [], predecessorTen
   if (observation.superseded) return { action: 'skip', reason: 'superseded' };
 
   // Predecessors on two tenders Tendra holds apart: joining would merge them,
-  // and which one the replacement belongs to is not ours to pick.
+  // and which one the replacement belongs to is not ours to pick. But the
+  // replacement is a live, biddable run, and dropping it would be a missed
+  // tender — so it is created as a new run, and the join it could not make is
+  // recorded as an ambiguous unmatched result naming both tenders.
   const byPredecessor = unique(predecessorTenders);
   if (byPredecessor.length === 1) return link(byPredecessor[0], 'supersedes');
-  if (byPredecessor.length > 1) return unmatched('ambiguous', byPredecessor);
+  if (byPredecessor.length > 1) return { action: 'create', unmatched: unmatched('ambiguous', byPredecessor) };
 
   const byPointer = unique(pointed);
   if (byPointer.length === 1) return link(byPointer[0], 'pointer');
