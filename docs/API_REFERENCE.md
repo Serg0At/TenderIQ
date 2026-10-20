@@ -2168,8 +2168,11 @@ Generated:
   `unsupported_document` (a document is stored but its text is not read yet — every ARMEPS
   tender today), `no_text` (the invitation is stored but its extracted text is missing) or
   `ai_not_configured`. `failed` is `document_too_large` (refused, never truncated),
-  `invalid_output`, or the model's own `refused` / `truncated` / `empty` / `unparseable`.
-  Generating again re-runs an `unavailable` or `failed` checklist; no `force` is needed.
+  `invalid_output`, the model's own `refused` / `truncated` / `empty` / `unparseable`, or —
+  once every retry has thrown — `ai_unavailable` (the AI service could not be reached),
+  `rate_limited` or `internal_error`. Between retries the checklist stays `pending`.
+  Generating again re-runs any checklist whose job is no longer queued or running — a `pending`
+  one included; no `force` is needed.
 
 **Errors:**
 
@@ -2228,7 +2231,9 @@ The body may be omitted entirely.
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`.
 - `404 NOT_FOUND`: "Tracked tender not found."
-- `409 CONFLICT`: "A checklist is already being generated for this tender." (unless `force`).
+- `409 CONFLICT`: "A checklist is already being generated for this tender." Exactly while its job
+  is still queued or running, whatever the checklist's status and with `force` too — a running job
+  cannot be re-pointed, and adding a second under its id would do nothing.
 - `503 DEPENDENCY_UNAVAILABLE`: "AI checklist extraction is not configured." Refused up front
   rather than enqueueing a job certain to fail.
 

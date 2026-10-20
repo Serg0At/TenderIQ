@@ -510,6 +510,13 @@ empty. The rules below are enforced in that service and must hold for anything a
   instructions, and the output is schema-constrained. A PDF saying "ignore previous instructions" is
   just text.
 - **Check `stop_reason` before reading content**; on a refusal, degrade and flag rather than crash.
+- **A throttled model call spends a retry attempt; it is not parked with `moveToDelayed`.** This is
+  the one exception to ingestion's "being throttled must not burn an attempt". A `DelayedError`
+  never increments `attemptsMade`, so a quota that does not reset loops outside the attempt budget
+  in states that all count as live — for the checklist, a row stuck `pending` and every generate a
+  409. On the last attempt `aiExtractor.js` records the throw as `failed` (`rate_limited`,
+  `ai_unavailable`, `internal_error`), and `generate` refuses only while the *job* is live, never
+  on the row's status alone.
 - **AI output is advisory.** Low-confidence checklist items route to human review; nothing AI-produced
   is presented as legally authoritative.
 

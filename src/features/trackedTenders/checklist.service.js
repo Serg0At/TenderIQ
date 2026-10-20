@@ -6,9 +6,16 @@ import ai from '../../libs/adapters/ai/anthropic.js';
 import { alertsQueue } from '../../queues/index.js';
 import { JOB, PRIORITY } from '../../queues/names.js';
 import { ApiError } from '../../utils/errors.js';
+import { logger } from '../../utils/logger.js';
 import config from '../../configs/variables.config.js';
 
 const { AI } = config;
+
+/**
+ * BullMQ states in which a job will still run. A prioritized job is not
+ * `waiting` — it has its own state — and every checklist job is prioritized.
+ */
+const LIVE_JOB_STATES = new Set(['waiting', 'prioritized', 'delayed', 'active', 'waiting-children']);
 
 /**
  * The bid checklist as an API resource.
@@ -109,25 +116,41 @@ export default class ChecklistService {
       });
     }
 
-    const existing = await checklists.findForTracked(trackedTenderId, organizationId);
-    if (existing?.status === 'pending' && !force) {
+    // The tracked tender is the natural idempotency key: two clicks while one
+    // extraction is in flight must not buy two model calls. Hyphenated, because
+    // BullMQ throws on a `:` id that does not split into three parts.
+    const jobId = `checklist-${trackedTenderId}`;
+    const previous = await alertsQueue.getJob(jobId);
+    const inFlight = previous ? LIVE_JOB_STATES.has(await previous.getState()) : false;
+
+    /**
+     * The JOB is what is in flight, never the row. A `pending` row can outlive
+     * its job — removed, a flushed Redis, a crash between marking the row and
+     * the `add` below — and then no handler runs to move it on, so refusing on
+     * the row's status alone would refuse forever. The reverse also happens: a
+     * job that has just written `failed` or `ready` is still `active` for a
+     * moment, and adding under its id then would be a no-op behind a 202.
+     *
+     * `force` does not get past this either: it re-reads an unchanged document,
+     * and a job that is already running cannot be told to.
+     */
+    if (inFlight) {
       throw ApiError.conflict('A checklist is already being generated for this tender.');
     }
 
+    const existing = await checklists.findForTracked(trackedTenderId, organizationId);
     const checklist = await checklists.ensure({ trackedTenderId, organizationId });
     if (existing) await checklists.markStatus(checklist.id, { status: 'pending' });
 
-    // The tracked tender is the natural idempotency key: two clicks while one
-    // extraction is in flight must not buy two model calls. Hyphenated, because
-    // BullMQ throws on a `:` id that does not split into three parts — and here
-    // that throw came after the row was marked pending, so it stayed pending.
-    const jobId = `checklist-${trackedTenderId}`;
-
     // A FINISHED job keeps its id — completed ones for a day, failed ones for
     // good — and adding under a taken id is a silent no-op. Without this a
-    // regenerate would mark the checklist pending and never run.
-    const previous = await alertsQueue.getJob(jobId);
-    if (previous && ['completed', 'failed'].includes(await previous.getState())) await previous.remove();
+    // regenerate would mark the checklist pending and never run. A remove that
+    // loses a race to a concurrent click is harmless — exactly one job holds
+    // the id afterwards — so it is logged, not thrown; anything worse leaves
+    // a pending row with no job, which the next click re-runs.
+    if (previous) {
+      await previous.remove().catch((error) => logger.warn(`[checklist] ${jobId} not removed: ${error.message}`));
+    }
 
     await alertsQueue.add(
       JOB.EXTRACT_CHECKLIST,

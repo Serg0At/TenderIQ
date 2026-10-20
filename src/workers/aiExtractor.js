@@ -92,6 +92,64 @@ export const handleChecklistExtract = async (job) => {
   }
 
   const checklist = await checklists.ensure({ trackedTenderId, organizationId });
+
+  try {
+    return await extractInto(checklist, tracked, { force });
+  } catch (error) {
+    if (isFinalAttempt(job)) await markThrown(checklist, error);
+    // Rethrown either way, so BullMQ still retries or records the failure.
+    throw error;
+  }
+};
+
+/**
+ * The reason a thrown extraction is recorded under, keyed by the ApiError code
+ * the AI adapter throws. Anything else is an internal failure, not the model's.
+ *
+ * A throttle spends attempts like any other dependency failure — deliberately
+ * not the `moveToDelayed` + `DelayedError` that ingestion uses. A delayed job
+ * never increments `attemptsMade`, so a quota that does not reset would loop
+ * delayed → active → delayed outside the attempt budget, every one of those a
+ * live state: the checklist stuck `pending` and every generate a 409, which is
+ * the bug this exists to end. The adapter carries no retry-after to wait for.
+ */
+const THROWN_REASON = {
+  RATE_LIMITED: 'rate_limited',
+  DEPENDENCY_UNAVAILABLE: 'ai_unavailable',
+};
+
+/**
+ * Whether BullMQ will retry this job if it throws now. `attemptsMade` counts
+ * the attempts already over, so the current one is `attemptsMade + 1`. A job
+ * built by hand (a script, a replay) has neither and counts as final.
+ */
+const isFinalAttempt = (job) => (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+
+/**
+ * Record a thrown extraction as `failed`, on the last attempt only.
+ *
+ * Without this the row stays `pending` after BullMQ gives up, which reads as
+ * work in progress forever. Before the last attempt the row is left `pending`
+ * on purpose — a retry is still coming, and `failed` would tell the client to
+ * give up on a checklist that is about to arrive.
+ *
+ * A failed write here is logged and swallowed: the error worth rethrowing is
+ * the one that failed the job, not this one.
+ */
+const markThrown = async (checklist, error) => {
+  const failureReason = THROWN_REASON[error?.code] ?? 'internal_error';
+  try {
+    await checklists.markStatus(checklist.id, { status: 'failed', failureReason });
+    logger.warn(`[ai] checklist ${checklist.id} failed after its last attempt (${failureReason}): ${error.message}`);
+  } catch (markError) {
+    logger.error(`[ai] checklist ${checklist.id} could not be marked failed: ${markError.message}`);
+  }
+};
+
+/** Read the invitation and write the checklist — everything after the row exists. */
+const extractInto = async (checklist, tracked, { force }) => {
+  const trackedTenderId = tracked.id;
+  const organizationId = checklist.organization_id;
   const { text, title, reason } = await loadInvitationText(tracked.tender_id);
 
   if (!text) {
