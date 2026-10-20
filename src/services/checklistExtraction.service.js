@@ -164,6 +164,32 @@ export default class ChecklistExtractionService {
   }
 
   /**
+   * Whether a checklist's AI items were read from the invitation the tender
+   * holds now — `true`, `false`, or `null` when there is no telling.
+   *
+   * The same comparison as `isCurrent`, made on a read: `current.textHash` is
+   * the hash the document stage stored on the tender's newest invitation row,
+   * so a GET never reads the text. Derived every time and never stored, or the
+   * answer would go stale the moment a new document set arrived.
+   *
+   * A changed document is `false` whatever the row's status: `failed` after a
+   * re-read of the new document, `ready` when nobody has regenerated since, and
+   * `unavailable` when the new invitation has no text. That last one has a NULL
+   * hash, and it is still `false`: AI items exist, so they were read from some
+   * text, and it was not this one. Every invitation with readable text carries
+   * a hash — the document stage writes it, and the ticket 24 migration filled
+   * the rows from before.
+   *
+   * `null` without AI items — there is nothing to be current, and manual items
+   * are a person's assertion, not a reading of a document version — and with
+   * no invitation to compare against.
+   */
+  static itemsCurrent({ documentHash, aiItemCount }, current) {
+    if (!aiItemCount || !documentHash || !current) return null;
+    return documentHash === current.textHash;
+  }
+
+  /**
    * Drop any item whose evidence is not actually in the source document.
    *
    * This is the rule that makes the feature trustworthy, and it is enforced

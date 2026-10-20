@@ -2,7 +2,7 @@ import checklists from '../repositories/checklist.repo.js';
 import trackedTenders from '../repositories/trackedTender.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import ChecklistExtractionService from '../services/checklistExtraction.service.js';
-import { getStorage } from '../libs/storage/index.js';
+import { getStorage, tenderDocTextKeyOf } from '../libs/storage/index.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -25,7 +25,10 @@ import { logger } from '../utils/logger.js';
  * `tender_documents.storage_key` points at the ZIP; the document stage writes
  * the extracted text beside it under the same key with a `.txt` extension, so
  * the text key is derived rather than stored a second time — two columns that
- * must agree is one more thing to keep in step.
+ * must agree is one more thing to keep in step. After an addendum a tender
+ * holds more than one invitation; documents come newest first, so the one read
+ * is the one the tender holds now — the same row a checklist's `itemsCurrent`
+ * is decided against.
  *
  * Returns a null text with a reason rather than throwing when there is no
  * document. Most tenders do not have one: the invitation archive is only
@@ -48,7 +51,7 @@ export const loadInvitationText = async (tenderId) => {
   }
 
   const storage = await getStorage();
-  const textKey = invitation.storage_key.replace(/\.zip$/, '.txt');
+  const textKey = tenderDocTextKeyOf(invitation.storage_key);
 
   try {
     const body = await storage.get(textKey);

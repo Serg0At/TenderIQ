@@ -1,7 +1,9 @@
 import checklists from '../../repositories/checklist.repo.js';
 import trackedTenders from '../../repositories/trackedTender.repo.js';
 import vaultDocuments from '../../repositories/vaultDocument.repo.js';
+import tenders from '../../repositories/tender.repo.js';
 import VaultDocumentService, { expiryOf } from '../vault/vaultDocument.service.js';
+import ChecklistExtractionService from '../../services/checklistExtraction.service.js';
 import ai from '../../libs/adapters/ai/anthropic.js';
 import { alertsQueue } from '../../queues/index.js';
 import { JOB, PRIORITY } from '../../queues/names.js';
@@ -63,7 +65,7 @@ const presentItem = (row) => ({
     : null,
 });
 
-const present = (checklist, items, progress) => ({
+const present = (checklist, items, progress, itemsCurrent) => ({
   id: checklist.id,
   status: checklist.status,
   source: checklist.source,
@@ -71,6 +73,13 @@ const present = (checklist, items, progress) => ({
   model: checklist.model ?? null,
   generatedAt: checklist.generated_at ?? null,
   failureReason: checklist.failure_reason ?? null,
+  /**
+   * Whether the AI items come from the invitation the tender holds now. A
+   * `false` is a warning a client must show: the buyer changed the document
+   * after these items were read, so some may no longer hold — the same danger
+   * as an empty list, a supplier preparing against the wrong requirements.
+   */
+  itemsCurrent,
   progress,
   items: items.map(presentItem),
   /**
@@ -89,14 +98,22 @@ export default class ChecklistService {
     const checklist = await checklists.findForTracked(trackedTenderId, organizationId);
     if (!checklist) {
       // Not an error: a pursuit simply has no checklist until one is asked for.
-      return { status: 'absent', items: [], progress: null, advisory: true };
+      return { status: 'absent', itemsCurrent: null, items: [], progress: null, advisory: true };
     }
 
-    const [items, progress] = await Promise.all([
+    const [items, progress, invitation] = await Promise.all([
       checklists.itemsFor(checklist.id, organizationId),
       checklists.progress(checklist.id, organizationId),
+      tenders.findCurrentInvitation(tracked.tender_id),
     ]);
-    return present(checklist, items, progress);
+    const itemsCurrent = ChecklistExtractionService.itemsCurrent(
+      {
+        documentHash: checklist.document_hash,
+        aiItemCount: items.filter((item) => item.source === 'ai').length,
+      },
+      invitation ? { textHash: invitation.text_hash } : null
+    );
+    return present(checklist, items, progress, itemsCurrent);
   }
 
   /**

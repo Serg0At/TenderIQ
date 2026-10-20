@@ -7,6 +7,7 @@ import { parseInvitation } from '../libs/adapters/source/eauction/invitation.par
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
+import ChecklistExtractionService from '../services/checklistExtraction.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import { sha256 } from '../utils/hash.js';
 import { JOB } from '../queues/names.js';
@@ -130,11 +131,15 @@ export const handleTenderDocuments = async (job, token) => {
   }
 
   // The extracted text is the input the AI checklist stage will read, so it is
-  // stored beside the archive rather than re-derived on every use.
+  // stored beside the archive rather than re-derived on every use. Its hash
+  // goes on the document row, so a checklist can tell whether its items came
+  // from this text without reading it (ticket 24).
+  let textHash = null;
   if (parsed.text) {
     await storage.put(tenderDocTextKey({ source, sourceId, hash }), parsed.text, {
       contentType: 'text/plain; charset=utf-8',
     });
+    textHash = ChecklistExtractionService.documentHash(parsed.text);
   }
 
   // The archive's file list, for the tender page. Taken here, from bytes
@@ -163,6 +168,7 @@ export const handleTenderDocuments = async (job, token) => {
       cpvCodes: parsed.cpvCodes,
       lots: parsed.lots,
       manifest,
+      textHash,
     },
     ref,
     priority: job.opts?.priority,

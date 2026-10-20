@@ -200,6 +200,13 @@ function up(pg) {
       // The files inside the stored archive, listed once at ingest so a tender page never
       // reads the archive to show them. NULL means not listed yet, never "no files".
       table.jsonb('manifest');
+      // A tender holds one row per document set it was ever issued (an addendum is a new
+      // set), and the newest is the one it holds now.
+      table.timestamp('stored_at').notNullable().defaultTo(pg.fn.now());
+      // Hash of the extracted text stored beside the archive, the same hash a checklist
+      // records in checklists.document_hash — comparing the two says whether a checklist's
+      // AI items come from this document without reading the text. NULL: no text stored.
+      table.string('text_hash');
       // Lets the database arbitrate the concurrent-insert race instead of a
       // read-then-insert, which two jobs can both pass. Same principle as
       // source_payloads.

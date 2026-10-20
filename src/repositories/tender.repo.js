@@ -40,6 +40,16 @@ const codeSet = (codes) => [...new Set((codes ?? []).filter(Boolean).map(String)
 const sameCodes = (a, b) => codeSet(a).join() === codeSet(b).join();
 
 /**
+ * A tender holds one document row per set it was issued, and an addendum is a
+ * new set (ticket 18), so "the tender's invitation" is the newest row. The id
+ * only breaks a tie — a CUID2 says nothing about order.
+ */
+const NEWEST_DOCUMENT_FIRST = [
+  { column: 'stored_at', order: 'desc' },
+  { column: 'id', order: 'desc' },
+];
+
+/**
  * Fields whose movement constitutes an amendment. Anything a supplier would
  * act on belongs here; bookkeeping (fetched_at, storage keys) does not.
  */
@@ -517,15 +527,28 @@ export default class TenderRepository {
    * response just to feed a worker. The AI checklist read the key off
    * `findDetail` until the file list narrowed its select, and from then on
    * found no document for every tender without anything failing.
+   *
+   * Newest first, so the first invitation is the one the tender holds now.
    */
   static async findWithStoredDocuments(tenderId, trx = db) {
     const tender = await trx(TABLE).where({ id: tenderId }).first('id', 'title');
     if (!tender) return null;
     const documents = await trx('tender_documents')
       .where({ tender_id: tenderId })
-      .orderBy('id')
+      .orderBy(NEWEST_DOCUMENT_FIRST)
       .select('id', 'kind', 'storage_key');
     return { ...tender, documents };
+  }
+
+  /**
+   * The invitation a tender holds now, without its text: what a checklist's
+   * `document_hash` is compared with on every read.
+   */
+  static async findCurrentInvitation(tenderId, trx = db) {
+    return trx('tender_documents')
+      .where({ tender_id: tenderId, kind: 'invitation' })
+      .orderBy(NEWEST_DOCUMENT_FIRST)
+      .first('id', 'text_hash');
   }
 
   /**
@@ -701,6 +724,7 @@ export default class TenderRepository {
     cpvCodes = [],
     lots = [],
     manifest = null,
+    textHash = null,
   }, trx = db) {
     const run = async (trx) => {
       const tender = await trx(TABLE).where({ source_id: sourceId }).forUpdate().first();
@@ -768,6 +792,7 @@ export default class TenderRepository {
           // Serialised by hand: knex hands a JS array to node-postgres as a
           // Postgres array literal, which jsonb rejects.
           manifest: manifest ? JSON.stringify(manifest) : null,
+          text_hash: textHash,
         })
         .onConflict(['tender_id', 'storage_key'])
         .ignore();

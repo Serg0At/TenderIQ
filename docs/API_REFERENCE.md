@@ -2118,6 +2118,7 @@ Never generated:
 {
   "data": {
     "status": "absent",
+    "itemsCurrent": null,
     "items": [],
     "progress": null,
     "advisory": true
@@ -2136,6 +2137,7 @@ Generated:
     "model": "claude-opus-5",
     "generatedAt": "2026-08-29T12:41:07.882Z",
     "failureReason": null,
+    "itemsCurrent": true,
     "progress": {
       "total": 14,
       "done": 6,
@@ -2172,6 +2174,16 @@ Generated:
 }
 ```
 
+- `itemsCurrent`: whether the AI items were read from the invitation the tender holds **now**.
+  `false` means the buyer issued a new invitation after these items were extracted, so some may
+  describe requirements that no longer hold. **A client must show this**, beside the items and not
+  only in a tooltip, and offer [Generate checklist](#generate-checklist): items from an old
+  document shown as current are as dangerous as an empty list. It is `false` whatever `status`
+  says — `ready` when nobody has regenerated since the change, `failed` when the re-read of the new
+  document failed and the old items are still shown, `unavailable` when the new invitation has no
+  readable text. `null` when there are no AI items (manual items are a person's assertion and are
+  never stale) or the tender holds no invitation to compare with. Derived on every read, never
+  stored.
 - `category`: `eligibility`, `financial`, `technical`, `document`, `procedural`, or `null`.
 - `confidence`: 0–1 for AI items, **`null` for manual ones** — a person's assertion stays
   distinguishable from an extraction. `evidence` is likewise `null` on manual items.
