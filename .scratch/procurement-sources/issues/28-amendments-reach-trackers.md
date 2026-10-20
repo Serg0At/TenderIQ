@@ -67,6 +67,30 @@ A second run of the same job created 0. A `TenderIngested` run alerted only the 
 with a search. An amendment job on an `active` tender whose deadline had passed returned
 `skipped: deadline_passed`.
 
+**A reopened tender alerts (checked 2026-10-20, no fix needed).** An amendment that moves a
+deadline that has already passed into the future is judged by the new deadline. The matcher
+reads the tender when the job runs, after `saveNormalized` has committed the new deadline, and
+`deriveStatus` turns a deadline-`closed` tender back to `active`. Run end to end through the
+real `normalizeTender`, using 12544122's stored armeps.am page copied under a throwaway ref,
+with the deadline edited and a throwaway organization tracking at `preparing`:
+
+1. Deadline 2026-10-15 (passed). The tender is stored at v1 `closed`, and its ingest match
+   returned `skipped: status_closed`.
+2. The same page with the deadline moved to 2026-12-01. The tender went to v2 `active` with
+   `changedFields: ['status', 'deadline_at']`. The queued `match-…-v2` alerted the tracker
+   once (`amendment`, `v2`, `pipelineStatus: preparing`), and running it again created
+   nothing.
+
+Deleted afterwards:
+- the tender and its source link;
+- both payload rows and their stored objects;
+- the three queued jobs (two match jobs, one documents job);
+- the organization and the user.
+
+The buyer party is shared with the real 12544122 and was kept. `deadline_passed` drops only a job
+whose tender still has a passed deadline when it runs. Example: the deadline moved back again
+before a delayed job ran.
+
 **Decided while building. Sergey to confirm:**
 
 - **The deadline half of the open rule now applies to every amendment.** That covers the
