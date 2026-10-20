@@ -35,6 +35,8 @@ export const DELIVERABLE_CHANNELS = ['telegram', 'email'];
 
 /** AMD with thousands separators. Armenian procurement values run to billions. */
 export const money = (amount, currency = 'AMD') => {
+  // No value is no line: `Number(null)` is 0, and "0 AMD" is a value nobody published.
+  if (amount === null || amount === undefined || amount === '') return null;
   const n = Number(amount);
   if (!Number.isFinite(n)) return null;
   return `${n.toLocaleString('en-US', { maximumFractionDigits: 0 })} ${currency}`;
@@ -165,6 +167,25 @@ export const matchedSearchesLine = (payload = {}) => {
   return names.length ? names.join(', ') : null;
 };
 
+/**
+ * What an amendment changed, as one line — or null.
+ *
+ * The fields that moved, then each document an addendum added, replaced or
+ * removed (`documentChanges`, services/addendum.service.js), by its file name.
+ * An addendum moves no field, so its line names only documents: an alert that
+ * said a field changed when none did would teach people to stop reading them.
+ */
+export const changeLine = (payload = {}) => {
+  const docs = payload.documentChanges ?? {};
+  const parts = [
+    ...(payload.changedFields ?? []),
+    ...(docs.added ?? []).map((name) => `new document: ${name}`),
+    ...(docs.replaced ?? []).map((name) => `replaced document: ${name}`),
+    ...(docs.removed ?? []).map((name) => `removed document: ${name}`),
+  ];
+  return parts.length ? parts.join(', ') : null;
+};
+
 /** True for the alerts that are about the org's own document rather than a tender. */
 export const isVaultType = (type) => String(type ?? '').startsWith('vault-');
 
@@ -207,6 +228,7 @@ export const teamAnnouncement = (type, payload = {}) => {
 export default {
   DELIVERABLE_CHANNELS,
   matchedSearchesLine,
+  changeLine,
   money,
   deadline,
   tenderLink,

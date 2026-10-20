@@ -628,6 +628,17 @@ decision that has already been made.
   have the `source` column it writes through.
 - **Empty on purpose:** `contracts` (post-award, phase 6) and, for e-auctions, `cpv_code` /
   `cpv_codes` / `parties.tax_id` (all live only inside the invitation ZIP — see the document stage).
+- **A new document set is an amendment** (ticket 18, `services/addendum.service.js`). An
+  addendum moves no field the amendment hash reads, so the document stage compares the new
+  set's file list with the previous one's (name, CRC, size from `tender_documents.manifest`,
+  never the archive bytes) and, on any difference, raises `version` in the transaction that
+  writes the new document row, turns `active` into `amended` while the tender is open (an
+  alertable status, deadline ahead), and queues the
+  ordinary amendment alert with `changedFields: []` and `documentChanges` — the alert names
+  files, never a field. Past the deadline, closed, awarded or cancelled: version only, no alert. A
+  tender's first set is not an addendum, and an unknown previous list raises nothing.
+  `deriveStatus` keeps `amended` over a page that says "open". Both sources, one rule; but an
+  e-auction re-issue is rarely re-downloaded at all (ticket 27).
 - **A tender keeps every CPV code its source states** (ticket 17): `tenders.cpv_codes`, a sorted
   `text[]` beside `cpv_code`, which stays the primary one. armeps.am lists a tender's codes without
   saying which lot is which, so a code can be on the tender and on no lot — and it is still a fact
@@ -907,9 +918,11 @@ decision that has already been made.
   requirement still exists, it is simply unmet again.
 - **A vault alert has no tender**, which broke BR-9 dedupe — `(org, type, tender_id)` collapses
   every expiring document in an org into one notification. `notifications.subject_id` is the
-  dedupe key for non-tender alerts and stays NULL for everything else. BR-9 is now a
+  dedupe key for non-tender alerts, and for an `amendment` it is `v{version}` (ticket 18):
+  with it NULL, the first amendment of a tender was the only one any organization was ever
+  told about. It stays NULL for everything else. BR-9 is now a
   constraint rather than a convention: `notifications_dedupe_uq` on `(organization_id, type,
-  tender_id, subject_id)` **`NULLS NOT DISTINCT`** — every row has a NULL in that key by
+  tender_id, subject_id)` **`NULLS NOT DISTINCT`** — almost every row has a NULL in that key by
   design, so under the default NULLS DISTINCT the index would accept every duplicate it
   exists to stop while looking correct in `\d notifications`. `createIfNew` reads first and
   inserts `ON CONFLICT DO NOTHING`, so the loser of a concurrent raise reads back the

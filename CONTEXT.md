@@ -102,6 +102,13 @@ One tender can be assembled from several sources, and one source can serve sever
 channels.
 _Avoid_: Submission channel, Platform, Feed
 
+**Addendum**:
+A document a buyer adds to, replaces in or removes from a tender's published documents after
+the announcement. An amendment of the tender even when no field moved, because it usually
+changes what a bid must contain. Recognised by the buyer's files (name, CRC, size), never by
+the archive's bytes.
+_Avoid_: Attachment, New file, Re-issue (alone)
+
 **Unmatched result**:
 A bidder or award row from a source that could not be attached to exactly one tender — because
 Tendra holds no such tender, or holds more than one with that procedure code. Kept with its

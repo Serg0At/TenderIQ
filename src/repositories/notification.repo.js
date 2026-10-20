@@ -25,10 +25,11 @@ export default class NotificationRepository {
    * the note in `migrations/create_table.js`.
    *
    * `subjectId` is what the alert is about when it is NOT about a tender — a
-   * vault document, today. Without it every expiring certificate in an
+   * vault document, an invitation. Without it every expiring certificate in an
    * organisation would dedupe against the first one (they all carry
-   * `tender_id: null`) and only one document would ever be reported. Null for
-   * everything tender-shaped, so existing callers are unaffected.
+   * `tender_id: null`) and only one document would ever be reported. On an
+   * `amendment` it is the tender's version (`v{n}`), so each amendment is its
+   * own event. Null for everything else tender-shaped.
    */
   static async createIfNew(
     { organizationId, userId = null, type, tenderId = null, subjectId = null, payload },

@@ -10,6 +10,7 @@ import {
   isTeamType,
   teamAnnouncement,
   matchedSearchesLine,
+  changeLine,
 } from './notification.present.js';
 
 /**
@@ -189,8 +190,8 @@ const tenderBody = (notification, payload, now) => {
 
   // An amendment with no "what changed" is indistinguishable from a duplicate,
   // which is how people learn to ignore the whole stream.
-  if (notification.type === 'amendment' && payload.changedFields?.length) {
-    const changed = payload.changedFields.join(', ');
+  const changed = notification.type === 'amendment' ? changeLine(payload) : null;
+  if (changed) {
     lines.push('', `Changed: ${changed}`);
     html.push(
       `<p style="margin:16px 0 0;font-size:14px"><strong>Changed:</strong> ${escapeHtml(changed)}</p>`

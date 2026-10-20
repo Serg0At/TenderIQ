@@ -12,6 +12,7 @@ import {
 } from '../libs/adapters/source/armeps/documents.js';
 import { ZipError, bufferSource, listEntries, openEntry } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
+import AddendumService from '../services/addendum.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
@@ -241,16 +242,22 @@ export const handleArmepsDocuments = async (job, token) => {
   }
   const lots = cpvForLots(structure?.lots ?? [], cpv);
 
-  const facts = await tenders.applyInvitationFacts({
-    source: SOURCE,
-    sourceId: `${SOURCE}:${resourceId}`,
-    kind: 'contract_documents',
-    url: documentsUrl(resourceId),
-    storageKey: archiveKey,
-    taxId: null,
-    cpvCode: null,
-    lots: lots.map(({ lotNumber, cpvCode, name }) => ({ lotNumber, itemSequence: 0, cpvCode, name })),
-    manifest,
+  // A set that differs from the one stored last is an addendum: a new
+  // version and, while the tender is biddable, an amendment alert.
+  const facts = await AddendumService.recordDocuments({
+    facts: {
+      source: SOURCE,
+      sourceId: `${SOURCE}:${resourceId}`,
+      kind: 'contract_documents',
+      url: documentsUrl(resourceId),
+      storageKey: archiveKey,
+      taxId: null,
+      cpvCode: null,
+      lots: lots.map(({ lotNumber, cpvCode, name }) => ({ lotNumber, itemSequence: 0, cpvCode, name })),
+      manifest,
+    },
+    ref,
+    priority: job.opts?.priority,
   });
   // The normalizer queues this only after the tender is saved, so a miss is
   // a race worth retrying, not a document to drop.

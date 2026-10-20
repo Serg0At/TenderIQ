@@ -8,7 +8,7 @@ import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
 import { ingestFetchQueue, alertsQueue, maintenanceQueue } from '../queues/index.js';
-import { JOB, PRIORITY } from '../queues/names.js';
+import { JOB, PRIORITY, matchJobId } from '../queues/names.js';
 import { logger } from '../utils/logger.js';
 import { validateNormalizedTender } from '../validations/index.js';
 import { eauctionDocumentsJob } from './documents.js';
@@ -198,11 +198,11 @@ export const normalizeTender = async ({
   if (result.event) {
     await alertsQueue.add(
       JOB.MATCH_TENDER,
-      { tenderId: result.tenderId, event: result.event, changedFields: result.changedFields ?? [] },
+      { tenderId: result.tenderId, event: result.event, version: result.version, changedFields: result.changedFields ?? [] },
       {
         // Keyed on the tender's version so each amendment matches exactly once,
         // however many times this job is retried.
-        jobId: `match-${result.tenderId}-v${result.version}`,
+        jobId: matchJobId(result.tenderId, result.version),
         priority,
       }
     );

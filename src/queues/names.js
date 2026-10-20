@@ -162,4 +162,12 @@ export const PRIORITY = {
   BACKFILL: 10,
 };
 
-export default { QUEUE, JOB, PRIORITY };
+/**
+ * The match job of one tender version. Every producer of an amendment builds
+ * its id here — the normalizer for a moved field, the document stage for an
+ * addendum — because both advance one version counter, and two spellings of
+ * this id would match the same amendment twice.
+ */
+export const matchJobId = (tenderId, version) => `match-${tenderId}-v${version}`;
+
+export default { QUEUE, JOB, PRIORITY, matchJobId };

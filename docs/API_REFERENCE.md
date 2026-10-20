@@ -1302,7 +1302,8 @@ uploaded to armeps.am (the invitation in HY, EN and RU, bills of quantities, add
 `c4t_*.xml` Tender Structure XML. `name` drops the archive's own `N_` numbering. `language` is
 the one armeps.am's document table states for that file; when a buyer uploads the same file name
 under two languages it cannot say which copy is which, and is `null`. An addendum is a second
-archive beside the first.
+archive beside the first, and raises the tender's `version` (and turns `active` into `amended`
+while the deadline is ahead) when its files differ from the first's.
 
 **Errors:**
 
@@ -4006,7 +4007,7 @@ No request body
 | Type | Raised by | Extra payload fields |
 |---|---|---|
 | `tender-match` | matcher | `score`, `reasons`, `matchedSearches` |
-| `amendment` | matcher | `score`, `reasons`, `matchedSearches`, `changedFields` |
+| `amendment` | matcher | `score`, `reasons`, `matchedSearches`, `changedFields`; an addendum adds `documentChanges` (`added`, `replaced`, `removed` file names) and has `changedFields: []` |
 | `reminder-72h`, `reminder-24h` | reminder (matched safety net) | `hoursRemaining` |
 | `countdown-48h`, `countdown-12h`, `countdown-3h` | reminder (pipeline countdown) | `hoursRemaining`, `trackedTenderId`, `pipelineStatus` |
 | `vault-expiry-30d`, `vault-expiry-7d`, `vault-expiry-1d` | vault expiry sweep | `documentId`, `kind`, `filename`, `validUntil`, `daysRemaining` |
@@ -4020,7 +4021,9 @@ Alerts raised before `matchedSearches` existed do not carry it.
 `payload` is a JSONB column whose contents vary by `type` as above; the column itself is not
 schema-constrained. `tenderId` is `null` on vault alerts — those dedupe on
 `notifications.subject_id` instead (the document id), which is why the dedupe constraint is
-`(organization_id, type, tender_id, subject_id)` with `NULLS NOT DISTINCT`.
+`(organization_id, type, tender_id, subject_id)` with `NULLS NOT DISTINCT`. An `amendment`
+carries `subject_id` = `v{version}`, so each amendment of a tender alerts once and a second one
+is a new alert.
 
 **Errors:**
 

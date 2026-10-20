@@ -15,11 +15,12 @@ import { logger } from '../utils/logger.js';
  * bug here must not roll back a tender that was correctly parsed.
  *
  * Amendments re-notify with a change summary — a moved deadline is exactly the
- * kind of thing a supplier needs to hear twice — but only for the fields that
- * actually moved, which is why `changedFields` rides along on the event.
+ * kind of thing a supplier needs to hear twice — but only for what actually
+ * moved, which is why `changedFields` (and, for an addendum, `documentChanges`
+ * from services/addendum.service.js) ride along on the event.
  */
 export const handleTenderMatched = async (job) => {
-  const { tenderId, event = 'TenderIngested', changedFields = [] } = job.data;
+  const { tenderId, event = 'TenderIngested', changedFields = [], documentChanges = null } = job.data;
   if (!tenderId) throw new UnrecoverableError('match.tender requires tenderId');
 
   const tender = await tenders.findDetail(tenderId);
@@ -32,6 +33,16 @@ export const handleTenderMatched = async (job) => {
   const candidate = matchCandidate(tender);
   const profiles = await savedSearches.listAll();
   const type = event === 'TenderAmended' ? 'amendment' : 'tender-match';
+  /**
+   * One amendment is one version, so the version is its dedupe key
+   * (`notifications_dedupe_uq` on org, type, tender, subject). With a NULL
+   * subject, as before ticket 18, the first amendment of a tender was the
+   * only one any organization was ever told about: the second deadline move
+   * or addendum hit the first one's row. A retried job carries the same
+   * version and stays deduped. A job queued before `version` rode along
+   * falls back to the tender's current one.
+   */
+  const subjectId = type === 'amendment' ? `v${job.data.version ?? tender.version}` : null;
   const groups = matchesByOrganization(candidate, profiles);
 
   // `matched` counts searches and `notified` counts organizations alerted, so a
@@ -52,6 +63,7 @@ export const handleTenderMatched = async (job) => {
       organizationId,
       type,
       tenderId,
+      subjectId,
       payload: {
         title: tender.title,
         referenceCode: tender.reference_code,
@@ -73,12 +85,12 @@ export const handleTenderMatched = async (job) => {
         // rewrite what a past alert said.
         matchedSearches: matches.map(({ id, name, score, reasons }) => ({ id, name, score, reasons })),
         // The "what changed" summary the spec asks for on re-notification.
-        ...(type === 'amendment' ? { changedFields } : {}),
+        ...(type === 'amendment' ? { changedFields, ...(documentChanges ? { documentChanges } : {}) } : {}),
       },
     });
 
-    // Already told them: dedupe is per (org, tender, type), so a re-run of the
-    // matcher is silent rather than a second ping.
+    // Already told them: dedupe is per (org, type, tender, subject), so a
+    // re-run of the matcher is silent rather than a second ping.
     if (!created) continue;
     notified += 1;
 

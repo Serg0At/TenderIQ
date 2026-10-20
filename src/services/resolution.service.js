@@ -193,6 +193,9 @@ const TERMINAL = new Set(['awarded', 'cancelled']);
  *
  * Status only moves forward from `current`, with one exception: a `closed`
  * that only the deadline ever said reopens when the deadline moves ahead.
+ * `amended` is kept over `active`: no source says it — an addendum does
+ * (services/addendum.service.js) — so a page re-read that says "open" has
+ * not undone it, and reverting would re-notify as a status change.
  */
 export const deriveStatus = ({ submissionChannel, links = [], current = null, deadlineAt = null }, now) => {
   const owners = STATUS_OWNERS[submissionChannel];
@@ -223,6 +226,7 @@ export const deriveStatus = ({ submissionChannel, links = [], current = null, de
 
   if (!current || !(current in STEP)) return next;
   if (TERMINAL.has(current)) return current;
+  if (current === 'amended' && next === 'active') return current;
   return STEP[next] < STEP[current] ? current : next;
 };
 

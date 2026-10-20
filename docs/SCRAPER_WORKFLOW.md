@@ -199,6 +199,8 @@ armeps.am has no listing, so a CfT page is fetched only by `resourceId`: from a 
    `source_payloads` (ref `documents:{resourceId}`). File languages come from the page's own
    HY/EN/RU column. Lots come from the `c4t_*.xml` Tender Structure XML; a tender bought as one
    contract (`num-of-lots="0"`) gets no lots rather than an invented lot 1.
+6. **A new document set is an addendum** (ticket 18), for ARMEPS and e-auction alike: see
+   *Addendum* under failure scenarios.
 
 **Refresh.** `tender.refresh` is per source. For armeps it re-reads every unsettled ARMEPS tender
 whose deadline is ahead or within `refreshWindowDays` behind, stalest link first, as
@@ -419,6 +421,22 @@ while years of awards load.
 **Deadline amendment.** A tender's deadline moves → detail hash changes → normalizer versions
 the row (`is_latest` flips) and emits `TenderAmended` → notifier re-alerts everyone tracking it
 with the diff.
+
+**Addendum.** The buyer adds, replaces or removes a document and no field moves. The document
+stage stores the new set beside the old one, and `services/addendum.service.js` compares the two
+file lists (`tender_documents.manifest`: name, CRC, size — never the archive's bytes, which
+armeps.am regenerates per download). Any difference raises `version` in the transaction that
+writes the new document row, turns `active` into `amended` while the tender is open (an alertable
+status, deadline ahead), and queues
+`match.tender` with `event: TenderAmended`, `changedFields: []` and `documentChanges` (`added`,
+`replaced`, `removed` file names) under the normalizer's `match-{tenderId}-v{version}` id. Past
+the deadline, closed, awarded or cancelled, the version is recorded and nothing is queued. A tender's
+first set is its documents, not an addendum, and a set whose previous list is unknown raises
+nothing (logged). `deriveStatus` keeps `amended` over a page that says "open", or the next
+re-normalize would revert it and alert a status change. e-auction's invitation is a static file
+(byte-identical across downloads), so its byte-hash dedupe and the file-set rule agree; but its
+document job is keyed on the invitation URL, which never changes, so a re-issue is downloaded
+again only when the detail page changes more than a day after the last download (ticket 27).
 
 **Redis outage.** Producers fail fast, queues are durable, workers resume on recovery. The API
 keeps serving last-known data from PostgreSQL.

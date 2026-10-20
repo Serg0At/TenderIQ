@@ -9,6 +9,7 @@ import {
   isTeamType,
   teamAnnouncement,
   matchedSearchesLine,
+  changeLine,
 } from './notification.present.js';
 
 /**
@@ -135,9 +136,8 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
 
   // Amendments carry what moved — a re-notification with no "what changed" is
   // indistinguishable from a duplicate, which is how people learn to ignore.
-  if (notification.type === 'amendment' && payload.changedFields?.length) {
-    lines.push('', `<b>Changed:</b> ${escapeHtml(payload.changedFields.join(', '))}`);
-  }
+  const changed = notification.type === 'amendment' ? changeLine(payload) : null;
+  if (changed) lines.push('', `<b>Changed:</b> ${escapeHtml(changed)}`);
 
   // Which of the organization's saved searches this is for, so a supplier with
   // several can tell "IT hardware" apart from "Road works" without opening it.

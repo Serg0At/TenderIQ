@@ -677,6 +677,10 @@ export default class TenderRepository {
    * These three fields exist nowhere in the HTML — only inside hraver.docx —
    * so this is the only path that can ever populate them. One transaction, so
    * a tender never shows a CPV whose source document was not recorded.
+   *
+   * The tender row is locked, and its status, deadline and version returned,
+   * so the caller can raise an addendum in the same transaction
+   * (services/addendum.service.js) without racing the normalizer's version.
    */
   static async applyInvitationFacts({
     source = 'eauction',
@@ -689,9 +693,9 @@ export default class TenderRepository {
     cpvCodes = [],
     lots = [],
     manifest = null,
-  }) {
-    return db.transaction(async (trx) => {
-      const tender = await trx(TABLE).where({ source_id: sourceId }).first();
+  }, trx = db) {
+    const run = async (trx) => {
+      const tender = await trx(TABLE).where({ source_id: sourceId }).forUpdate().first();
       if (!tender) return { skipped: 'unknown_tender' };
 
       // Only fills a blank: the detail page is authoritative for everything it
@@ -762,6 +766,7 @@ export default class TenderRepository {
 
       return {
         tenderId: tender.id,
+        tender: { status: tender.status, deadlineAt: tender.deadline_at, version: tender.version },
         cpvSet: Boolean(cpvCode && !tender.cpv_code),
         codesReplaced,
         taxIdSet,
@@ -769,7 +774,26 @@ export default class TenderRepository {
         lotsWritten,
         documentRecorded: (inserted?.rowCount ?? 0) > 0,
       };
-    });
+    };
+    return trx === db ? db.transaction(run) : run(trx);
+  }
+
+  /** The file list of one stored document of a tender, by its storage key. */
+  static async findDocumentManifest(tenderId, storageKey, trx = db) {
+    return trx('tender_documents').where({ tender_id: tenderId, storage_key: storageKey }).first('id', 'manifest');
+  }
+
+  /**
+   * An addendum's version: one more, and the status the caller decided. The
+   * same counter `saveNormalized` advances, under the row lock
+   * `applyInvitationFacts` took, so the two never hand out one version twice.
+   */
+  static async recordAddendum(id, { status }, trx = db) {
+    const [row] = await trx(TABLE)
+      .where({ id })
+      .update({ version: trx.raw('version + 1'), status })
+      .returning('version');
+    return row.version;
   }
 
   /**
@@ -877,6 +901,11 @@ export default class TenderRepository {
       // code and re-notified each tender as amended on every replay.
       const candidate = {
         ...tender,
+        // `amended` is an addendum's (services/addendum.service.js), written
+        // under this row's lock. deriveStatus read the status before the lock
+        // was taken, so an addendum that committed in between would be
+        // reverted here — and alerted as a status change — without this.
+        status: existing?.status === 'amended' && tender.status === 'active' ? 'amended' : tender.status,
         buyerId,
         cpvCode: tender.cpvCode ?? existing?.cpv_code ?? null,
         // Same silence for the full list: e-auction's comes from the archive.

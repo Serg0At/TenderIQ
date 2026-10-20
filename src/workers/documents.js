@@ -6,8 +6,8 @@ import { RateLimitedError } from '../utils/rateLimiter.js';
 import { parseInvitation } from '../libs/adapters/source/eauction/invitation.parser.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
+import AddendumService from '../services/addendum.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
-import tenders from '../repositories/tender.repo.js';
 import { sha256 } from '../utils/hash.js';
 import { JOB } from '../queues/names.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
@@ -149,16 +149,23 @@ export const handleTenderDocuments = async (job, token) => {
     log.warn(`invitation archive could not be listed: ${error.message}`);
   }
 
-  const facts = await tenders.applyInvitationFacts({
-    source,
-    sourceId: `${source}:${sourceId}`,
-    url: invitationUrl,
-    storageKey: archiveKey,
-    taxId: parsed.taxId,
-    cpvCode: parsed.dominantCpv,
-    cpvCodes: parsed.cpvCodes,
-    lots: parsed.lots,
-    manifest,
+  // The invitation lives at one URL for the tender's whole life, and a
+  // re-issue replaces it there. What it replaced is the set stored last; if
+  // the buyer's files differ from it, that is an addendum.
+  const facts = await AddendumService.recordDocuments({
+    facts: {
+      source,
+      sourceId: `${source}:${sourceId}`,
+      url: invitationUrl,
+      storageKey: archiveKey,
+      taxId: parsed.taxId,
+      cpvCode: parsed.dominantCpv,
+      cpvCodes: parsed.cpvCodes,
+      lots: parsed.lots,
+      manifest,
+    },
+    ref,
+    priority: job.opts?.priority,
   });
 
   // Rows parsed but not one usable lot number means the first column of the
