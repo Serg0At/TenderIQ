@@ -115,9 +115,10 @@ open, and not cancelled or awarded, when the later was published. The newer file
 from then on and the older is a `superseded` link, whichever is read first. Once the run has
 closed or been cancelled, the same code is a re-announcement and a new run, as for e-auction.
 Two runs it could join is an `ambiguous` unmatched result beside a new run. An **amendment
-notice** from gnumner's amendment listing names only a code, in its title: it attaches to the one
-paper tender announced before it and still open when it was published, as an addendum document,
-whatever its format — its content is never read — and never creates. A code Tendra holds only in another channel is skipped, since that channel's own
+notice** from gnumner's amendment listing names only a code — its title's, or a readable
+`.docx` body's when the title has none: it attaches to the one paper tender announced before it
+and still open when it was published, as an addendum document, whatever its format, and never
+creates. A code Tendra holds only in another channel is skipped, since that channel's own
 source carries the amendment.
 
 Two reasons join `no_candidate` and `ambiguous` on unmatched results. A file the parser cannot

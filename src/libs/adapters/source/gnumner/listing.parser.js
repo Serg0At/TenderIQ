@@ -71,10 +71,16 @@ const parseWindow = (text) => {
  * otherwise begins inside the preceding word (`ՐՎԱԾ ԿՄՀՔ-…`). A title with no
  * code yields null, never a guess: a fair share of them name none, and the
  * invitation carries it.
+ *
+ * Some buyers drop the dash after the marker: ՄԿԻ-ԳՀԱՊՁԲ26/47 (decided
+ * 2026-10-21, ticket 07). `ՁԲ` followed directly by a digit is read too, and
+ * `normalizeCode` puts the dash back in that one position, so both spellings
+ * are one key. A letter after `ՁԲ` with no dash is still no code.
  */
 const DASH = '\\s?[-‐‑‒–—―]\\s?';
 const CODE_RE = new RegExp(
-  `(?<![Ա-Ֆա-և])(?:[Ա-Ֆ]{1,4} ){0,2}(?:[Ա-Ֆ0-9]+${DASH})*[Ա-Ֆ]*ՁԲ[Ա-Ֆ]*(?:${DASH}[Ա-Ֆ0-9/.]+)+`,
+  `(?<![Ա-Ֆա-և])(?:[Ա-Ֆ]{1,4} ){0,2}(?:[Ա-Ֆ0-9]+${DASH})*[Ա-Ֆ]*ՁԲ` +
+    `(?:[Ա-Ֆ]*(?:${DASH}[Ա-Ֆ0-9/.]+)+|\\d[0-9/.]*(?:${DASH}[Ա-Ֆ0-9/.]+)*)`,
   'gu'
 );
 

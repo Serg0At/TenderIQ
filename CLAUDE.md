@@ -640,11 +640,17 @@ decision that has already been made.
   `tender_sources.points_to` says which file each notice belongs to: one tender now holds the
   notices of several files, and a deadline counted from another file's notice is wrong.
   gnumner's **amendment listing** (`kind: 'amendment'`) carries Article 29 notices, and **a
-  notice's content is never read**: matched on the code in its title across channels (one held
-  only on e-auction/ARMEPS is skipped), it attaches whatever its format — `.doc`, `.rar`, `.pdf`
+  notice's content is not read** except for a code its title lacks (a readable `.docx`'s body):
+  matched on that code across channels (one held only on e-auction/ARMEPS is skipped), it
+  attaches whatever its format — `.doc`, `.rar`, `.pdf`
   — as a `tender_documents` row of kind `amendment`, beside the invitation and never compared
   with it, alerted as one added file. `unsupported_format` is only for files whose content must
   be read (invitations, contract notices).
+- **A code whose method marker `ՁԲ` runs straight into a digit is the same code with the dash**
+  (ՄԿԻ-ԳՀԱՊՁԲ26/47 = ՄԿԻ-ԳՀԱՊՁԲ-26/47, ticket 07; 14 stored tenders are written that way). The
+  title extractor reads it, and `normalizeCode` and its SQL twin `codeKeySql` put the dash back in
+  that one position and nowhere else — the SQL with a capture and `\1`, never a `(?=`
+  lookahead: knex reads that `?` as a binding and every code lookup throws.
 - **armeps.am serves a different page on every request, and what is stored is canonical.** A
   fresh `jsessionid` in every link, a clock, a pager key, a calendar: `armeps/cft.parser.js#
   canonicalPage` strips exactly those, and the stripped page is both hashed and stored, so a

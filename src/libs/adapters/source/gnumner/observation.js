@@ -65,7 +65,7 @@ export const observePaperNotice = (notice, { invitationId }) => ({
   externalId: paperNoticeId(notice.path),
   url: notice.url,
   pointer: { source: SOURCE, externalId: String(invitationId) },
-  procedureCode: notice.procedureCode ?? null,
+  procedureCode: notice.procedureCode ?? bodyCode ?? null,
   submissionChannel: 'paper',
   procedureType: null,
   buyerName: null,
@@ -246,10 +246,12 @@ export const observeInvitation = (bytes, { externalId, notices = [] }) => {
 export const amendmentNoticeId = (hash) => `amendment:${hash}`;
 
 /**
- * A notice on the amendment listing → an observation (ticket 07), from the
- * listing alone: the file's content is never read, so a .doc, .rar or .pdf is
- * as good as a .docx (decided 2026-10-21). `externalId` is the file's content
- * hash. It names a tender only by the code in its title: resolution matches
+ * A notice on the amendment listing → an observation (ticket 07). Its code is
+ * the title's, else `bodyCode` — the one a readable .docx states in its body,
+ * which the caller reads only for a title with none (`noticeBodyCode`). Nothing
+ * else is taken from the file, so a .doc, .rar or .pdf with a code in its
+ * title is as good as a .docx (decided 2026-10-21). `externalId` is the file's
+ * content hash. It names a tender only by that code: resolution matches
  * it on code, channel and dates (`amendment: true`) and never creates from
  * it. It is a notice of a tender the invitation created, so its link is a
  * `discovery` one, never a detail run a re-post could supersede.
@@ -260,14 +262,14 @@ export const amendmentNoticeId = (hash) => `amendment:${hash}`;
  * 06.10.2026թ ժամը 14:30» is a sentence), so nothing is read out of either: a
  * moved deadline reaches the tender through the re-posted invitation.
  */
-export const observeAmendment = (notice, { externalId }) => ({
+export const observeAmendment = (notice, { externalId, bodyCode = null }) => ({
   source: SOURCE,
   role: 'discovery',
   amendment: true,
   externalId: amendmentNoticeId(externalId),
   url: notice.url,
   pointer: null,
-  procedureCode: notice.procedureCode ?? null,
+  procedureCode: notice.procedureCode ?? bodyCode ?? null,
   submissionChannel: 'paper',
   procedureType: null,
   buyerName: null,

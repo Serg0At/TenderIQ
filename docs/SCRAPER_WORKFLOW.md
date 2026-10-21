@@ -272,14 +272,15 @@ class, and an upload there has no close («…-ից անժամկետ»). ARMEPS 
 page at once; e-auction links are counted; uploads become `paper.amendment` jobs:
 
 1. Fetched and stored under ref `amendment:{sha256}`, whatever its format.
-2. **Its content is never read** (decided 2026-10-21): the code is the one in the notice's
-   title, and nothing else is taken from the file. Nearly every one is the Article 29 notice,
+2. **Its content is not read, except for a code the title lacks** (decided 2026-10-21): the
+   code is the title's; only when the title has none, and the file is a readable `.docx` (or one
+   in a `.zip`), is the code read from its body («Ընթացակարգի ծածկագիրը …»); otherwise
+   `no_code`. Nothing else is taken from the file. Nearly every one is the Article 29 notice,
    whose reasons are prose; a moved date in it would be a guess — a moved deadline reaches the
    tender through the re-posted invitation. So a `.doc`, `.rar` or `.pdf` attaches like a
    `.docx`, and a notice is never `unsupported_format`; that reason is for files whose content
    Tendra must read (invitations, contract notices).
-3. Resolution matches the title's code across channels: rule 1; a title with no code →
-   `no_code`; a code held only on e-auction or ARMEPS → skipped (its own source carries the
+3. Resolution matches that code across channels: rule 1; no code known → `no_code`; a code held only on e-auction or ARMEPS → skipped (its own source carries the
    amendment); one paper tender announced before the notice and still open when it was
    published → linked (`amendment:{sha256}`, role `discovery`); none → `no_candidate`; two →
    `ambiguous`.

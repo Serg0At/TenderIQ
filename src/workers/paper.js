@@ -2,7 +2,7 @@ import { DelayedError, UnrecoverableError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, rawKey, tenderDocKey } from '../libs/storage/index.js';
 import { fetchInvitation } from '../libs/adapters/source/gnumner/client.js';
-import { fileFormat, parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
+import { fileFormat, noticeBodyCode, parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
 import { invitationArchive, isOfficeFile, uploadedName } from '../libs/adapters/source/gnumner/invitation.files.js';
 import { amendmentNoticeId, observeAmendment, pathDigest } from '../libs/adapters/source/gnumner/observation.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
@@ -302,18 +302,23 @@ export const handlePaperAmendment = async (job, token) => {
 
 /**
  * One stored amendment notice → its tender, through the resolution module:
- * an addendum document when the code in its title matches exactly one open
- * paper tender, an unmatched result when it matches none or two (or the title
- * names no code), nothing when the code is another channel's. The stored file
- * is served, never read; running this again — a retry, a re-listed notice —
- * decides the same and, by rule 1 and the document row, writes nothing twice.
+ * an addendum document when its code — the title's, else a readable .docx's
+ * body's — matches exactly one open paper tender, an unmatched result when it
+ * matches none or two (or no code is known), nothing when the code is another
+ * channel's. The stored file is otherwise served, never read; running this
+ * again — a retry, a re-listed notice — decides the same and, by rule 1 and
+ * the document row, writes nothing twice.
  */
 export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }) => {
   const log = logger.child({ job: JOB.PAPER_AMENDMENT, source: SOURCE, amendment: hash.slice(0, 12) });
   const stored = await sourcePayloads.findLatestByRef(SOURCE, amendmentNoticeId(hash));
   if (!stored) throw new UnrecoverableError(`[${SOURCE}] no stored amendment notice ${hash}`);
+  const storage = await getStorage();
+  const bytes = Buffer.from(await storage.get(stored.storage_key));
 
-  const observation = observeAmendment(notice, { externalId: hash });
+  // The body is read only for a title with no code, and only for its code.
+  const bodyCode = notice.procedureCode ? null : noticeBodyCode(bytes);
+  const observation = observeAmendment(notice, { externalId: hash, bodyCode });
   const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
 
   if (decision.action === 'unmatched') {
@@ -339,8 +344,6 @@ export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }
 
   // Served like an invitation, from a ZIP: an archive of files as it is,
   // anything else — a .docx, .doc, .pdf, .rar — as the one entry of one.
-  const storage = await getStorage();
-  const bytes = Buffer.from(await storage.get(stored.storage_key));
   const ext = stored.storage_key.match(/\.([a-z0-9]+)$/)?.[1] ?? 'bin';
   const fileName = uploadedName(notice.url, `amendment.${ext}`);
   const plainZip = fileFormat(bytes) === 'zip' && !isOfficeFile(bytes);

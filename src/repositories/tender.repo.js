@@ -244,10 +244,16 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
  * The `և` replace is not cosmetic: JavaScript uppercases that ligature to
  * `ԵՒ` and Postgres leaves it alone, so without it a code such as
  * `ՀՀ ԱԱԾ-ՏԱևԿԿԳՎ-…` never reaches the candidates at all.
+ *
+ * The outer replace is `normalizeCode`'s last step: a dash put back between
+ * the method marker `ՁԲ` and a digit directly after it (ՄԿԻ-ԳՀԱՊՁԲ26/47,
+ * ticket 07), and nowhere else. A capture and back-reference, not the
+ * lookahead JavaScript uses: knex reads the `?` of `(?=` as a binding, and
+ * every raw query this is spliced into would throw.
  */
-const codeKeySql = (column) =>
-  `upper(btrim(regexp_replace(regexp_replace(translate(replace(${column}, 'և', 'ԵՒ'), ` +
-  `'‐‑‒–—―', '------'), '[«»"''“”„‘’]', '', 'g'), '\\s+', ' ', 'g')))`;
+export const codeKeySql = (column) =>
+  `regexp_replace(upper(btrim(regexp_replace(regexp_replace(translate(replace(${column}, 'և', 'ԵՒ'), ` +
+  `'‐‑‒–—―', '------'), '[«»"''“”„‘’]', '', 'g'), '\\s+', ' ', 'g'))), 'ՁԲ([0-9])', 'ՁԲ-\\1', 'g')`;
 
 /**
  * Every code a tender states, as SQL over a `tenders` alias: the twin of

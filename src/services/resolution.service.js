@@ -45,8 +45,9 @@
 
 /**
  * A procedure code as a matching key. The same code arrives as
- * `ՍԱՊ–ԳՀԱՊՁԲ-26/18` (en dash) and `«ՍԱՊ-ԳՀԱՊՁԲ-26/18»` (quoted), and with runs
- * of inner whitespace (`ՀՀ  ՊՆ-…`). Inner spaces are collapsed, not removed:
+ * `ՍԱՊ–ԳՀԱՊՁԲ-26/18` (en dash) and `«ՍԱՊ-ԳՀԱՊՁԲ-26/18»` (quoted), with runs
+ * of inner whitespace (`ՀՀ  ՊՆ-…`), and with the dash after the method marker
+ * dropped (`ՄԿԻ-ԳՀԱՊՁԲ26/47`). Inner spaces are collapsed, not removed:
  * `ՀՀ ՊՆ` is how that buyer actually spells it.
  *
  * `codeKeySql` in tender.repo.js is the SQL twin. It only narrows the
@@ -60,7 +61,11 @@ export const normalizeCode = (code) => {
     .replace(/[‐‑‒–—―]/g, '-')
     .replace(/\s+/g, ' ')
     .trim()
-    .toUpperCase();
+    .toUpperCase()
+    // ՄԿԻ-ԳՀԱՊՁԲ26/47 is ՄԿԻ-ԳՀԱՊՁԲ-26/47: the dash a buyer dropped after the
+    // method marker, put back in that one position (ticket 07). No other dash
+    // is ever added or removed.
+    .replace(/ՁԲ(?=[0-9])/g, 'ՁԲ-');
   return key || null;
 };
 
@@ -85,7 +90,11 @@ export const normalizeBuyer = (name) => {
     .replace(/[.,:;։]+$/u, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .toUpperCase();
+    .toUpperCase()
+    // ՄԿԻ-ԳՀԱՊՁԲ26/47 is ՄԿԻ-ԳՀԱՊՁԲ-26/47: the dash a buyer dropped after the
+    // method marker, put back in that one position (ticket 07). No other dash
+    // is ever added or removed.
+    .replace(/ՁԲ(?=[0-9])/g, 'ՁԲ-');
   return key || null;
 };
 

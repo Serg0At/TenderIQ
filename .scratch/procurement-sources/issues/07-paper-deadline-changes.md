@@ -229,11 +229,9 @@ contract notices). A notice whose title names no code stays unmatched (`no_code`
   never its text. A blank upload name falls back to `amendment.{ext}`, not `invitation.docx`.
 - The format-count query in `invitation.parser.js` leaves out resolved rows.
 
-**One counted consequence of title-only codes.** Of the 22 stored notices, one —
-`69abad6b.docx`, «հրավերում փոփոխություններ կատարելու մասին ՀԱՅՏԱՐԱՐՈՒԹՅՈՒՆ» — names no code in
-its title, and its body's (ՆԳՆ Կ ԳՀԱՊՁԲ-26/14) is no longer read: `no_code` where it was
-`no_candidate`. `3c33597c.pdf`'s title spells its code without a dash (`ՄԿԻ-ԳՀԱՊՁԲ26/47`), which the
-title rule does not read: `no_code`.
+**One counted consequence of title-only codes** (both resolved by the second follow-up below).
+Of the 22 stored notices, `69abad6b.docx` names no code in its title and its body's was no longer
+read, and `3c33597c.pdf`'s title spells its code without the dash after `ՁԲ`: both `no_code`.
 
 **Verified (2026-10-21, local `tendra`, MinIO, live gnumner).** The pure checks: 32 assertions,
 including an unreadable `.doc`/`.rar` notice of an open paper tender → `link`, the same with no
@@ -265,3 +263,59 @@ the production `handlePaperAmendment` with its job rebuilt from the stored listi
 
 `normalize:replay` afterwards over 1,229 payloads: 1,222 unchanged + 5 unmatched (the unreadable
 invitations, still `unsupported_format`) + 2 superseded; every checksum identical.
+
+## Second follow-up: a code the title lacks, and ՁԲ straight into a digit (decided 2026-10-21)
+
+**Decisions.** (1) A notice's code is its title's; if the title has none and the file is a
+readable `.docx` (or one in a `.zip`), the code is read from its body; otherwise `no_code`. The
+format still never blocks a notice whose code is known. (2) A code whose marker `ՁԲ` runs straight
+into a digit (`ՄԿԻ-ԳՀԱՊՁԲ26/47`) is read, and keyed as if the dash were there: only that position,
+never another dash.
+
+**What changed.**
+- `invitation.parser.js#noticeBodyCode`: the «Ընթացակարգի ծածկագիրը …» code of a Word document,
+  null for anything else. `recordAmendment` calls it only when the title gave no code, and
+  `observeAmendment` takes it as `bodyCode`, behind the title's.
+- `listing.parser.js` `CODE_RE`: after `ՁԲ`, either the letters-then-dash segments it always
+  read, or a digit directly. A letter after `ՁԲ` with no dash (`ԳՀԱՊՁԲԱ26`) and a space instead
+  of a dash (`ԳՀԱՊՁԲ 26/3`) are still no code. The invitation parser's code goes through the same
+  function.
+- `normalizeCode` ends `.replace(/ՁԲ(?=[0-9])/g, 'ՁԲ-')`; `codeKeySql` (now exported, as
+  `tenderCodesSql` is) ends `regexp_replace(…, 'ՁԲ([0-9])', 'ՁԲ-\1', 'g')`. **Not the lookahead in
+  SQL**: the first version used `(?=[0-9])` there too, and the key check below failed with
+  «Expected 1 bindings, saw 2» — knex reads that `?` as a binding, so every code lookup in
+  `findCandidates` would have thrown. The comment says so.
+
+**Verified (2026-10-21, local `tendra`).**
+- **JS and SQL keys agree**, as ticket 03 checked them: 1,227 stored codes (every
+  `tenders.reference_code` and `unmatched_results.procedure_code`, plus four constructed) in
+  11,836 variants — each code quoted «», "", with en and em dashes, padded and double-spaced, and
+  for every `ՁԲ-<digit>` code its dash-less form, quoted, en-dashed and with an en dash in that
+  position: **0 mismatches**; all **3,495** dash-less forms key exactly as the dashed spelling.
+  The live path too: `findCandidates` on `ԵՊՊՔ-ԳՀԱՊՁԲ26-3` and on `«ԵՊՊՔ–ԳՀԱՊՁԲ-26-3»` both return
+  the ԵՊՊՔ tender, by code and by run.
+- **Stored readings that change**: every code the gnumner parsers read from storage (165 listing
+  titles and invitations), before and after: exactly 2 differ, both from none to a code —
+  the ՄԿԻ notice and the ARMEPS title «ԿՄՆՀՀ ԳՀԾՁԲ26/62», read as `ԳՀԾՁԲ26/62` because the
+  long-standing buyer-prefix cap (two words of at most four letters) drops a five-letter one. That
+  notice links by its armeps.am pointer, never by code. No paper invitation's code changed.
+- **14 stored tenders are written with no dash after `ՁԲ`** — 13 e-auctions (`ԱԲԿ26-ԷԱՃԱՊՁԲ11/1`,
+  `ԿՄՆՀՀ ԷԱՃԱՊՁԲ26/50`, `ՀՀ ՏՄՆՀՀ-ԷԱՃԱՊՁԲ26/29` …) and the ARMEPS `ԿՄՆՀՀ ԳՀԾՁԲ26/62`. Their key now
+  carries the dash in both twins; keys are computed at query time, so nothing stored moves, and a
+  dashed spelling of the same code from another source now finds them.
+- The pure checks: 34 assertions (title first, body only without a title code, null otherwise;
+  the ՁԲ+digit forms read and keyed; letter-after-ՁԲ, space-for-dash and an already dashed code
+  untouched).
+- `normalize:replay`, 1,229 payloads: 1,222 unchanged + 5 unmatched + 2 superseded, checksums
+  identical.
+
+**The two notices re-run** (jobs rebuilt from the stored listing pages, the production handler):
+
+| notice | before | now |
+|---|---|---|
+| `69abad6b.docx`, title with no code | `no_code` | code from its body, `ՆԳՆ Կ ԳՀԱՊՁԲ-26/14` → **`no_candidate`** |
+| `3c33597c.pdf`, title `ՄԿԻ-ԳՀԱՊՁԲ26/47` | `no_code` | code from its title → **`no_candidate`** (a `.pdf`: the format did not block it) |
+
+Neither attaches here because `tendra` holds neither tender (no `ՄԿԻ-…` or `…ՆԳՆ Կ…` code is stored):
+`no_candidate` is the honest answer, and it is what a missed tender looks like. That a dash-less
+code finds a stored tender is the `findCandidates` check above.

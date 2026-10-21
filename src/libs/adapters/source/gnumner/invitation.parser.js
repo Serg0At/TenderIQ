@@ -343,4 +343,17 @@ export const parseInvitation = (bytes) => {
   return { format, readable: true, document };
 };
 
-export default { parseInvitation, fileFormat };
+/**
+ * The procedure code an amendment notice states in its body, read only when
+ * its title names none (decided 2026-10-21, ticket 07): «Ընթացակարգի
+ * ծածկագիրը …», the line both the Article 29 template and a full invitation
+ * carry. Nothing else in a notice is read. Null for anything that is not a
+ * Word document (.docx, or one inside a .zip) and for one that states no code;
+ * either way the notice keeps whatever its title gave it.
+ */
+export const noticeBodyCode = (bytes) => {
+  const { documents } = readWordDocuments(bytes);
+  return documents.map((doc) => doc.procedureCode).find(Boolean) ?? null;
+};
+
+export default { parseInvitation, noticeBodyCode, fileFormat };
