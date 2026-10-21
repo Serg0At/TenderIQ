@@ -29,7 +29,10 @@ Spec: *Sources and parsers → gnumner* (amendment listing). User stories 6–7.
 - [x] An amendment notice that moves no stored field is still an addendum (decided 2026-10-20,
       ticket 18). It raises a new version and notifies with a change summary that names the
       document, not a field, and only while the tender is open.
-- [x] Unreadable amendment files count as `unsupported_format`.
+- [x] ~~Unreadable amendment files count as `unsupported_format`.~~ **Reversed 2026-10-21** (see
+      *Follow-up* below): a notice's content is never read, so it attaches whatever its format;
+      `unsupported_format` stays for files whose content must be read (invitations, contract
+      notices).
 - [x] Verified by hand on two real amendments. Record them here.
 
 ## Verification (2026-10-21, local Postgres `tendra`, MinIO, Redis `localhost:6379`, live gnumner)
@@ -201,12 +204,6 @@ Not changed, for the owner:
 
 ### Left, on purpose
 
-- **An unreadable notice whose title code names one of our paper tenders is counted, not
-  attached.** Live during this run: ՍԲԿՏ-ԳՀԱՊՁԲ-2026/7 (Sisian, one of the 14 local tenders,
-  open until 10-27) got its amendment notice as `147bce3e.doc` → `unsupported_format`. The title's
-  code would match it as reliably as a `.docx`'s, and the alert only needs to name the file, so
-  attaching unreadable notices is a one-line change in `resolveAmendment` if wanted. Not done:
-  the ticket says they count as `unsupported_format`. 32 of 60 uploads on the listing are `.doc`.
 - **A same-minute re-upload with new bytes is an amendment.** Most quick re-uploads are
   byte-identical and stay one notice, but a buyer who fixes a typo four minutes after posting
   now sends an amendment alert four minutes after the match alert.
@@ -214,3 +211,57 @@ Not changed, for the owner:
   `recordAmendment` reads only storage, so one is a loop over `amendment:` payloads with their
   notices; `normalize:replay` reads `detail:` refs only.
 - **One buyer edit can still give two alerts** (ticket 18): the re-post (v2) and its notice (v3).
+
+## Follow-up: a notice attaches whatever its format (decided 2026-10-21)
+
+**Decision.** An amendment notice whose title code matches an open paper tender is attached
+whatever its format: the `.doc`, `.rar` or `.pdf` is stored as it is, listed as an `amendment`
+document and named in the alert. A notice's content is never read, so its format does not
+matter; `unsupported_format` stays for files whose content Tendra must read (invitations,
+contract notices). A notice whose title names no code stays unmatched (`no_code`).
+
+**What changed.**
+- `resolveAmendment` has no format check. `observeAmendment` is built from the listing notice
+  alone — the code is the title's — and `parseAmendmentNotice` is gone: nothing reads the file.
+- The worker serves the stored file from a ZIP like every document: an archive of files as it
+  is, anything else (`.docx`, `.doc`, `.pdf`, `.rar`) as the one entry of one. An Office file is
+  told from an archive by its packaging (`[Content_Types].xml`, `invitation.files.js#isOfficeFile`),
+  never its text. A blank upload name falls back to `amendment.{ext}`, not `invitation.docx`.
+- The format-count query in `invitation.parser.js` leaves out resolved rows.
+
+**One counted consequence of title-only codes.** Of the 22 stored notices, one —
+`69abad6b.docx`, «հրավերում փոփոխություններ կատարելու մասին ՀԱՅՏԱՐԱՐՈՒԹՅՈՒՆ» — names no code in
+its title, and its body's (ՆԳՆ Կ ԳՀԱՊՁԲ-26/14) is no longer read: `no_code` where it was
+`no_candidate`. `3c33597c.pdf`'s title spells its code without a dash (`ՄԿԻ-ԳՀԱՊՁԲ26/47`), which the
+title rule does not read: `no_code`.
+
+**Verified (2026-10-21, local `tendra`, MinIO, live gnumner).** The pure checks: 32 assertions,
+including an unreadable `.doc`/`.rar` notice of an open paper tender → `link`, the same with no
+candidate → `no_candidate`, with no title code → `no_code`, and an unreadable *invitation* still
+`unsupported_format`.
+
+**ՍԲԿՏ-ԳՀԱՊՁԲ-2026/7** («Սիսիանի բնակարանային կոմունալ տնտեսություն» ՀՈԱԿ, open until 10-27
+11:00): its notice `147bce3e.doc` (published 10-21 17:18, a `.doc`, 68,096 bytes), re-run through
+the production `handlePaperAmendment` with its job rebuilt from the stored listing page:
+
+| | before | after |
+|---|---|---|
+| version / status | 1 / `active` | **2 / `amended`** |
+| documents | the invitation (3 files) | plus kind `amendment`: `147bce3e.doc` |
+| alert jobs | `match-…-v1` | plus exactly one: `match-…-v2`, `changedFields: []`, `added: ["147bce3e.doc"]` |
+| unmatched row | `unsupported_format` | resolved to the tender |
+
+- `GET` of that document through `TenderService.documentFile` streamed 68,096 bytes, sha256 equal
+  to the stored raw `.doc` (header `d0cf11e0`).
+- Run again: still v2; the v2 alert re-queued under its own id, absorbed.
+- The matcher with a throwaway organization and saved search on `աղբաման`: 1 `tender-match`, then
+  **1 `amendment`**, «new document: 147bce3e.doc»; every job a second time: 0. Throwaway rows
+  deleted.
+
+**Every stored notice re-run** (22, jobs rebuilt from the stored listing pages by the board's
+`toNotice`): 2 attached (ՍԲԿՏ v2 with an alert; ԵՊՊՔ already v3, nothing new), 11
+`other_channel`, 7 `no_candidate`, 2 `no_code`, **0 `unsupported_format`**. The old
+`unsupported_format` rows became `no_candidate` on re-read, except ՍԲԿՏ's, now resolved.
+
+`normalize:replay` afterwards over 1,229 payloads: 1,222 unchanged + 5 unmatched (the unreadable
+invitations, still `unsupported_format`) + 2 superseded; every checksum identical.

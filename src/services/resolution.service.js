@@ -260,11 +260,12 @@ const unmatched = (reason, tenders = []) => ({
 });
 
 /**
- * An amendment notice (ticket 07): rule 1, then its code. The channel is asked
- * before the format: a notice whose code Tendra holds only on e-auction or
- * ARMEPS is that tender's, its own source carries the change, and counting
- * its .doc as a paper `unsupported_format` would bury the formats paper
- * notices really arrive in — 5 of the first 7 unreadable codes were such.
+ * An amendment notice (ticket 07): rule 1, then the code its title names. Its
+ * content is never read — the alert names the file, and a supplier opens it —
+ * so its format decides nothing, and an unreadable one is never
+ * `unsupported_format` (decided 2026-10-21): that reason is for files whose
+ * content Tendra must read. A code Tendra holds only on e-auction or ARMEPS is
+ * that tender's, and its own source carries the change.
  */
 const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
   const byLink = unique(linked);
@@ -276,7 +277,6 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
   const own = coded.filter((tender) => tender.submissionChannel === observation.submissionChannel);
   if (coded.length && !own.length) return { action: 'skip', reason: 'other_channel' };
 
-  if (observation.unreadable) return unmatched('unsupported_format');
   if (!key) return unmatched('no_code');
   const amended = unique(own.filter((tender) => amendedBy(observation, tender)));
   if (amended.length === 1) return link(amended[0], 'code');

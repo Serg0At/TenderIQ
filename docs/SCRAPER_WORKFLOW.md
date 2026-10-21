@@ -271,20 +271,22 @@ same chain and watermark as the invitation listings. Its date paragraph carries 
 class, and an upload there has no close («…-ից անժամկետ»). ARMEPS links re-read the armeps.am
 page at once; e-auction links are counted; uploads become `paper.amendment` jobs:
 
-1. Fetched and stored like an invitation, under ref `amendment:{sha256}`, whatever its format.
-2. `parseAmendmentNotice`: a `.docx` (or one in a `.zip`) is readable and gives its code and
-   buyer (the title's code otherwise). Nearly every one is the Article 29 notice, whose reasons
-   are prose; a moved date in it is never read — that reaches the tender through the re-posted
-   invitation.
-3. Resolution matches it on code across channels, channel first: a code held only on e-auction
-   or ARMEPS → skipped, readable or not (its own source carries the amendment, and counting its
-   `.doc` would bury the paper formats); then an unreadable file → `unsupported_format`; then one
-   paper tender announced before the notice and still open when it was published → linked
-   (`amendment:{sha256}`, role `discovery`); none → `no_candidate`; two → `ambiguous`.
-4. `AddendumService.recordNotice` stores it as a `tender_documents` row of kind `amendment`
-   (beside the invitation, never compared with it), raises `version`, sets `amended` while open
-   and alerts `documentChanges.added: [<file>]` — once, because the version moves only when the
-   document row is new.
+1. Fetched and stored under ref `amendment:{sha256}`, whatever its format.
+2. **Its content is never read** (decided 2026-10-21): the code is the one in the notice's
+   title, and nothing else is taken from the file. Nearly every one is the Article 29 notice,
+   whose reasons are prose; a moved date in it would be a guess — a moved deadline reaches the
+   tender through the re-posted invitation. So a `.doc`, `.rar` or `.pdf` attaches like a
+   `.docx`, and a notice is never `unsupported_format`; that reason is for files whose content
+   Tendra must read (invitations, contract notices).
+3. Resolution matches the title's code across channels: rule 1; a title with no code →
+   `no_code`; a code held only on e-auction or ARMEPS → skipped (its own source carries the
+   amendment); one paper tender announced before the notice and still open when it was
+   published → linked (`amendment:{sha256}`, role `discovery`); none → `no_candidate`; two →
+   `ambiguous`.
+4. `AddendumService.recordNotice` stores the file as the one entry of a ZIP (an archive of files
+   as it is) as a `tender_documents` row of kind `amendment` — beside the invitation, never
+   compared with it — raises `version`, sets `amended` while open and alerts
+   `documentChanges.added: [<file>]`, once: the version moves only when the document row is new.
 
 **Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
 refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders

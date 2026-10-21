@@ -639,10 +639,12 @@ decision that has already been made.
   catch a newer re-post committed in between (it throws, the retry resolves the file as older).
   `tender_sources.points_to` says which file each notice belongs to: one tender now holds the
   notices of several files, and a deadline counted from another file's notice is wrong.
-  gnumner's **amendment listing** (`kind: 'amendment'`) carries Article 29 notices: matched on
-  code across channels (one held only on e-auction/ARMEPS is skipped, before the format check),
-  stored as a `tender_documents` row of kind `amendment` — beside the invitation, never compared
-  with it — and alerted as one added file. Their prose dates are never read.
+  gnumner's **amendment listing** (`kind: 'amendment'`) carries Article 29 notices, and **a
+  notice's content is never read**: matched on the code in its title across channels (one held
+  only on e-auction/ARMEPS is skipped), it attaches whatever its format — `.doc`, `.rar`, `.pdf`
+  — as a `tender_documents` row of kind `amendment`, beside the invitation and never compared
+  with it, alerted as one added file. `unsupported_format` is only for files whose content must
+  be read (invitations, contract notices).
 - **armeps.am serves a different page on every request, and what is stored is canonical.** A
   fresh `jsessionid` in every link, a clock, a pager key, a calendar: `armeps/cft.parser.js#
   canonicalPage` strips exactly those, and the stripped page is both hashed and stored, so a

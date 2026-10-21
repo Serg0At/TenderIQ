@@ -3,7 +3,7 @@ import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, rawKey, tenderDocKey } from '../libs/storage/index.js';
 import { fetchInvitation } from '../libs/adapters/source/gnumner/client.js';
 import { fileFormat, parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
-import { invitationArchive, uploadedName } from '../libs/adapters/source/gnumner/invitation.files.js';
+import { invitationArchive, isOfficeFile, uploadedName } from '../libs/adapters/source/gnumner/invitation.files.js';
 import { amendmentNoticeId, observeAmendment, pathDigest } from '../libs/adapters/source/gnumner/observation.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
@@ -277,9 +277,9 @@ const storePaperDocuments = async (job) => {
 
 /**
  * A notice on gnumner's amendment listing (ticket 07): fetched, stored under
- * its content hash, and recorded on its tender (`recordAmendment`). Stored
- * whatever its format, as an invitation is, so a converter added later reads
- * the .doc and .rar ones from storage.
+ * its content hash, and recorded on its tender (`recordAmendment`). Its
+ * content is never read, so its format decides nothing: a .doc, .rar or .pdf
+ * attaches like a .docx (decided 2026-10-21).
  */
 export const handlePaperAmendment = async (job, token) => {
   if (!isNotice(job.data)) {
@@ -302,20 +302,18 @@ export const handlePaperAmendment = async (job, token) => {
 
 /**
  * One stored amendment notice → its tender, through the resolution module:
- * an addendum document when it matches exactly one open paper tender of its
- * code, an unmatched result when it matches none or two, nothing when its
- * code is another channel's. Reads the stored file, never the job's bytes,
- * so running it again — a retry, a re-listed notice — decides the same and,
- * by rule 1 and the document row, writes nothing twice.
+ * an addendum document when the code in its title matches exactly one open
+ * paper tender, an unmatched result when it matches none or two (or the title
+ * names no code), nothing when the code is another channel's. The stored file
+ * is served, never read; running this again — a retry, a re-listed notice —
+ * decides the same and, by rule 1 and the document row, writes nothing twice.
  */
 export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }) => {
   const log = logger.child({ job: JOB.PAPER_AMENDMENT, source: SOURCE, amendment: hash.slice(0, 12) });
   const stored = await sourcePayloads.findLatestByRef(SOURCE, amendmentNoticeId(hash));
   if (!stored) throw new UnrecoverableError(`[${SOURCE}] no stored amendment notice ${hash}`);
-  const storage = await getStorage();
-  const bytes = Buffer.from(await storage.get(stored.storage_key));
 
-  const observation = observeAmendment(bytes, { externalId: hash, notice });
+  const observation = observeAmendment(notice, { externalId: hash });
   const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
 
   if (decision.action === 'unmatched') {
@@ -331,7 +329,6 @@ export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }
     log.warn(`amendment notice unmatched (${decision.reason})`, {
       code: observation.procedureCode,
       candidates: decision.candidateIds,
-      ...(observation.unreadable ? { format: observation.unreadable.format } : {}),
     });
     return { unmatched: decision.reason };
   }
@@ -340,9 +337,14 @@ export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }
     return { skipped: decision.reason ?? decision.action };
   }
 
-  // Served like an invitation: a .zip as it is, a .docx wrapped in one.
-  const fileName = uploadedName(notice.url);
-  const archive = invitationArchive(bytes, { format: observation.format, fileName });
+  // Served like an invitation, from a ZIP: an archive of files as it is,
+  // anything else — a .docx, .doc, .pdf, .rar — as the one entry of one.
+  const storage = await getStorage();
+  const bytes = Buffer.from(await storage.get(stored.storage_key));
+  const ext = stored.storage_key.match(/\.([a-z0-9]+)$/)?.[1] ?? 'bin';
+  const fileName = uploadedName(notice.url, `amendment.${ext}`);
+  const plainZip = fileFormat(bytes) === 'zip' && !isOfficeFile(bytes);
+  const archive = invitationArchive(bytes, { format: plainZip ? 'zip' : ext, fileName });
   const archiveKey = tenderDocKey({ source: SOURCE, sourceId: amendmentNoticeId(hash), hash, ext: 'zip' });
   await storage.put(archiveKey, archive, { contentType: 'application/zip' });
 

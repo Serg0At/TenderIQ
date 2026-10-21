@@ -333,43 +333,14 @@ export const parseInvitation = (bytes) => {
   //   select substring(p.storage_key from '\.([a-z0-9]+)$') as ext, count(*)
   //     from unmatched_results u
   //     join source_payloads p on p.source = u.source and p.hash = u.payload_hash
-  //    where u.source = 'gnumner' and u.reason = 'unsupported_format'
+  //    where u.source = 'gnumner' and u.reason = 'unsupported_format' and u.resolved_at is null
   //    group by 1 order by 2 desc;
+  //
+  // An amendment notice is never counted here: its content is not read, so it
+  // attaches whatever its format (ticket 07).
   if (!document) return { format, readable: false, document: null };
 
   return { format, readable: true, document };
 };
 
-/**
- * One upload on the amendment listing → the procedure code and buyer it names
- * (ticket 07). Verified on 2026-10-21 against the .docx notices on 14 pages of
- * the listing: nearly all are the Article 29 template —
- *
- *   ՀԱՅՏԱՐԱՐՈՒԹՅՈՒՆ / հրավերում փոփոխություններ կատարելու մասին
- *   Ընթացակարգի ծածկագիրը «ԵՊՊՔ-ԳՀԱՊՁԲ-26-3»
- *   … Փոփոխության առաջացման պատճառ / նկարագրություն / հիմնավորում …
- *   Պատվիրատու` Երևանի պարարվեստի պետական քոլեջ ՊՈԱԿ
- *
- * — and the rest a full amended invitation. Neither states a new deadline in
- * a form worth reading: where one moves, it is a sentence of prose («…
- * 05.10.2026թ ժամը 14:30-ի փոխարեն 06.10.2026թ ժամը 14:30»), and a date read
- * out of prose is a guess. So the notice is not read for fields at all: it is
- * a document the buyer added, and the alert names it. A moved deadline
- * reaches the tender through the re-posted invitation, which states it.
- *
- * Readable is a Word document, the same formats `parseInvitation` reads; its
- * code may still be missing (the caller then has the title's). The document
- * with a code wins, then the longer text, then the zip's order.
- */
-export const parseAmendmentNotice = (bytes) => {
-  const { format, documents } = readWordDocuments(bytes);
-  const [document = null] = [...documents].sort(
-    (a, b) => Number(b.procedureCode !== null) - Number(a.procedureCode !== null) || b.textLength - a.textLength
-  );
-  // The format check of `parseInvitation` above holds here too, comment and
-  // query: what is not .docx is counted as `unsupported_format`, on purpose.
-  if (!document) return { format, readable: false, document: null };
-  return { format, readable: true, document: { procedureCode: document.procedureCode, buyerName: document.buyerName } };
-};
-
-export default { parseInvitation, parseAmendmentNotice, fileFormat };
+export default { parseInvitation, fileFormat };

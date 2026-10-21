@@ -1,5 +1,5 @@
 import { sha256 } from '../../../../utils/hash.js';
-import { parseAmendmentNotice, parseInvitation } from './invitation.parser.js';
+import { parseInvitation } from './invitation.parser.js';
 
 /**
  * gnumner notices and paper invitations → observations for the resolution
@@ -246,38 +246,37 @@ export const observeInvitation = (bytes, { externalId, notices = [] }) => {
 export const amendmentNoticeId = (hash) => `amendment:${hash}`;
 
 /**
- * An upload on the amendment listing, and the notice that listed it → an
- * observation (ticket 07). It names a tender only by its code: resolution
- * matches it on code, channel and dates (`amendment: true`) and never
- * creates from it. It is a notice of a tender the invitation created, so its
- * link is a `discovery` one, never a detail run a re-post could supersede.
+ * A notice on the amendment listing → an observation (ticket 07), from the
+ * listing alone: the file's content is never read, so a .doc, .rar or .pdf is
+ * as good as a .docx (decided 2026-10-21). `externalId` is the file's content
+ * hash. It names a tender only by the code in its title: resolution matches
+ * it on code, channel and dates (`amendment: true`) and never creates from
+ * it. It is a notice of a tender the invitation created, so its link is a
+ * `discovery` one, never a detail run a re-post could supersede.
  *
- * The notice is what the file does not say: when it was published, which is
- * what decides whether the tender was still open; and the title's code, used
- * when the document's cannot be read.
+ * Checked on 14 pages of the listing (2026-10-21): the Article 29 template —
+ * code, reasons in prose, buyer — or a full amended invitation. Neither states
+ * a new deadline worth reading («… 05.10.2026թ ժամը 14:30-ի փոխարեն
+ * 06.10.2026թ ժամը 14:30» is a sentence), so nothing is read out of either: a
+ * moved deadline reaches the tender through the re-posted invitation.
  */
-export const observeAmendment = (bytes, { externalId, notice }) => {
-  const parsed = parseAmendmentNotice(bytes);
-  return {
-    source: SOURCE,
-    role: 'discovery',
-    amendment: true,
-    externalId: amendmentNoticeId(externalId),
-    url: notice.url,
-    pointer: null,
-    procedureCode: parsed.document?.procedureCode ?? notice.procedureCode ?? null,
-    submissionChannel: 'paper',
-    procedureType: null,
-    buyerName: parsed.document?.buyerName ?? null,
-    publishedAt: new Date(notice.publishedAt),
-    deadlineAt: null,
-    lotNumbers: [],
-    status: null,
-    observedStatus: null,
-    format: parsed.format,
-    ...(parsed.readable ? {} : { unreadable: { format: parsed.format } }),
-  };
-};
+export const observeAmendment = (notice, { externalId }) => ({
+  source: SOURCE,
+  role: 'discovery',
+  amendment: true,
+  externalId: amendmentNoticeId(externalId),
+  url: notice.url,
+  pointer: null,
+  procedureCode: notice.procedureCode ?? null,
+  submissionChannel: 'paper',
+  procedureType: null,
+  buyerName: null,
+  publishedAt: new Date(notice.publishedAt),
+  deadlineAt: null,
+  lotNumbers: [],
+  status: null,
+  observedStatus: null,
+});
 
 export default {
   SOURCE,
