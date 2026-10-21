@@ -149,7 +149,7 @@ notices on it.
 - **Dates decide, never the stored status or the order of arrival.** Two files join when the
   earlier was still open as the later was published; the newer is the tender. A cold start
   reads newest first, so arrival order would otherwise make the oldest file current.
-- **`tender_sources.points_to`** (migration below): a notice link records which link it is a
+- **`tender_sources.points_to`** (`git show 01563d9:migrations/add_tender_source_points_to.js`, run twice on `tendra`, mirrored into `create_table.js`, deleted in the next commit; Neon is ticket 30 step 9): a notice link records which link it is a
   notice of. With several files on one tender, the old "every `paper:` link of the tender" read
   would count a re-post's deadline from the first file's notice.
 - **A tender's `published_at` is its newest file's**, as for an e-auction replacement (ticket

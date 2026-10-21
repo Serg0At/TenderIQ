@@ -35,7 +35,7 @@ second time to confirm it is a no-op:
       purpose**: run it before the deploy, run it **again after** the deploy to fill invitations
       stored in between, and only then delete it (step 4 of CLAUDE.md's schema workflow).
 - [ ] 8. `b5cd180:migrations/add_submission_address.js` (ticket 06).
-- [ ] 9. `<07>:migrations/add_tender_source_points_to.js`: `tender_sources.points_to`, filled for
+- [ ] 9. `01563d9:migrations/add_tender_source_points_to.js`: `tender_sources.points_to`, filled for
       existing gnumner notices (ticket 07). Run it before the deploy and **again after**, like step 7:
       the old code writes notice links with the column blank, and the new code reads a paper
       invitation's notices only through it — a replay of a file whose notice is blank finds none
