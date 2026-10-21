@@ -1,6 +1,7 @@
-import AdmZip from 'adm-zip';
-import * as cheerio from 'cheerio';
 import { extractProcedureCode } from './listing.parser.js';
+import { cellText, documentText, fileFormat, wordDocuments } from './word.js';
+
+export { fileFormat };
 
 /**
  * Pure: the bytes of one file uploaded to gnumner as a paper invitation in,
@@ -23,75 +24,8 @@ import { extractProcedureCode } from './listing.parser.js';
  * followed by the invitation proper, whose first table lists the lots
  * (Չափաբաժինների համարները | գնման գինը | [ծածկագիրը] | Չափաբաժնի անվանումը).
  *
- * As in eauction/invitation.parser.js, the .docx is read as XML, never with a
- * regex over the markup: revision ids (`w:rsidR`) look exactly like CPV codes.
+ * The Word plumbing — formats, opening a .docx as XML — is word.js's.
  */
-
-/**
- * Cap on each decompression layer, checked against the entry's declared size
- * before anything is expanded — a zip of a docx is two nested archives, and
- * the download cap alone does not bound what they expand to.
- */
-const MAX_ENTRY_BYTES = 80 * 1024 * 1024;
-
-/** The file formats a gnumner upload arrives in, told apart by their first bytes. */
-const MAGIC = [
-  { format: 'zip', bytes: [0x50, 0x4b, 0x03, 0x04] }, // .docx is a zip too
-  { format: 'doc', bytes: [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] }, // OLE: .doc, .xls
-  { format: 'rar', bytes: [0x52, 0x61, 0x72, 0x21] }, // Rar!
-  { format: '7z', bytes: [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c] },
-  { format: 'pdf', bytes: [0x25, 0x50, 0x44, 0x46] }, // %PDF
-];
-
-/**
- * What a file is, by its first bytes: `zip` (which a .docx is too), `doc`,
- * `rar`, `7z`, `pdf`, `html` or `unknown`. The content decides, not the
- * extension: an upload's name is whatever the buyer's file was called, with
- * its non-ASCII characters blanked.
- *
- * `html` is not an upload. gnumner answers a path it does not have with its
- * own error page and a 200, so a file that turns out to be HTML is a missing
- * file, not a format to count.
- */
-export const fileFormat = (bytes) => {
-  const found = MAGIC.find(
-    ({ bytes: magic }) => bytes.length >= magic.length && magic.every((b, i) => bytes[i] === b)
-  );
-  if (found) return found.format;
-  const head = bytes.subarray(0, 64).toString('utf8').replace(/^\uFEFF/, '').trimStart();
-  return head.startsWith('<') ? 'html' : 'unknown';
-};
-
-const entryData = (entry) => {
-  if (entry.header.size > MAX_ENTRY_BYTES) {
-    throw new Error(`${entry.entryName} declares ${entry.header.size} bytes uncompressed, over the ${MAX_ENTRY_BYTES} cap`);
-  }
-  return entry.getData();
-};
-
-/** A .docx's `word/document.xml`, parsed, or null when the zip is not a Word document. */
-const wordDocument = (zip) => {
-  const xml = zip.getEntry('word/document.xml');
-  if (!xml) return null;
-  return cheerio.load(entryData(xml).toString('utf8'), { xmlMode: true });
-};
-
-const runText = ($, node) =>
-  $(node)
-    .find('w\\:t')
-    .map((_, t) => $(t).text())
-    .get()
-    .join('');
-
-/** Whole-document text, a paragraph per line, whitespace collapsed inside each. */
-const documentText = ($) =>
-  $('w\\:p')
-    .map((_, p) => runText($, p).replace(/\s+/g, ' ').trim())
-    .get()
-    .filter(Boolean)
-    .join('\n');
-
-const cellText = ($, cell) => runText($, cell).replace(/\s+/g, ' ').trim();
 
 // ── Fields ───────────────────────────────────────────────────────────────────
 // Each is read from one sentence of the template, and each is null when that
@@ -242,9 +176,7 @@ const readLots = ($) => {
   return lots.map(({ number, cpvCode, name }) => ({ lotNumber: number, cpvCode, name }));
 };
 
-const readDocument = (zip, entryName) => {
-  const $ = wordDocument(zip);
-  if (!$) return null;
+const readDocument = ($, entryName) => {
   const text = documentText($);
   const submission = readSubmission(text);
   return {
@@ -263,37 +195,8 @@ const readDocument = (zip, entryName) => {
 const completeness = (doc) =>
   ['procedureCode', 'buyerName', 'submissionAddress', 'deadline'].filter((field) => doc[field] !== null).length;
 
-/**
- * The Word documents in an upload: the upload itself when it is a .docx, or
- * every .docx one level inside a .zip. Nested archives are not opened.
- */
-const readWordDocuments = (bytes) => {
-  const format = fileFormat(bytes);
-  if (format !== 'zip') return { format, documents: [] };
-  let zip;
-  try {
-    zip = new AdmZip(bytes);
-  } catch {
-    return { format: 'unknown', documents: [] };
-  }
-
-  const asWord = readDocument(zip, null);
-  if (asWord) return { format: 'docx', documents: [asWord] };
-
-  const documents = zip
-    .getEntries()
-    .filter((entry) => !entry.isDirectory && /\.docx$/i.test(entry.entryName))
-    .map((entry) => {
-      try {
-        return readDocument(new AdmZip(entryData(entry)), entry.entryName);
-      } catch {
-        // One unreadable member does not make the others unreadable.
-        return null;
-      }
-    })
-    .filter(Boolean);
-  return { format: 'zip', documents };
-};
+/** The Word documents in an upload, each read for the invitation template. */
+const readWordDocuments = (bytes) => wordDocuments(bytes, readDocument);
 
 /**
  * One upload → what it says.

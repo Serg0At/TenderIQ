@@ -3,19 +3,28 @@ import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, rawKey, tenderDocKey } from '../libs/storage/index.js';
 import { fetchInvitation } from '../libs/adapters/source/gnumner/client.js';
 import { fileFormat, noticeBodyCode, parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
+import { parseContractNotice } from '../libs/adapters/source/gnumner/contract.parser.js';
 import { invitationArchive, isOfficeFile, uploadedName } from '../libs/adapters/source/gnumner/invitation.files.js';
-import { amendmentNoticeId, observeAmendment, pathDigest } from '../libs/adapters/source/gnumner/observation.js';
+import {
+  amendmentNoticeId,
+  contractNoticeDigest,
+  contractNoticeId,
+  noticeIdOfContract,
+  observeAmendment,
+  observeContract,
+  pathDigest,
+} from '../libs/adapters/source/gnumner/observation.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
-import { noticeOfJob } from '../services/paperNotice.service.js';
-import { lookupsFor, resolve } from '../services/resolution.service.js';
+import { noticeOfJob, storedNotice } from '../services/paperNotice.service.js';
+import { deriveStatus, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
-import { ingestNormalizeQueue } from '../queues/index.js';
-import { JOB, PRIORITY } from '../queues/names.js';
+import { alertsQueue, ingestFetchQueue, ingestNormalizeQueue, maintenanceQueue } from '../queues/index.js';
+import { JOB, PRIORITY, matchJobId } from '../queues/names.js';
 import { isFinalAttempt } from '../utils/attempts.js';
 import { sha256 } from '../utils/hash.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
@@ -393,6 +402,168 @@ export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }
 };
 
 /**
+ * A notice on gnumner's contract-concluded listing (ticket 08): fetched,
+ * stored under its notice id (`contract:{path digest}`), and recorded on its
+ * tender as that tender's results (`recordContract`).
+ *
+ * `reason: 'retry'` re-reads a notice that was left unmatched, from storage
+ * and with no request, once a tender of its code has appeared
+ * (`queueContractRetries`). The notice is rebuilt from the listing page it
+ * was stored with, as a paper invitation's are.
+ */
+export const handlePaperContract = async (job, token) => {
+  const priority = job.opts?.priority ?? PRIORITY.LIVE;
+
+  if (job.data.reason === 'retry') {
+    const { externalRef } = job.data;
+    if (!/^contract:[0-9a-f]{24}$/.test(String(externalRef ?? ''))) {
+      throw new UnrecoverableError(`paper.contract retry needs a contract notice id, got ${JSON.stringify(externalRef)}`);
+    }
+    const notice = await storedNotice(noticeIdOfContract(externalRef));
+    if (!notice) throw new UnrecoverableError(`[${SOURCE}] contract notice ${externalRef}: no listing record to re-read it from`);
+    return recordContract({ externalId: externalRef, notice, priority });
+  }
+
+  if (!isNotice(job.data)) {
+    throw new UnrecoverableError('paper.contract needs the notice: an upload path, slug, title and publishedAt');
+  }
+  const { path, fileType = null } = job.data;
+  const { bytes, format, contentType } = await fetchUpload(job, token, path);
+  const hash = sha256(bytes);
+  const externalId = contractNoticeId(path);
+
+  if (!(await sourcePayloads.existsWithHash(SOURCE, externalId, hash))) {
+    const storage = await getStorage();
+    const key = rawKey({ source: SOURCE, ref: externalId, hash, ext: extensionOf(format, fileType) });
+    await storage.put(key, bytes, { contentType: contentType || 'application/octet-stream' });
+    await sourcePayloads.record({ source: SOURCE, ref: externalId, storageKey: key, hash });
+  }
+
+  const notice = { ...noticeOfJob(job.data), seenAt: new Date(job.timestamp) };
+  return recordContract({ externalId, notice, priority });
+};
+
+/**
+ * One stored contract notice → its tender's results, through the resolution
+ * module: the bids and awards of the lots it covers and `awarded`, when its
+ * code, the paper channel and the invitation's date match exactly one tender;
+ * an unmatched result when they match none or two, or the file cannot be
+ * read; nothing when the code is another channel's. Reads only storage, so
+ * running it again — a retry, a re-listed notice, the re-read once a tender
+ * appears — decides the same and writes the same rows.
+ */
+export const recordContract = async ({ externalId, notice, priority = PRIORITY.LIVE }) => {
+  const log = logger.child({ job: JOB.PAPER_CONTRACT, source: SOURCE, contract: externalId });
+  const stored = await sourcePayloads.findLatestByRef(SOURCE, externalId);
+  if (!stored) throw new UnrecoverableError(`[${SOURCE}] no stored contract notice ${externalId}`);
+  const storage = await getStorage();
+  const bytes = Buffer.from(await storage.get(stored.storage_key));
+
+  const observation = observeContract(notice, { externalId, parsed: parseContractNotice(bytes) });
+  for (const warning of observation.warnings) log.warn(warning);
+  const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
+
+  if (decision.action === 'unmatched') {
+    await unmatchedResults.record({
+      source: SOURCE,
+      externalRef: externalId,
+      procedureCode: observation.procedureCode,
+      reason: decision.reason,
+      candidateTenderIds: decision.candidateIds,
+      payloadHash: stored.hash,
+      seenAt: stored.fetched_at,
+    });
+    log.warn(`contract notice unmatched (${decision.reason})`, {
+      code: observation.procedureCode,
+      candidates: decision.candidateIds,
+      ...(observation.unreadable ? { format: observation.unreadable.format } : {}),
+    });
+    return { unmatched: decision.reason };
+  }
+  if (decision.action !== 'link') {
+    log.info(`contract notice for ${observation.procedureCode} skipped — ${decision.reason ?? decision.action}`);
+    return { skipped: decision.reason ?? decision.action };
+  }
+
+  // The notice's own word, through the owners table: gnumner's contract
+  // notice is the paper channel's award source (ADR 0004).
+  const status = deriveStatus(
+    {
+      submissionChannel: observation.submissionChannel,
+      links: [{ source: SOURCE, status: observation.status }],
+      current: decision.tender.status,
+      deadlineAt: decision.tender.deadlineAt,
+    },
+    new Date()
+  );
+  const result = await tenders.recordResults({
+    tenderId: decision.tenderId,
+    expectedStatus: decision.tender.status,
+    status,
+    link: {
+      source: SOURCE,
+      externalId,
+      url: observation.url,
+      role: observation.role,
+      observedStatus: null,
+      seenAt: notice.seenAt ?? stored.fetched_at,
+    },
+    lots: observation.ledger,
+  });
+
+  // Only when the link is new, as in the normalizer.
+  if (decision.rule !== 'link') {
+    await unmatchedResults.markResolved({ source: SOURCE, externalRef: externalId, tenderId: decision.tenderId });
+  }
+
+  // The status move is an amendment like an e-auction settling: the matcher
+  // hears of it, and its open rule (deadline ahead) decides whether anyone
+  // is told.
+  if (result.event) {
+    await alertsQueue.add(
+      JOB.MATCH_TENDER,
+      { tenderId: result.tenderId, event: result.event, version: result.version, changedFields: result.changedFields },
+      { jobId: matchJobId(result.tenderId, result.version), priority }
+    );
+  }
+  // Awards landed, so "what similar tenders were won at" moved. Keyed on the
+  // file, so the same notice read again recomputes nothing new.
+  if (result.awards > 0) {
+    await maintenanceQueue.add(
+      JOB.RECOMPUTE_BENCHMARKS,
+      { tenderId: result.tenderId },
+      { jobId: `benchmarks-${result.tenderId}-${contractNoticeDigest(externalId)}-${stored.hash.slice(0, 12)}`, priority }
+    );
+  }
+
+  log.info(`contract notice recorded: ${result.bids} bids, ${result.awards} awards, tender ${status}`, { tenderId: decision.tenderId });
+  return { tenderId: decision.tenderId, status, bids: result.bids, awards: result.awards, ...(result.event ? { version: result.version } : {}) };
+};
+
+/**
+ * Re-read every contract notice left unmatched under a code a paper tender
+ * has just been created with — "a later-appearing tender picks it up". A
+ * contract notice is usually read weeks after its invitation, but a cold
+ * start, a backfill or an invitation that failed and was retried can put the
+ * result first. One job per notice, from storage, no request; resolution
+ * decides again, so one that still matches nothing stays unmatched.
+ */
+export const queueContractRetries = async ({ tenderId, referenceCode, priority = PRIORITY.LIVE }) => {
+  const key = normalizeCode(referenceCode);
+  if (!key) return 0;
+  const open = await unmatchedResults.findOpenByCode({ source: SOURCE, refPrefix: 'contract:', key });
+  for (const row of open) {
+    await ingestFetchQueue.add(
+      JOB.PAPER_CONTRACT,
+      { source: SOURCE, reason: 'retry', externalRef: row.external_ref },
+      { jobId: `${SOURCE}-contract-retry-${contractNoticeDigest(row.external_ref)}-${tenderId}`, priority }
+    );
+  }
+  if (open.length) logger.info(`[${SOURCE}] tender ${tenderId} (${referenceCode}): re-reading ${open.length} unmatched contract notices`);
+  return open.length;
+};
+
+/**
  * The paper refresh, for scraper.js#handleRefreshSweep: paper tenders whose
  * deadline has passed while they still say open, each re-normalized from
  * storage. Ids `gnumner-refresh-…`, never a notice's, so a refresh cannot
@@ -408,4 +579,14 @@ export const paperRefresher = {
   }),
 };
 
-export default { handlePaperInvitation, handlePaperDocuments, handlePaperAmendment, recordAmendment, paperDocumentsJob, paperRefresher };
+export default {
+  handlePaperInvitation,
+  handlePaperDocuments,
+  handlePaperAmendment,
+  recordAmendment,
+  handlePaperContract,
+  recordContract,
+  queueContractRetries,
+  paperDocumentsJob,
+  paperRefresher,
+};

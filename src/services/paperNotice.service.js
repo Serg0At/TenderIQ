@@ -19,10 +19,14 @@ import tenderSources from '../repositories/tenderSource.repo.js';
  */
 const SOURCE = 'gnumner';
 
-/** An invitation listing's procedure type; null on the amendment listing, whose uploads are not invitations. */
+/**
+ * An invitation listing's procedure type; null on the amendment and contract
+ * listings, whose uploads are not invitations. A listing names no `kind` for
+ * invitations, as workers/gnumner.js#listingKind reads it.
+ */
 const procedureTypeOf = (slug) => {
   const listing = getSourceConfig(SOURCE).listingPaths.find((l) => l.slug === slug);
-  if (listing?.kind === 'amendment') return null;
+  if ((listing?.kind ?? 'invitation') !== 'invitation') return null;
   if (!listing?.procedureType) {
     throw new Error(`[${SOURCE}] listing "${slug}" names no procedureType in sources.config.js`);
   }
@@ -41,8 +45,11 @@ export const noticeOfJob = (data) => ({
   procedureType: procedureTypeOf(data.slug),
 });
 
-/** One notice re-read from the listing page it was stored with, or null when it was never stored. */
-const storedNotice = async (noticeId) => {
+/**
+ * One notice re-read from the listing page it was stored with, or null when
+ * it was never stored. `noticeId` is the listing's `paper:{digest}`.
+ */
+export const storedNotice = async (noticeId) => {
   const row = await sourcePayloads.findLatestByRef(SOURCE, paperNoticeRef(noticeId));
   if (!row) return null;
 
@@ -90,4 +97,4 @@ export const noticesFor = async ({ invitationId, discovery = null }) => {
   return notices;
 };
 
-export default { noticesFor, noticeOfJob };
+export default { noticesFor, noticeOfJob, storedNotice };

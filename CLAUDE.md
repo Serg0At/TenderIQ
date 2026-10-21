@@ -597,7 +597,7 @@ decision that has already been made.
   (`procedure_type` always `e_auction`); **ARMEPS** — gnumner discovers it, armeps.am's CfT
   page creates it (`armeps` source, `procedure_type` `open`/`quotation` from the page; ticket 05);
   and **paper** — the invitation a gnumner notice uploads creates it (ticket 06, below). Paper
-  results (ticket 08) are not built. **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
+  results come from gnumner's contract-concluded notices (ticket 08, below). **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
   paper — assembled from four sources.** gnumner discovers ARMEPS and paper tenders, armeps.am
   details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
   is one run, never a procedure code; every source a tender came from is a link on it
@@ -646,6 +646,22 @@ decision that has already been made.
   — as a `tender_documents` row of kind `amendment`, beside the invitation and never compared
   with it, alerted as one added file. `unsupported_format` is only for files whose content must
   be read (invitations, contract notices).
+- **A paper tender's results are gnumner's contract-concluded notice** (ticket 08,
+  `contract.parser.js`, template 323-Ա, `paper.contract`): every bidder's net, VAT and total
+  per lot, rejections, and the contract's winner, written with `source = 'gnumner'` through
+  `tenders.recordResults` and `awarded` through `deriveStatus`. Its content is read, so `.doc`,
+  `.pdf` and `.rar` are `unsupported_format` with the owner comment. Four things decided while
+  building: the notice names no channel, so its code is looked up in every channel and one held
+  only elsewhere is skipped before the format is asked (`channelUnstated`); rule 3 compares the
+  notice's own **invitation date**, never its publication; the award is the one the contract
+  names, at the winning bid's prices, never row order (and no rank is stored); and a lot is read
+  only when the table places it — a «Հ/Հ» that looks like the lot number was shown not to be.
+  `replaceLedger` replaces only the notice's lots, so two notices of one tender both stand. A
+  notice is keyed by its upload path (`contract:{digest}`), so an unmatched one is re-read from
+  storage when a paper tender of its code is created. **Most contract notices will never match**:
+  the template says the invitation was "sent or published", most quotations are sent to invited
+  suppliers and never reach gnumner, and ~780 notices (10-07 → 10-21) held one code from the
+  published quotation listing. Ticket 08 records the counts.
 - **A code whose method marker `ՁԲ` runs straight into a digit is the same code with the dash**
   (ՄԿԻ-ԳՀԱՊՁԲ26/47 = ՄԿԻ-ԳՀԱՊՁԲ-26/47, ticket 07; 14 stored tenders are written that way). The
   title extractor reads it, and `normalizeCode` and its SQL twin `codeKeySql` put the dash back in

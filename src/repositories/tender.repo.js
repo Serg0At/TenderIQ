@@ -138,8 +138,17 @@ const changedKeys = (before, after) =>
  * the ledger in full every time, so it is authoritative, and a lot that
  * disappears from it must disappear here too — but only when a ledger was
  * actually parsed. See the guard below.
+ *
+ * `lotScoped` replaces only the lots given, for a source that publishes a
+ * tender's results a notice at a time: a gnumner contract notice can cover
+ * some lots of a tender (ticket 08), and a second notice must not erase the
+ * first's. A lot it does give is replaced whole, so a corrected notice wins.
+ *
+ * A lot may name its winner (`award`, null for none): a source that states
+ * who won is taken at its word. Without it, the winner is the first accepted
+ * bid in rank order, the e-auction ledger's rule below.
  */
-const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt }) => {
+const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt, lotScoped = false }) => {
   // Nothing parsed -> touch nothing. The delete used to run before this guard,
   // which made an empty parse destructive: the e-auction board adding one column to
   // Գնառաջարկներ makes parseBidLedger reject every row, and a finished tender's
@@ -203,7 +212,7 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
        * the honest reading of a failed lot.
        */
       const accepted = bid.participantStatus ? false : true;
-      if (accepted && !awardedLots.has(lot.lotNumber)) {
+      if (!('award' in lot) && accepted && !awardedLots.has(lot.lotNumber)) {
         awardedLots.add(lot.lotNumber);
         awardRows.push({
           id: createId(),
@@ -220,6 +229,28 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
         });
       }
     }
+
+    if (lot.award) {
+      const supplierId = await parties.upsertSupplier(
+        { source, sourceId: lot.award.supplierSourceId, name: lot.award.supplierName },
+        trx
+      );
+      if (supplierId) {
+        awardRows.push({
+          id: createId(),
+          tender_id: tenderId,
+          lot_number: lot.lotNumber,
+          supplier_id: supplierId,
+          amount: lot.award.amount,
+          net_amount: lot.award.netAmount,
+          estimated_value: lot.estimatedValue,
+          currency,
+          awarded_at: lot.award.awardedAt ?? awardedAt ?? null,
+          status: 'awarded',
+          source,
+        });
+      }
+    }
   }
 
   // Delete immediately before the insert, and only once there is something to
@@ -227,8 +258,10 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
   // authoritative only for its own rows, so an unscoped delete would wipe a
   // second source's awards on every re-normalize. Both statements run in the
   // caller's transaction, so readers never observe the empty window.
-  await trx('public_tender_bids').where({ tender_id: tenderId, source }).del();
-  await trx('awards').where({ tender_id: tenderId, source }).del();
+  const scope = (query) =>
+    lotScoped ? query.whereIn('lot_number', lots.map((lot) => lot.lotNumber)) : query;
+  await scope(trx('public_tender_bids').where({ tender_id: tenderId, source })).del();
+  await scope(trx('awards').where({ tender_id: tenderId, source })).del();
 
   if (bidRows.length) await trx('public_tender_bids').insert(bidRows);
   if (awardRows.length) await trx('awards').insert(awardRows);
@@ -1163,6 +1196,43 @@ export default class TenderRepository {
         changedFields: changedKeys({ ...existing, cpv_codes: storedCodes }, row),
         ...ledger,
       };
+    });
+  }
+
+  /**
+   * A results source's word on a tender another source created (ticket 08, a
+   * gnumner contract notice): its link, the lots' bids and awards it states,
+   * and the status it moves the tender to. One transaction under the row
+   * lock, so a tender is never awarded without the awards that say so.
+   *
+   * Nothing else about the tender is touched — its title, dates and lots are
+   * its detail source's — and only the lots given are replaced
+   * (`replaceLedger`'s `lotScoped`), so two notices covering different lots
+   * both stand.
+   *
+   * `status` was derived from `expectedStatus`, read when the observation was
+   * resolved. A tender that has moved since — cancelled meanwhile, say —
+   * throws, and the retry derives again from what it is now, the same as a
+   * resolved tender that no longer exists. A status that moves is an
+   * amendment like any other: `version` + 1 and `TenderAmended`, so the
+   * matcher hears of it and decides, as it does for an e-auction that settles.
+   * Writing the same notice again moves nothing and raises no event.
+   */
+  static async recordResults({ tenderId, expectedStatus, status, link, lots, currency = 'AMD' }) {
+    return db.transaction(async (trx) => {
+      const existing = await trx(TABLE).where({ id: tenderId }).forUpdate().first();
+      if (!existing) throw new Error(`[tenders] resolved tender ${tenderId} no longer exists — re-resolve`);
+      if (existing.status !== expectedStatus) {
+        throw new Error(`[tenders] tender ${tenderId} is ${existing.status}, not ${expectedStatus} as resolved — re-resolve`);
+      }
+
+      await tenderSources.upsert({ ...link, tenderId }, trx);
+      const ledger = await replaceLedger(trx, { source: link.source, tenderId, lots, currency, lotScoped: true });
+
+      if (status === existing.status) return { event: null, tenderId, version: existing.version, ...ledger };
+      const version = existing.version + 1;
+      await trx(TABLE).where({ id: tenderId }).update({ status, version });
+      return { event: 'TenderAmended', tenderId, version, changedFields: ['status'], ...ledger };
     });
   }
 }

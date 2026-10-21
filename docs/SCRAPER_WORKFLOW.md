@@ -23,7 +23,7 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
-| `gnumner` | HTML scrape of the announcement listings, and the paper invitations they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer `parties`, `tender_lots`, `tender_documents` |
+| `gnumner` | HTML scrape of the announcement, amendment and contract-concluded listings, and the files they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
 | `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
 | `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
@@ -288,6 +288,47 @@ page at once; e-auction links are counted; uploads become `paper.amendment` jobs
    as it is) as a `tender_documents` row of kind `amendment` — beside the invitation, never
    compared with it — raises `version`, sets `amended` while open and alerts
    `documentChanges.added: [<file>]`, once: the version moves only when the document row is new.
+
+### 4e. Contract-concluded listing — `paper.contract`
+
+«Կնքված պայմանագրի մասին հայտարարություն» (`listingPaths` entry `kind: 'contract'`, ticket 08)
+is the paper channel's results: the only public record of a paper tender's bidders and prices.
+Same chain and watermark as the other listings; about 50 notices a day, 6 a page, and every
+procedure type files there — ARMEPS, e-auction and single-source procedures too — as uploads. An
+ARMEPS link on it is counted and not read (PPCM owns those results). Uploads become
+`paper.contract` jobs:
+
+1. Fetched and stored under ref `contract:{digest of the upload path}` — the path, like an
+   invitation's notice, not the content, so that a notice left unmatched can be re-read later
+   from the listing page it was stored with.
+2. **Its content is read** (`contract.parser.js`, template 323-Ա): per lot every bidder's
+   name, net price, VAT and total; rejected bids and their reasons; the lot budget; the contract
+   (winner, number, date signed, price); and the date the invitation was published. Only the
+   Armenian half is read — many notices repeat themselves in Russian, or glue the translation
+   onto every cell. A blank VAT cell is a non-VAT payer, whose net is its total. A row that
+   cannot be placed in one lot is not read (a lot range «1-47» priced as one; 36 rows numbered
+   like the 36 lots that do not belong to them). **The format check** carries the same owner
+   comment as the invitation's: only a `.docx` (or one in a `.zip`) holding the price table is
+   readable; `.doc`, `.pdf`, `.rar` are `unsupported_format`, counted, and replay from storage
+   once a converter exists.
+3. The code is the title's, else the body's («… ծածկագրով գնման ընթացակարգի արդյունքում …»).
+   Resolution is rule 3 with one addition: the notice names no channel, so the code is looked up
+   in every channel, and one held only on e-auction or ARMEPS is skipped — asked before the
+   format, so another channel's `.doc` is never counted as an unreadable paper result. Otherwise
+   it matches a paper tender on code and the **invitation's** publication day (the notice's
+   «Հրավեր ուղարկելու կամ հրապարակելու ամսաթիվը», compared with the tender's `published_at`),
+   with lots that fit; none is `no_candidate`, two `ambiguous`, no code `no_code`. A result never
+   creates a tender.
+4. `TenderRepository.recordResults`, under the row lock: a `results` link, the lots' bids and
+   awards with `source = 'gnumner'` — net into the `*_net` columns, total into the gross ones,
+   no rank (a sealed bid list is not a ranking), the award the contract names at the winning
+   bid's prices — replacing **only the lots this notice covers**, so two notices for different
+   lots both stand. With an award written, the tender becomes `awarded` through `deriveStatus`
+   (gnumner owns paper's award), `version + 1`, `TenderAmended`; benchmarks recompute. The
+   evaluation table is not a rejection list: a row is a rejection only when a criterion fails.
+5. **A later-appearing tender picks it up.** When the normalizer creates a paper tender, every
+   unresolved `contract:` row of its code (`no_candidate`, `ambiguous`) is queued again as a
+   `paper.contract` retry: no request, the notice rebuilt from its stored listing page.
 
 **Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
 refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders

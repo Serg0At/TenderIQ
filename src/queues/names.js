@@ -87,6 +87,14 @@ export const JOB = {
    * code and dates, and recorded as an addendum document (workers/paper.js).
    */
   PAPER_AMENDMENT: 'paper.amendment',
+  /**
+   * One upload on gnumner's contract-concluded listing: a paper tender's
+   * bidders, prices and winner (ticket 08). Stored, matched to its tender on
+   * code and dates, and written as its results (workers/paper.js). Also the
+   * re-read of an unmatched one from storage once its tender appears
+   * (`reason: 'retry'`), which makes no request.
+   */
+  PAPER_CONTRACT: 'paper.contract',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',

@@ -15,7 +15,7 @@ import { logger } from '../utils/logger.js';
 import { validateNormalizedTender } from '../validations/index.js';
 import { eauctionDocumentsJob } from './documents.js';
 import { armepsDocumentsJob } from './armeps.js';
-import { paperDocumentsJob } from './paper.js';
+import { paperDocumentsJob, queueContractRetries } from './paper.js';
 import { linkDiscovery, linkPaperDiscovery } from '../services/discoveryLink.service.js';
 import { noticesFor } from '../services/paperNotice.service.js';
 
@@ -36,14 +36,16 @@ import { noticesFor } from '../services/paperNotice.service.js';
 
 /**
  * Source key -> its adapter's payload-to-observation mapper, the document
- * stage's job for a saved tender (null for none), and how the notice that
- * discovered it is linked once it exists. The only per-source table here;
- * what each entry does lives with its source.
+ * stage's job for a saved tender (null for none), how the notice that
+ * discovered it is linked once it exists, and what a newly created tender
+ * owes its source. The only per-source table here; what each entry does
+ * lives with its source.
  *
  * gnumner's payload is a paper invitation: binary, and saying nothing about
  * when it was published, which its deadline is counted from. `context` reads
  * the notices that listed it — from the job on a first run, from storage on
- * a replay (services/paperNotice.service.js).
+ * a replay (services/paperNotice.service.js). A paper tender, once created,
+ * takes any contract notice already read for its code (ticket 08).
  */
 const SOURCES = {
   [eauction.SOURCE]: { observe: eauction.observeDetail, documentsJob: eauctionDocumentsJob },
@@ -59,6 +61,8 @@ const SOURCES = {
     binary: true,
     context: async ({ sourceId, discovery }) => ({ notices: await noticesFor({ invitationId: sourceId, discovery }) }),
     link: ({ discovery, observation }) => linkPaperDiscovery({ discovery, invitationId: observation.externalId }),
+    created: ({ tenderId, tender, priority }) =>
+      queueContractRetries({ tenderId, referenceCode: tender.referenceCode, priority }),
   },
 };
 
@@ -100,7 +104,7 @@ export const normalizeTender = async ({
   if (!registered) {
     throw new UnrecoverableError(`no tender normalizer is registered for source "${source}"`);
   }
-  const { observe, documentsJob, binary = false, context = null, link = null } = registered;
+  const { observe, documentsJob, binary = false, context = null, link = null, created = null } = registered;
 
   // A newer payload for this ref means this job is describing a page that has
   // already been superseded; normalizing it would walk the tender backwards.
@@ -271,6 +275,9 @@ export const normalizeTender = async ({
   // The notice that discovered this page, now that its tender exists. Which
   // tender is again the resolution module's call, through the pointer.
   if (discovery && link) await link({ discovery, observation });
+
+  // A result read before its tender existed: now there is one to take it.
+  if (result.event === 'TenderIngested' && created) await created({ tenderId: result.tenderId, tender, priority });
 
   // Enqueued from here rather than from the detail fetch because this is the
   // point at which the tender is known to exist in the database — the document

@@ -65,7 +65,7 @@ export const observePaperNotice = (notice, { invitationId }) => ({
   externalId: paperNoticeId(notice.path),
   url: notice.url,
   pointer: { source: SOURCE, externalId: String(invitationId) },
-  procedureCode: notice.procedureCode ?? bodyCode ?? null,
+  procedureCode: notice.procedureCode ?? null,
   submissionChannel: 'paper',
   procedureType: null,
   buyerName: null,
@@ -280,15 +280,137 @@ export const observeAmendment = (notice, { externalId, bodyCode = null }) => ({
   observedStatus: null,
 });
 
+/**
+ * The link and payload id of a contract-concluded notice: the upload's path,
+ * as for the notice of an invitation (`paper:…`), not its content. That is
+ * what lets an unmatched one be read again once its tender appears
+ * (paper.js#queueContractRetries): the path finds the listing page the notice
+ * was stored with, and so its title and URL. A file uploaded twice is two
+ * notices writing the same rows.
+ */
+export const contractNoticeId = (path) => `contract:${pathDigest(path)}`;
+
+/** The path digest a contract-notice id carries, for a job id: BullMQ ids take no colon. */
+export const contractNoticeDigest = (id) => String(id).replace(/^contract:/, '');
+
+/** The listing's id for the notice a contract-notice id names: `paper:{digest}`, as `paperNoticeId` gives it. */
+export const noticeIdOfContract = (id) => `paper:${contractNoticeDigest(id)}`;
+
+/** A start of day in Yerevan, for a date a document states without a time. */
+const yerevanDay = (date) => (date ? new Date(`${date}T00:00:00+04:00`) : null);
+
+/**
+ * A paper supplier's per-source id. The bid ledger names bidders and nothing
+ * else — no operator id, no ՀՎՀՀ in the price table — so, as for a buyer, the
+ * name is the identity (contract.parser.js#bidderKey): a company renaming
+ * itself becomes a second party, which is far better than two companies
+ * becoming one.
+ */
+const supplierSourceId = (key) => `name:${sha256(key).slice(0, 16)}`;
+
+/** VAT as a percentage of the net price: 20 for a VAT payer, 0 for a non-payer. */
+const vatPercent = ({ net, gross }) =>
+  net > 0 && gross !== null ? Math.round(((gross - net) / net) * 10000) / 100 : null;
+
+/**
+ * A lot of a contract notice → the ledger shape `saveNormalized` and
+ * `recordResults` write: every bidder, and the award named by the contract.
+ *
+ * The award is explicit — `award` is set, null when the contract names no
+ * winning bid — never the e-auction rule of the first accepted rank: the
+ * notice states who won, and its row order is not a ranking. Its prices are
+ * the winning bid's, net and total, so the award compares with the other bids
+ * like every award does; the contract's own price can be a framework sum or
+ * the available funds only. A sealed bid has one price: it is the final
+ * offer, and no rank is stated, so none is stored.
+ */
+const ledgerLot = (lot) => {
+  const winner = lot.contract?.winnerKey ? lot.bids.find((bid) => bid.key === lot.contract.winnerKey) : null;
+  return {
+    lotNumber: lot.lotNumber,
+    estimatedValue: lot.budget,
+    bids: lot.bids.map((bid) => ({
+      supplierSourceId: supplierSourceId(bid.key),
+      supplierName: bid.name,
+      rank: null,
+      initialPrice: null,
+      initialValue: null,
+      finalPrice: bid.gross,
+      finalValue: bid.net,
+      finalVatPercent: vatPercent(bid),
+      participantStatus: bid.rejected ? 'rejected' : null,
+      applicationUrl: null,
+    })),
+    award: winner
+      ? {
+          supplierSourceId: supplierSourceId(winner.key),
+          supplierName: winner.name,
+          amount: winner.gross,
+          netAmount: winner.net,
+          awardedAt: yerevanDay(lot.contract.signedOn),
+        }
+      : null,
+  };
+};
+
+/**
+ * A stored contract-concluded notice → a results observation (ticket 08).
+ *
+ * gnumner is the paper channel's award source (ADR 0004), and the notice
+ * names no channel: an ARMEPS or e-auction tender's contract is announced on
+ * the same listing. So it is `channelUnstated`: resolution looks its code up
+ * in every channel, skips one Tendra holds only elsewhere — PPCM and eauction
+ * own those results — and matches the rest on code, the paper channel and the
+ * dates, like any result (rule 3).
+ *
+ * The date rule 3 compares is the notice's own «Հրավեր ուղարկելու կամ
+ * հրապարակելու ամսաթիվը»: the day the invitation was published, which is
+ * the tender's `published_at` day. The notice's own publication is weeks
+ * later and is no evidence of which run it is.
+ *
+ * Its code is the title's, else the one its body states (decided 2026-10-21,
+ * as for an amendment notice). An unreadable file is `unreadable` and counted;
+ * its title's code still lets resolution skip another channel's tender first.
+ */
+export const observeContract = (notice, { externalId, parsed }) => {
+  const read = parsed.readable ? parsed.notice : null;
+  const ledger = read ? read.lots.filter((lot) => lot.bids.length).map(ledgerLot) : [];
+  return {
+    source: SOURCE,
+    role: 'results',
+    channelUnstated: true,
+    externalId: String(externalId),
+    url: notice.url ?? null,
+    pointer: null,
+    procedureCode: notice.procedureCode ?? read?.procedureCode ?? null,
+    submissionChannel: 'paper',
+    procedureType: null,
+    buyerName: null,
+    publishedAt: yerevanDay(read?.invitationDate),
+    deadlineAt: null,
+    lotNumbers: read ? read.lots.map((lot) => lot.lotNumber) : [],
+    // A contract was concluded — the notice exists for nothing else — but the
+    // tender is `awarded` only with an award that says to whom: a notice
+    // whose winner names no bid on any lot leaves the status to the deadline.
+    status: ledger.some((lot) => lot.award) ? 'awarded' : null,
+    observedStatus: null,
+    ...(read ? {} : { unreadable: { format: parsed.format } }),
+    ledger,
+    warnings: read?.unreadRows ? [`${read.unreadRows} rows could not be placed in a lot and were not read`] : [],
+  };
+};
+
 export default {
   SOURCE,
   pathDigest,
   paperNoticeId,
   paperNoticeRef,
   amendmentNoticeId,
+  contractNoticeId,
   observeArmepsNotice,
   observePaperNotice,
   observeInvitation,
   observeAmendment,
+  observeContract,
   paperDeadline,
 };

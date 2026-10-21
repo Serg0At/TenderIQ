@@ -44,10 +44,16 @@ const sources = {
     // its ARMEPS links re-read the armeps.am page at once rather than at the
     // hourly refresh. Its sibling «Հրավերներում…» (with -ներում) is the public
     // organizations' listing, outside the procurement law, and is not read.
+    //
+    // `kind: 'contract'` is «Կնքված պայմանագրի մասին հայտարարություն», the
+    // contract-concluded notices (ticket 08): the paper channel's results.
+    // Every procedure type files there — ARMEPS, e-auction and single-source
+    // ones too, all as uploads — about 50 a day, 6 a page.
     listingPaths: [
       { slug: 'open', path: '/hy/page/bac_mrcuyti_haytararutyun_ev_hraver/', procedureType: 'open' },
       { slug: 'quotation', path: '/hy/page/gnanshman_harcman_haytararutyun_ev_hraver/', procedureType: 'quotation' },
       { slug: 'amendment', path: '/hy/page/hraverum_katarvats_popokhutyunner/', kind: 'amendment' },
+      { slug: 'contract', path: '/hy/page/knqvats_paymanagri_masin_haytararutyun/', kind: 'contract' },
     ],
     /**
      * A paper tender's file never changes, so nothing re-reads it — and its

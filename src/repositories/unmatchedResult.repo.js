@@ -1,5 +1,6 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
+import { codeKeySql } from './tender.repo.js';
 
 const TABLE = 'unmatched_results';
 
@@ -51,6 +52,23 @@ export default class UnmatchedResultRepository {
         payload_hash: newer('payload_hash'),
         last_seen_at: trx.raw('greatest(??, excluded.last_seen_at)', [`${TABLE}.last_seen_at`]),
       });
+  }
+
+  /**
+   * Unresolved results of one source whose code is `key` (a normalized code,
+   * `normalizeCode`) and whose ref starts with `refPrefix` — the ones a tender
+   * created under that code might now take. Only `no_candidate` and
+   * `ambiguous`: a result with no code or an unreadable file is not one a new
+   * tender changes.
+   */
+  static async findOpenByCode({ source, refPrefix, key }, trx = db) {
+    return trx(TABLE)
+      .where({ source })
+      .whereNull('resolved_at')
+      .whereIn('reason', ['no_candidate', 'ambiguous'])
+      .andWhere('external_ref', 'like', `${refPrefix}%`)
+      .whereRaw(`${codeKeySql('procedure_code')} = ?`, [key])
+      .select('external_ref', 'procedure_code', 'payload_hash');
   }
 
   /**

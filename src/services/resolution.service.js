@@ -19,7 +19,8 @@
  *     publishedAt, deadlineAt, lotNumbers: number[],
  *     status,                                   // the source's status as a domain value, null if unmapped
  *     unreadable: { format } | undefined,       // a file its parser could not read (a paper .rar)
- *     amendment: boolean | undefined }          // a notice amending a tender it does not name (gnumner)
+ *     amendment: boolean | undefined,           // a notice amending a tender it does not name (gnumner)
+ *     channelUnstated: boolean | undefined }    // a result whose source names no channel (a gnumner contract notice)
  *
  * A candidate is a stored tender:
  *
@@ -105,11 +106,15 @@ export const normalizeBuyer = (name) => {
  * code would merge a re-announcement into the run it replaced — except a
  * paper invitation, which has no other way to name its run (`codeRuns`), and an
  * amendment notice, which is matched on its code in any channel so that one
- * for an e-auction is told apart from one for a tender Tendra missed.
+ * for an e-auction is told apart from one for a tender Tendra missed. A
+ * result whose source does not say its channel is looked up in every channel
+ * for the same reason.
  */
 const codeLookup = (observation, key) => {
   if (!key) return null;
-  if (observation.role === 'results') return { key, submissionChannel: observation.submissionChannel };
+  if (observation.role === 'results') {
+    return { key, submissionChannel: observation.channelUnstated ? null : observation.submissionChannel };
+  }
   if (observation.amendment) return { key, submissionChannel: null };
   return null;
 };
@@ -269,6 +274,21 @@ const unmatched = (reason, tenders = []) => ({
 });
 
 /**
+ * A gnumner notice names a code and no channel, and the same listing carries
+ * notices of e-auction and ARMEPS tenders. When Tendra holds that code, and
+ * only in another channel, the notice is that tender's, and the tender's own
+ * source carries what it says (ADR 0004): not ours to attach, and not a
+ * missed tender either.
+ */
+const heldElsewhere = (observation, byCode) => {
+  const key = normalizeCode(observation.procedureCode);
+  const coded = key ? byCode.filter((tender) => normalizeCode(tender.referenceCode) === key) : [];
+  return coded.length > 0 && !coded.some((tender) => tender.submissionChannel === observation.submissionChannel);
+};
+
+const OTHER_CHANNEL = { action: 'skip', reason: 'other_channel' };
+
+/**
  * An amendment notice (ticket 07): rule 1, then the code its title names. Its
  * content is never read — the alert names the file, and a supplier opens it —
  * so its format decides nothing, and an unreadable one is never
@@ -281,12 +301,11 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
   if (byLink.length === 1) return link(byLink[0], 'link');
   if (byLink.length > 1) return unmatched('ambiguous', byLink);
 
-  const key = normalizeCode(observation.procedureCode);
-  const coded = key ? byCode.filter((tender) => normalizeCode(tender.referenceCode) === key) : [];
-  const own = coded.filter((tender) => tender.submissionChannel === observation.submissionChannel);
-  if (coded.length && !own.length) return { action: 'skip', reason: 'other_channel' };
+  if (heldElsewhere(observation, byCode)) return OTHER_CHANNEL;
 
+  const key = normalizeCode(observation.procedureCode);
   if (!key) return unmatched('no_code');
+  const own = byCode.filter((tender) => sameProcedure(observation, tender));
   const amended = unique(own.filter((tender) => amendedBy(observation, tender)));
   if (amended.length === 1) return link(amended[0], 'code');
   if (amended.length > 1) return unmatched('ambiguous', amended);
@@ -337,6 +356,12 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
  * amendment (an e-auction's new tid, armeps.am's page) — and a code it does
  * not hold at all is `no_candidate`, which is what a missed tender looks like.
  *
+ * A result whose source names no channel (`channelUnstated`, a gnumner
+ * contract notice, ticket 08) is the same: a code held only in another
+ * channel is `skip`, asked before its format, so another channel's tender
+ * never counts as an unreadable paper result. Otherwise it is rule 3 within
+ * its own channel, like any result.
+ *
  * A page from a superseded run — one that says so, or whose link its
  * replacement already marked — is `superseded` when linked, and `skip` when
  * not: nothing is created for a dead run, and its replacement records it
@@ -348,6 +373,7 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
  */
 export const resolve = (observation, { linked = [], pointed = [], predecessorTenders = [], byCode = [], codeRuns = [] } = {}) => {
   if (observation.amendment) return resolveAmendment(observation, { linked, byCode });
+  if (observation.channelUnstated && !linked.length && heldElsewhere(observation, byCode)) return OTHER_CHANNEL;
   if (observation.unreadable) return unmatched('unsupported_format');
 
   const byLink = unique(linked);

@@ -37,8 +37,20 @@ const itemFingerprint = (item) =>
 const excludedBuyer = (item, excludedBuyers) =>
   excludedBuyers.find(({ pattern }) => pattern.test(item.title)) ?? null;
 
-const isAmendmentListing = (slug) =>
-  getSourceConfig(SOURCE).listingPaths.find((l) => l.slug === slug)?.kind === 'amendment';
+/** What a listing's uploads are: invitations, unless the listing says otherwise. */
+const listingKind = (slug) =>
+  getSourceConfig(SOURCE).listingPaths.find((l) => l.slug === slug)?.kind ?? 'invitation';
+
+/**
+ * The job an upload becomes, by its listing: an invitation (ticket 06), a
+ * notice about an invitation (ticket 07), or a contract notice with the
+ * tender's results (ticket 08).
+ */
+const UPLOAD_JOBS = {
+  invitation: { name: JOB.PAPER_INVITATION, tag: 'paper' },
+  amendment: { name: JOB.PAPER_AMENDMENT, tag: 'amendment' },
+  contract: { name: JOB.PAPER_CONTRACT, tag: 'contract' },
+};
 
 const discoveryJob = (item, { slug, ref, hash }) => {
   const discovery = {
@@ -61,14 +73,12 @@ const discoveryJob = (item, { slug, ref, hash }) => {
     };
   }
 
-  // An upload on the amendment listing is a notice about an invitation, not
-  // one (ticket 07).
-  const amendment = isAmendmentListing(slug);
+  const upload = UPLOAD_JOBS[listingKind(slug)];
   return {
-    name: amendment ? JOB.PAPER_AMENDMENT : JOB.PAPER_INVITATION,
+    name: upload.name,
     data: { source: SOURCE, path: item.externalId, fileType: item.fileType, ...discovery },
     opts: {
-      jobId: `gnumner-${amendment ? 'amendment' : 'paper'}-${pathDigest(item.externalId)}-${hash.slice(0, 12)}`,
+      jobId: `gnumner-${upload.tag}-${pathDigest(item.externalId)}-${hash.slice(0, 12)}`,
       priority: PRIORITY.LIVE,
     },
   };
@@ -105,6 +115,12 @@ export const gnumnerBoard = {
     if (item.kind === 'paper' && excludedBuyer(item, getSourceConfig(SOURCE).excludedBuyers)) {
       return { tally: 'excluded' };
     }
+
+    // A contract notice that links to armeps.am is an ARMEPS tender's result,
+    // and PPCM owns those (ADR 0004): counted, not read. None was seen — the
+    // listing's items are uploads — but the link alone would otherwise
+    // re-read the armeps.am page.
+    if (item.kind === 'armeps' && listingKind(slug) === 'contract') return { tally: 'armeps' };
 
     const ref = noticeRef(item);
     const hash = itemFingerprint(item);
