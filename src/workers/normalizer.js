@@ -123,7 +123,9 @@ export const normalizeTender = async ({
   // deadline taken from the listing, say). It decides nothing here.
   for (const warning of observation.warnings ?? []) logger.warn(`[normalizer] ${source}:${sourceId} — ${warning}`);
 
-  const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
+  const lookups = lookupsFor(observation);
+  const candidates = await tenders.findCandidates(lookups);
+  const decision = resolve(observation, candidates);
 
   if (decision.action === 'unmatched') {
     await unmatchedResults.record({
@@ -151,7 +153,9 @@ export const normalizeTender = async ({
 
   // A dead run's page writes its own link and nothing else: the tender keeps
   // its status until the replacement joins, and its fields are the
-  // replacement's to set. A superseded link is never refreshed again.
+  // replacement's to set. A superseded link is never refreshed again. An
+  // older paper file read after the one that replaced it (ticket 07) is one
+  // too, and its notice is still a notice of the tender.
   if (decision.action === 'superseded') {
     await tenderSources.upsert({
       tenderId: decision.tenderId,
@@ -162,12 +166,14 @@ export const normalizeTender = async ({
       observedStatus: SUPERSEDED,
       seenAt,
     });
+    if (discovery && link) await link({ discovery, observation });
     logger.info(`[normalizer] ${source}:${sourceId} is a superseded run of tender ${decision.tenderId}`);
     return { event: null, tenderId: decision.tenderId, superseded: true };
   }
 
-  // This page has just joined the tender of a run it replaced (ticket 29).
-  const replaces = decision.rule === 'supersedes';
+  // This page has just joined the tender of a run it replaced: an e-auction
+  // amendment's new tid (ticket 29), or a re-posted paper invitation (ticket 07).
+  const replaces = decision.rule === 'supersedes' || decision.rule === 'reposts';
 
   // Only this observation's status is passed: every tender today has one link.
   // A second source's link stores its label verbatim, so deriving across links
@@ -215,6 +221,14 @@ export const normalizeTender = async ({
     },
     supersedes: observation.supersedes ?? [],
     replaces,
+    // A re-post names nothing it replaced; the tender's current file is it.
+    supersedeCurrent: decision.rule === 'reposts',
+    // A paper file created as a new run: the runs resolution saw, so a
+    // concurrent create of the same code is caught under the row's lock.
+    runGuard:
+      decision.action === 'create' && lookups.codeRuns
+        ? { ...lookups.codeRuns, knownIds: candidates.codeRuns.map((c) => c.id) }
+        : null,
   });
 
   if (result.skipped === 'no_buyer') {
@@ -226,7 +240,8 @@ export const normalizeTender = async ({
   // save so a page with no buyer leaves no row pointing at a tender never
   // written: a replacement whose predecessors are on two tenders, created as a
   // new run with the two tenders left exactly as they were (ticket 29, an
-  // `ambiguous` row); or a tender with no readable code, which no result can
+  // `ambiguous` row) — and a paper re-post that could join two runs, the
+  // same way (ticket 07); or a tender with no readable code, which no result can
   // ever be matched to (ticket 06, `no_code`).
   if (decision.unmatched) {
     await unmatchedResults.record({

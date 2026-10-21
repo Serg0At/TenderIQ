@@ -679,10 +679,15 @@ export default class TenderRepository {
    * resolution module's job, never this one's: the code lookup may return more
    * than one run, and that is the point.
    */
-  static async findCandidates({ link, pointer, predecessors = [], code }, trx = db) {
+  static async findCandidates({ link, pointer, predecessors = [], code, codeRuns }, trx = db) {
     const candidates = (query) =>
       query.select(
         't.id', 't.status', 't.reference_code', 't.submission_channel', 't.published_at', 't.deadline_at',
+        trx.raw('(select name from parties where id = t.buyer_id) as buyer_name'),
+        trx.raw(
+          'exists(select 1 from tender_sources where tender_id = t.id and observed_status = ?) as replaced_runs',
+          [SUPERSEDED]
+        ),
         trx.raw(
           `array(select lot_number from tender_lots where tender_id = t.id
                  union
@@ -708,20 +713,22 @@ export default class TenderRepository {
             .whereIn('s.external_id', predecessors.map((p) => p.externalId))
         )
         : [];
-    const byCode = async () =>
-      code
-        ? candidates(
-          trx(`${TABLE} as t`)
-            .whereRaw(`${codeKeySql('t.reference_code')} = ?`, [code.key])
-            .andWhere('t.submission_channel', code.submissionChannel)
-        )
-        : [];
+    // A null channel is every channel: an amendment notice does not say which
+    // one its tender is on.
+    const byCode = async (lookup) => {
+      if (!lookup) return [];
+      const query = trx(`${TABLE} as t`).whereRaw(`${codeKeySql('t.reference_code')} = ?`, [lookup.key]);
+      if (lookup.submissionChannel) query.andWhere('t.submission_channel', lookup.submissionChannel);
+      return candidates(query);
+    };
 
     const toCandidate = (row) => ({
       id: row.id,
       status: row.status,
       referenceCode: row.reference_code,
       submissionChannel: row.submission_channel,
+      buyerName: row.buyer_name,
+      replacedRuns: row.replaced_runs,
       publishedAt: row.published_at,
       deadlineAt: row.deadline_at,
       lotNumbers: row.lot_numbers ?? [],
@@ -729,12 +736,14 @@ export default class TenderRepository {
     const linked = await byLink(link);
     const pointed = await byLink(pointer);
     const predecessorTenders = await byPredecessors();
-    const coded = await byCode();
+    const coded = await byCode(code);
+    const runs = await byCode(codeRuns);
     return {
       linked: linked.map((row) => ({ ...toCandidate(row), linkSuperseded: row.link_status === SUPERSEDED })),
       pointed: pointed.map(toCandidate),
       predecessorTenders: predecessorTenders.map(toCandidate),
       byCode: coded.map(toCandidate),
+      codeRuns: runs.map(toCandidate),
     };
   }
 
@@ -861,13 +870,16 @@ export default class TenderRepository {
   }
 
   /**
-   * The set a tender held before this one: its newest document row other than
-   * `storageKey`. Read by tender, not by the archive's ref, because a joined
-   * replacement's first archive is still the tender's next set (ticket 29).
+   * The set a tender held before this one: its newest document row of the
+   * same kind other than `storageKey`. Read by tender, not by the archive's
+   * ref, because a joined replacement's first archive is still the tender's
+   * next set (ticket 29). Of the same kind, because a paper amendment notice
+   * (`amendment`, ticket 07) is a document beside the invitation, not a set
+   * that replaces it.
    */
-  static async findPreviousDocument(tenderId, storageKey, trx = db) {
+  static async findPreviousDocument(tenderId, storageKey, kind = 'invitation', trx = db) {
     return trx('tender_documents')
-      .where({ tender_id: tenderId })
+      .where({ tender_id: tenderId, kind })
       .whereNot({ storage_key: storageKey })
       .orderBy(NEWEST_DOCUMENT_FIRST)
       .first('id', 'storage_key', 'manifest');
@@ -956,18 +968,20 @@ export default class TenderRepository {
    * Paper tenders whose deadline has passed while they still say open — the
    * paper refresh, which re-normalizes them from storage so they close. A
    * paper invitation never changes, so nothing else would ever re-read it,
-   * and its status is read off its deadline. The detail link (the file,
-   * keyed by its content hash) names what to re-read; the notice links
-   * (`paper:…`) are left out. Bounded below so a tender that somehow never
-   * closes is not re-read for ever.
+   * and its status is read off its deadline. The current detail link (the
+   * file, keyed by its content hash) names what to re-read; the notice links
+   * (`paper:…`), the amendment notices (`amendment:…`) and the files a
+   * re-post replaced (superseded, ticket 07) are left out — a replaced file
+   * would write its old deadline back. Bounded below so a tender that
+   * somehow never closes is not re-read for ever.
    */
   static async findPaperPastDeadline({ windowDays, limit }, trx = db) {
     const now = new Date();
     const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
-    return trx(`${TABLE} as t`)
-      .join('tender_sources as s', 's.tender_id', 't.id')
-      .where({ 't.submission_channel': 'paper', 's.source': 'gnumner', 's.role': 'detail' })
+    return currentLink(trx(`${TABLE} as t`), 'gnumner')
+      .where({ 't.submission_channel': 'paper', 's.role': 'detail' })
+      .whereRaw("s.external_id ~ '^[0-9a-f]{64}$'")
       .whereIn('t.status', BIDDABLE_STATUSES)
       .andWhere('t.deadline_at', '<', now)
       .andWhere('t.deadline_at', '>', floor)
@@ -1005,8 +1019,24 @@ export default class TenderRepository {
    * still current. `replaces` is resolution's word that this page has just
    * joined that tender: it is an amendment even if no stored field moved,
    * because the run itself did.
+   *
+   * `supersedeCurrent` is a re-posted paper invitation joining its run
+   * (ticket 07), which names no predecessor: under the row lock, every other
+   * current detail link of the source on the tender is superseded. A tender's
+   * `published_at` is its newest file's, so a lock that finds one newer than
+   * this observation means a later re-post committed after this one was
+   * resolved — then this file is the older of the two, and the retry resolves
+   * it as one.
+   *
+   * `runGuard` (`{ key, submissionChannel, knownIds }`) is a paper file being
+   * created as a new run. Two files of one code normalized at once — a cold
+   * start queues both — would each find no run and create one, and rule 1
+   * would keep them two tenders for good. So the create takes a lock on the
+   * code, and a same-code tender that resolution did not see (not in
+   * `knownIds`) means another file just created it: this one throws, and the
+   * retry resolves against it.
    */
-  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, tender, lots, link, supersedes = [], replaces = false }) {
+  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, tender, lots, link, supersedes = [], replaces = false, supersedeCurrent = false, runGuard = null }) {
     return db.transaction(async (trx) => {
       const buyerId = await parties.upsertBuyer({ source, name: buyerName }, trx);
       if (!buyerId) {
@@ -1046,6 +1076,15 @@ export default class TenderRepository {
       const storedCodes = existing?.cpv_codes?.length ? existing.cpv_codes : row.cpv_codes;
 
       if (!existing) {
+        if (runGuard) {
+          await trx.raw('select pg_advisory_xact_lock(hashtext(?))', [`run:${runGuard.submissionChannel}:${runGuard.key}`]);
+          const unseen = await trx(TABLE)
+            .whereRaw(`${codeKeySql('reference_code')} = ?`, [runGuard.key])
+            .andWhere('submission_channel', runGuard.submissionChannel)
+            .whereNotIn('id', runGuard.knownIds)
+            .first('id');
+          if (unseen) throw new Error(`[tenders] ${sourceId}: tender ${unseen.id} of the same code was created meanwhile — re-resolve`);
+        }
         const id = createId();
         await trx(TABLE).insert({ ...row, id, source_id: sourceId, version: 1, is_latest: true });
         await tenderSources.upsert({ ...link, tenderId: id }, trx);
@@ -1083,6 +1122,12 @@ export default class TenderRepository {
           auctionAt: existing.auction_at,
         });
 
+      if (supersedeCurrent) {
+        if (new Date(existing.published_at).getTime() >= new Date(tender.publishedAt).getTime()) {
+          throw new Error(`[tenders] tender ${existing.id} now holds a newer file than ${sourceId} — re-resolve`);
+        }
+        await tenderSources.supersedeOthers({ tenderId: existing.id, source, keep: link.externalId }, trx);
+      }
       await tenderSources.upsert({ ...link, tenderId: existing.id }, trx);
       await tenderSources.markSuperseded({ tenderId: existing.id, source, runs: supersedes, seenAt: link.seenAt }, trx);
 

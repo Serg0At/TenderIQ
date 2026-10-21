@@ -37,6 +37,9 @@ const itemFingerprint = (item) =>
 const excludedBuyer = (item, excludedBuyers) =>
   excludedBuyers.find(({ pattern }) => pattern.test(item.title)) ?? null;
 
+const isAmendmentListing = (slug) =>
+  getSourceConfig(SOURCE).listingPaths.find((l) => l.slug === slug)?.kind === 'amendment';
+
 const discoveryJob = (item, { slug, ref, hash }) => {
   const discovery = {
     source: SOURCE,
@@ -58,11 +61,14 @@ const discoveryJob = (item, { slug, ref, hash }) => {
     };
   }
 
+  // An upload on the amendment listing is a notice about an invitation, not
+  // one (ticket 07).
+  const amendment = isAmendmentListing(slug);
   return {
-    name: JOB.PAPER_INVITATION,
+    name: amendment ? JOB.PAPER_AMENDMENT : JOB.PAPER_INVITATION,
     data: { source: SOURCE, path: item.externalId, fileType: item.fileType, ...discovery },
     opts: {
-      jobId: `gnumner-paper-${pathDigest(item.externalId)}-${hash.slice(0, 12)}`,
+      jobId: `gnumner-${amendment ? 'amendment' : 'paper'}-${pathDigest(item.externalId)}-${hash.slice(0, 12)}`,
       priority: PRIORITY.LIVE,
     },
   };

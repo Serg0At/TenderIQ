@@ -19,8 +19,10 @@ import tenderSources from '../repositories/tenderSource.repo.js';
  */
 const SOURCE = 'gnumner';
 
+/** An invitation listing's procedure type; null on the amendment listing, whose uploads are not invitations. */
 const procedureTypeOf = (slug) => {
   const listing = getSourceConfig(SOURCE).listingPaths.find((l) => l.slug === slug);
+  if (listing?.kind === 'amendment') return null;
   if (!listing?.procedureType) {
     throw new Error(`[${SOURCE}] listing "${slug}" names no procedureType in sources.config.js`);
   }
@@ -70,13 +72,15 @@ const storedNotice = async (noticeId) => {
 
 /**
  * Every notice of the invitation `invitationId` (its content hash): the one a
- * job carries, and those already linked to its tender.
+ * job carries, and those already linked as pointing at it. Not every notice
+ * of its tender: a tender a re-post joined holds another file's notices too
+ * (ticket 07), and this file's deadline is counted from this file's.
  */
 export const noticesFor = async ({ invitationId, discovery = null }) => {
   const notices = discovery ? [noticeOfJob(discovery)] : [];
   const have = new Set(notices.map((n) => paperNoticeId(n.path)));
 
-  const links = await tenderSources.listSiblings({ source: SOURCE, externalId: invitationId, prefix: 'paper:' });
+  const links = await tenderSources.listPointingAt({ source: SOURCE, pointsTo: `${SOURCE}:${invitationId}` });
   for (const { external_id: noticeId } of links) {
     if (have.has(noticeId)) continue;
     const notice = await storedNotice(noticeId);

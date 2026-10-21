@@ -40,6 +40,9 @@ const link = async (observation, seenAt) => {
     url: observation.url,
     role: observation.role,
     observedStatus: null,
+    // Which link this notice is a notice of: a paper invitation reads its own
+    // notices back through it (services/paperNotice.service.js).
+    pointsTo: `${observation.pointer.source}:${observation.pointer.externalId}`,
     seenAt: seenAt ? new Date(seenAt) : new Date(),
   });
   return { linked: true, tenderId: decision.tenderId };

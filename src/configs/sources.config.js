@@ -37,9 +37,17 @@ const sources = {
     maxListingPages: 5,
     // `procedureType` is what a paper tender found on that listing is: the
     // buyer filed the notice there, and the invitation's own heading agrees.
+    //
+    // `kind: 'amendment'` is «Հրավերում կատարված փոփոխություններ», where a
+    // buyer announces a change to an invitation (ticket 07). Its uploads are
+    // amendment notices, never invitations, so it names no procedure type;
+    // its ARMEPS links re-read the armeps.am page at once rather than at the
+    // hourly refresh. Its sibling «Հրավերներում…» (with -ներում) is the public
+    // organizations' listing, outside the procurement law, and is not read.
     listingPaths: [
       { slug: 'open', path: '/hy/page/bac_mrcuyti_haytararutyun_ev_hraver/', procedureType: 'open' },
       { slug: 'quotation', path: '/hy/page/gnanshman_harcman_haytararutyun_ev_hraver/', procedureType: 'quotation' },
+      { slug: 'amendment', path: '/hy/page/hraverum_katarvats_popokhutyunner/', kind: 'amendment' },
     ],
     /**
      * A paper tender's file never changes, so nothing re-reads it — and its

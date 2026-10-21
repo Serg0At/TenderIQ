@@ -629,6 +629,20 @@ decision that has already been made.
   one source that writes `tenders.description` (the contract subject). A paper file never
   changes, so `refresh-gnumner` re-normalizes from storage the ones past their deadline, so they
   close.
+- **A re-posted paper invitation is an amendment of its run** (ticket 07). Paper names no
+  predecessor, so for the paper channel alone a detail joins the stored tender of the same
+  normalized code and buyer when the two overlap — the earlier still open, and not cancelled or
+  awarded, when the later was published. **Dates decide, never the stored status or the order
+  of arrival**: the newer file is the tender (an amendment that supersedes every other current
+  file, under the row lock) and an older one read late — a sweep reads newest first — is a
+  `superseded` link. A tender's `published_at` is its newest file's, which is what lets the lock
+  catch a newer re-post committed in between (it throws, the retry resolves the file as older).
+  `tender_sources.points_to` says which file each notice belongs to: one tender now holds the
+  notices of several files, and a deadline counted from another file's notice is wrong.
+  gnumner's **amendment listing** (`kind: 'amendment'`) carries Article 29 notices: matched on
+  code across channels (one held only on e-auction/ARMEPS is skipped, before the format check),
+  stored as a `tender_documents` row of kind `amendment` — beside the invitation, never compared
+  with it — and alerted as one added file. Their prose dates are never read.
 - **armeps.am serves a different page on every request, and what is stored is canonical.** A
   fresh `jsessionid` in every link, a clock, a pager key, a calendar: `armeps/cft.parser.js#
   canonicalPage` strips exactly those, and the stripped page is both hashed and stored, so a

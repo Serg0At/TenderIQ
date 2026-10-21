@@ -105,9 +105,20 @@ new path each time (five byte-identical pairs among 56 uploads on 2026-10-19/20)
 that is two tenders for one procurement. Keyed by content, the second upload resolves by rule 1
 to the same tender, and its notice is one more `discovery` link (`paper:{digest of the path}`)
 pointing at the file by rule 2. No new merge rule was needed. A buyer who re-issues a *changed*
-invitation uploads different bytes, which is a different tender until the amendment listing
-(ticket 07) joins them — seen once: ԵՊՊՔ-ԳՀԱՊՁԲ-26-3, uploaded on 10-08 and again on 10-12 with
-the day count adjusted to keep the same deadline.
+invitation uploads different bytes — seen on ԵՊՊՔ-ԳՀԱՊՁԲ-26-3, uploaded on 10-08 and again on
+10-12 with the day count adjusted to keep the same deadline.
+
+**A re-posted paper invitation joins its run (2026-10-21, ticket 07).** Paper has no pointer, so
+for the paper channel alone the code is a join key for a detail: a new file with the same
+normalized code and buyer as a paper tender joins it when the two overlap — the earlier still
+open, and not cancelled or awarded, when the later was published. The newer file is the tender
+from then on and the older is a `superseded` link, whichever is read first. Once the run has
+closed or been cancelled, the same code is a re-announcement and a new run, as for e-auction.
+Two runs it could join is an `ambiguous` unmatched result beside a new run. An **amendment
+notice** from gnumner's amendment listing names only a code: it attaches to the one paper tender
+announced before it and still open when it was published, as an addendum document, and never
+creates. A code Tendra holds only in another channel is skipped, since that channel's own
+source carries the amendment.
 
 Two reasons join `no_candidate` and `ambiguous` on unmatched results. A file the parser cannot
 read is `unsupported_format` and creates nothing; a tender created with no readable code is

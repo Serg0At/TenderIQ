@@ -225,7 +225,9 @@ the whole of it. Code: `libs/adapters/source/gnumner/` (pure `invitation.parser.
    reached by re-normalizing the stored file with that notice, a minute later so the two creates
    do not race.
 3. The normalizer reads the file with the notices that listed it: the job's, and on a replay
-   those already linked, each re-read from the listing page its `source_payloads` row points at.
+   those already linked as pointing at that file (`tender_sources.points_to`), each re-read from
+   the listing page its `source_payloads` row points at. Not every notice of the tender: once a
+   re-post has joined (below) it holds another file's notices too.
    The earliest notice is the publication: the title, the procedure type (the listing's
    `procedureType` in `sources.config.js`) and the publish datetime the deadline is counted from.
 4. **The format check** (`invitation.parser.js`): only a `.docx`, or a `.docx` one level inside
@@ -246,9 +248,48 @@ the whole of it. Code: `libs/adapters/source/gnumner/` (pure `invitation.parser.
    it is, a `.docx` wrapped in a one-entry ZIP — lists it and writes the lots, through the same
    `recordDocuments` as the other sources.
 
+**A re-posted invitation joins its run (ticket 07).** A buyer who changes a paper invitation
+uploads a new file under the same code, and nothing in it names the old one. So a new file whose
+normalized code, channel and buyer match a stored paper tender joins it when the two overlap: the
+earlier was still open (deadline ahead, not cancelled or awarded) when the later was published.
+Dates, not the stored status, decide, so a replay a month later decides the same.
+
+- The **newer** file is the tender from then on: an amendment (`version + 1`, `amended` while
+  open, deadline counted from its own notice), every other current file of the tender superseded
+  under the row lock, and one alert, raised by `paper.documents` once the new set can be compared
+  with the old (ticket 18). A lock that finds a newer file already committed throws, and the
+  retry resolves this one as the older.
+- An **older** file read after the newer one — a sweep reads newest first, so a cold start sees
+  the re-post first — is a `superseded` link, its notice still linked, and writes nothing else.
+- Two runs it could join: created as a new run, with an `ambiguous` unmatched result naming both.
+  Once the run has closed or been cancelled, the same code is a re-announcement and a new run.
+
+### 4d. Amendment listing — `paper.amendment`
+
+«Հրավերում կատարված փոփոխություններ» (`listingPaths` entry `kind: 'amendment'`) is swept by the
+same chain and watermark as the invitation listings. Its date paragraph carries no `tender_time`
+class, and an upload there has no close («…-ից անժամկետ»). ARMEPS links re-read the armeps.am
+page at once; e-auction links are counted; uploads become `paper.amendment` jobs:
+
+1. Fetched and stored like an invitation, under ref `amendment:{sha256}`, whatever its format.
+2. `parseAmendmentNotice`: a `.docx` (or one in a `.zip`) is readable and gives its code and
+   buyer (the title's code otherwise). Nearly every one is the Article 29 notice, whose reasons
+   are prose; a moved date in it is never read — that reaches the tender through the re-posted
+   invitation.
+3. Resolution matches it on code across channels, channel first: a code held only on e-auction
+   or ARMEPS → skipped, readable or not (its own source carries the amendment, and counting its
+   `.doc` would bury the paper formats); then an unreadable file → `unsupported_format`; then one
+   paper tender announced before the notice and still open when it was published → linked
+   (`amendment:{sha256}`, role `discovery`); none → `no_candidate`; two → `ambiguous`.
+4. `AddendumService.recordNotice` stores it as a `tender_documents` row of kind `amendment`
+   (beside the invitation, never compared with it), raises `version`, sets `amended` while open
+   and alerts `documentChanges.added: [<file>]` — once, because the version moves only when the
+   document row is new.
+
 **Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
 refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders
-whose deadline has passed while they still say `active` or `amended`, so they close.
+whose deadline has passed while they still say `active` or `amended`, so they close. It reads the
+tender's current file only: a superseded one would write its old deadline back.
 
 ### 5. Document download — `document.download`
 

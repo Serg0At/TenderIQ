@@ -18,11 +18,13 @@
  *     procedureCode, submissionChannel, procedureType, buyerName,
  *     publishedAt, deadlineAt, lotNumbers: number[],
  *     status,                                   // the source's status as a domain value, null if unmapped
- *     unreadable: { format } | undefined }      // a file its parser could not read (a paper .rar)
+ *     unreadable: { format } | undefined,       // a file its parser could not read (a paper .rar)
+ *     amendment: boolean | undefined }          // a notice amending a tender it does not name (gnumner)
  *
  * A candidate is a stored tender:
  *
- *   { id, status, referenceCode, submissionChannel, publishedAt, deadlineAt, lotNumbers,
+ *   { id, status, referenceCode, submissionChannel, buyerName, publishedAt, deadlineAt, lotNumbers,
+ *     replacedRuns,                             // it holds a superseded run: publishedAt is its newest
  *     linkSuperseded }                          // linked candidates only: that link is a dead run
  *
  * **An e-auction amendment** is a new tid whose page names the runs it
@@ -31,6 +33,14 @@
  * *current* link from then on; the runs it names are `superseded` links. A
  * same-code tender that names no predecessor is a re-announcement and a new
  * run: the pointer decides, never the code.
+ *
+ * **A paper invitation re-posted while its run is open** joins that run
+ * (ticket 07). Paper has no pointer: a buyer who changes an invitation
+ * uploads a new file, under the same code, and nothing in it names the old
+ * one. So for the channels in `JOINS_ON_CODE` the code and the buyer are the
+ * join key — but only while the earlier run was still open when the later
+ * file was published. Once it has closed or been cancelled, the same code is
+ * a new run, a re-announcement, exactly as for e-auction.
  */
 
 /**
@@ -55,13 +65,50 @@ export const normalizeCode = (code) => {
 };
 
 /**
- * What `resolve` needs a repository to look up, so that which queries run is
- * decided here too. Only a result is ever matched on its code: a detail or
- * discovery source carries its own identity, and matching it on a code would
- * merge a re-announcement into the run it replaced.
+ * Submission channels whose re-issued invitation names no predecessor, so a
+ * new detail joins the open run of its code and buyer (ticket 07). e-auction
+ * names its predecessors (ticket 29) and armeps.am keeps one page per tender,
+ * so neither is here: for them the code is never a join key for a detail.
  */
+export const JOINS_ON_CODE = new Set(['paper']);
+
+/**
+ * A buyer's name as a join key: quotes, the `<<…>>` of a keyboard without «,
+ * case and runs of whitespace do not make two buyers. Anything more is a
+ * different spelling, and a different spelling stays a different buyer — a
+ * missed join is a second tender, a wrong one merges two procurements.
+ */
+export const normalizeBuyer = (name) => {
+  if (name === null || name === undefined) return null;
+  const key = String(name)
+    .replace(/[«»"'“”„‘’<>]/g, '')
+    .replace(/[.,:;։]+$/u, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+  return key || null;
+};
+
+/**
+ * What `resolve` needs a repository to look up, so that which queries run is
+ * decided here too. A result is matched on its code within its channel. A
+ * detail or discovery source carries its own identity, and matching it on a
+ * code would merge a re-announcement into the run it replaced — except a
+ * paper invitation, which has no other way to name its run (`codeRuns`), and an
+ * amendment notice, which is matched on its code in any channel so that one
+ * for an e-auction is told apart from one for a tender Tendra missed.
+ */
+const codeLookup = (observation, key) => {
+  if (!key) return null;
+  if (observation.role === 'results') return { key, submissionChannel: observation.submissionChannel };
+  if (observation.amendment) return { key, submissionChannel: null };
+  return null;
+};
+
 export const lookupsFor = (observation) => {
   const key = normalizeCode(observation.procedureCode);
+  const joinsOnCode =
+    observation.role === 'detail' && !observation.amendment && JOINS_ON_CODE.has(observation.submissionChannel);
   return {
     link: { source: observation.source, externalId: String(observation.externalId) },
     pointer: observation.pointer
@@ -71,10 +118,8 @@ export const lookupsFor = (observation) => {
       source: observation.source,
       externalId: String(run.externalId),
     })),
-    code:
-      observation.role === 'results' && key
-        ? { key, submissionChannel: observation.submissionChannel }
-        : null,
+    code: codeLookup(observation, key),
+    codeRuns: key && joinsOnCode && !observation.unreadable ? { key, submissionChannel: observation.submissionChannel } : null,
   };
 };
 
@@ -132,6 +177,74 @@ const codeMatches = (observation, candidates) => {
 
 const unique = (tenders) => [...new Map(tenders.map((t) => [t.id, t])).values()];
 
+const time = (at) => {
+  if (!at) return null;
+  const ms = new Date(at).getTime();
+  return Number.isFinite(ms) ? ms : null;
+};
+
+/**
+ * Whether a run was provably still open at a moment: its deadline was after
+ * it. Dates rather than the stored status, so a replay a month later decides
+ * what the first run decided. A run with no deadline proves nothing — it
+ * would stay "open" for ever and swallow a re-announcement months later — and
+ * joins nothing: a missed join is a second tender, which shows; a wrong one
+ * merges two procurements, which does not.
+ */
+const openAt = (run, at) => {
+  const deadline = time(run.deadlineAt);
+  return deadline !== null && deadline > at;
+};
+
+/** The same normalized code, on the same submission channel. */
+const sameProcedure = (observation, tender) =>
+  normalizeCode(tender.referenceCode) === normalizeCode(observation.procedureCode) &&
+  tender.submissionChannel === observation.submissionChannel;
+
+/**
+ * A paper invitation and a stored run of the same code and buyer: are they
+ * one procurement, and which of the two is the newer? They are when the
+ * earlier was still open as the later was published, and the earlier was not
+ * cancelled or awarded. Only the stored run has a status worth reading; the
+ * observation is a file, and its run's status is whatever the stored one says.
+ */
+const repostOf = (observation, tender) => {
+  if (!sameProcedure(observation, tender)) return null;
+  const buyer = normalizeBuyer(observation.buyerName);
+  if (!buyer || buyer !== normalizeBuyer(tender.buyerName)) return null;
+
+  const published = time(observation.publishedAt);
+  const storedPublished = time(tender.publishedAt);
+  if (published === null || storedPublished === null) return null;
+  // Equal to the second is not an order, and an order is what decides which
+  // file the tender is now.
+  if (published === storedPublished) return null;
+
+  if (published > storedPublished) {
+    return !TERMINAL.has(tender.status) && openAt(tender, published) ? 'newer' : null;
+  }
+  return openAt(observation, storedPublished) ? 'older' : null;
+};
+
+/**
+ * An amendment notice and a stored tender of its channel: the notice was
+ * published while the tender was announced and still open. Status is not
+ * read — a notice published before a tender was cancelled is still that
+ * tender's notice, and the addendum it raises simply alerts nobody.
+ *
+ * A tender a re-post joined (`replacedRuns`) carries its newest file's
+ * publication, not its first, so "announced before the notice" cannot be
+ * asked of it: a notice published between its two files and read after the
+ * second would otherwise find nothing.
+ */
+const amendedBy = (observation, tender) => {
+  if (!sameProcedure(observation, tender)) return false;
+  const published = time(observation.publishedAt);
+  const storedPublished = time(tender.publishedAt);
+  if (published === null || storedPublished === null) return false;
+  return (tender.replacedRuns || storedPublished <= published) && openAt(tender, published);
+};
+
 /** `tender` is the candidate itself: its stored status is what `deriveStatus` moves forward from. */
 const link = (tender, rule) => ({ action: 'link', tenderId: tender.id, tender, rule });
 /**
@@ -139,12 +252,37 @@ const link = (tender, rule) => ({ action: 'link', tenderId: tender.id, tender, r
  * Its deadline and documents are the old run's, and writing them would walk
  * the tender back to the version its replacement amended.
  */
-const supersededRun = (tender) => ({ action: 'superseded', tenderId: tender.id, tender, rule: 'link' });
+const supersededRun = (tender, rule = 'link') => ({ action: 'superseded', tenderId: tender.id, tender, rule });
 const unmatched = (reason, tenders = []) => ({
   action: 'unmatched',
   reason,
   candidateIds: tenders.map((t) => t.id),
 });
+
+/**
+ * An amendment notice (ticket 07): rule 1, then its code. The channel is asked
+ * before the format: a notice whose code Tendra holds only on e-auction or
+ * ARMEPS is that tender's, its own source carries the change, and counting
+ * its .doc as a paper `unsupported_format` would bury the formats paper
+ * notices really arrive in — 5 of the first 7 unreadable codes were such.
+ */
+const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
+  const byLink = unique(linked);
+  if (byLink.length === 1) return link(byLink[0], 'link');
+  if (byLink.length > 1) return unmatched('ambiguous', byLink);
+
+  const key = normalizeCode(observation.procedureCode);
+  const coded = key ? byCode.filter((tender) => normalizeCode(tender.referenceCode) === key) : [];
+  const own = coded.filter((tender) => tender.submissionChannel === observation.submissionChannel);
+  if (coded.length && !own.length) return { action: 'skip', reason: 'other_channel' };
+
+  if (observation.unreadable) return unmatched('unsupported_format');
+  if (!key) return unmatched('no_code');
+  const amended = unique(own.filter((tender) => amendedBy(observation, tender)));
+  if (amended.length === 1) return link(amended[0], 'code');
+  if (amended.length > 1) return unmatched('ambiguous', amended);
+  return unmatched('no_candidate');
+};
 
 /**
  * One observation → link to a tender, create a new one, or unmatched with a
@@ -174,16 +312,33 @@ const unmatched = (reason, tenders = []) => ({
  * .rar, .doc or a scan) is `unsupported_format`: there is no buyer, deadline
  * or code to create anything from, and it is counted rather than dropped.
  *
+ * A paper invitation of a code and buyer Tendra already holds (`codeRuns`, ticket
+ * 07) joins that run when the two overlap — the earlier still open as the
+ * later was published. The newer of the two is the tender from then on: a
+ * newer file is `link` with rule `reposts`, which the caller writes as an
+ * amendment that supersedes the run's current file; an older one, arriving
+ * late (a sweep reads newest first), is `superseded` and writes only its
+ * link. Two runs it could join is `create` with an `ambiguous` beside it, as
+ * for an e-auction replacement.
+ *
+ * An amendment notice names a code and nothing else: it attaches to the one
+ * tender of its channel announced before it and still open when it was
+ * published (rule `code`), and never creates. A code Tendra holds only in
+ * another channel is `skip` — that channel's own source carries the
+ * amendment (an e-auction's new tid, armeps.am's page) — and a code it does
+ * not hold at all is `no_candidate`, which is what a missed tender looks like.
+ *
  * A page from a superseded run — one that says so, or whose link its
  * replacement already marked — is `superseded` when linked, and `skip` when
  * not: nothing is created for a dead run, and its replacement records it
  * when it arrives.
  *
- * `candidates` is `{ linked, pointed, predecessorTenders, byCode }`, the
- * answers to `lookupsFor`; `predecessorTenders` hold the observation's
+ * `candidates` is `{ linked, pointed, predecessorTenders, byCode, codeRuns }`,
+ * the answers to `lookupsFor`; `predecessorTenders` hold the observation's
  * predecessors.
  */
-export const resolve = (observation, { linked = [], pointed = [], predecessorTenders = [], byCode = [] } = {}) => {
+export const resolve = (observation, { linked = [], pointed = [], predecessorTenders = [], byCode = [], codeRuns = [] } = {}) => {
+  if (observation.amendment) return resolveAmendment(observation, { linked, byCode });
   if (observation.unreadable) return unmatched('unsupported_format');
 
   const byLink = unique(linked);
@@ -208,6 +363,13 @@ export const resolve = (observation, { linked = [], pointed = [], predecessorTen
   const byPointer = unique(pointed);
   if (byPointer.length === 1) return link(byPointer[0], 'pointer');
   if (byPointer.length > 1) return unmatched('ambiguous', byPointer);
+
+  const reposts = unique(codeRuns).map((tender) => ({ tender, order: repostOf(observation, tender) })).filter((r) => r.order);
+  if (reposts.length === 1) {
+    const [{ tender, order }] = reposts;
+    return order === 'newer' ? link(tender, 'reposts') : supersededRun(tender, 'reposts');
+  }
+  if (reposts.length > 1) return { action: 'create', unmatched: unmatched('ambiguous', reposts.map((r) => r.tender)) };
 
   if (observation.role !== 'results') {
     // A discovery never creates (its caller reads `create` as "not yet"), so
@@ -260,7 +422,8 @@ const TERMINAL = new Set(['awarded', 'cancelled']);
  * (services/addendum.service.js) — so a page re-read that says "open" has
  * not undone it, and reverting would re-notify as a status change.
  *
- * `replaces` is a replacement joining its predecessor's tender (ticket 29).
+ * `replaces` is a replacement joining its predecessor's tender (ticket 29),
+ * or a re-posted paper invitation joining its run (ticket 07).
  * The status is then the replacement's alone: what the old run reached short
  * of a terminal state is not carried (a `closed` read off a deadline the
  * amendment moved), and an open replacement is `amended`, which the source
@@ -304,4 +467,4 @@ export const deriveStatus = ({ submissionChannel, links = [], current = null, de
   return STEP[next] < STEP[current] ? current : next;
 };
 
-export default { normalizeCode, lookupsFor, resolve, deriveStatus, STATUS_OWNERS };
+export default { normalizeCode, normalizeBuyer, lookupsFor, resolve, deriveStatus, STATUS_OWNERS, JOINS_ON_CODE };

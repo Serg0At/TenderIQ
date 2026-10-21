@@ -124,6 +124,18 @@ changes what a bid must contain. Recognised by the buyer's files (name, CRC, siz
 the archive's bytes.
 _Avoid_: Attachment, New file, Re-issue (alone)
 
+**Re-post**:
+A paper invitation uploaded again, changed, under the same procedure code while its run is still
+open. Paper has no other way to amend an invitation, so a re-post joins the run it changes and is
+its amendment; after the run has closed or been cancelled, the same code is a re-announcement.
+_Avoid_: Re-upload (a byte-identical file is one invitation), Re-announcement, Duplicate
+
+**Amendment notice**:
+A buyer's announcement on gnumner that it changed an invitation (Article 29), naming the procedure
+code and the reasons in prose. Recorded as an addendum of the tender it names, never read for
+dates.
+_Avoid_: Amendment (alone), Addendum (it is one kind), Change notice
+
 **Unmatched result**:
 A bidder or award row from a source that could not be attached to exactly one tender — because
 Tendra holds no such tender, or holds more than one with that procedure code. Kept with its

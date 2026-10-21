@@ -77,6 +77,7 @@ function up(pg) {
       table.text('url');
       table.string('role').notNullable();           // discovery | detail | results (CHECK in indexes())
       table.string('observed_status');              // what this source last said, verbatim — or `superseded`, sticky (ticket 29)
+      table.string('points_to');                    // a discovery link: `{source}:{external id}` of the link it is a notice of (ticket 07)
       table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
       table.timestamp('last_seen_at').notNullable().defaultTo(pg.fn.now());
       table.unique(['source', 'external_id'], { indexName: 'tender_sources_source_external_uq' });
@@ -677,6 +678,9 @@ async function indexes(pg) {
   await pg.raw('CREATE INDEX IF NOT EXISTS tenders_cpv_codes_idx ON tenders USING gin (cpv_codes)');
   await pg.raw(`ALTER TABLE tenders ADD CONSTRAINT tenders_submission_channel_chk
      CHECK (submission_channel IN ('eauction','armeps','paper'))`);
+  // A paper invitation reads its own notices through it (ticket 07).
+  await pg.raw(`CREATE INDEX IF NOT EXISTS tender_sources_points_to_idx
+     ON tender_sources (source, points_to) WHERE points_to IS NOT NULL`);
   await pg.raw(`ALTER TABLE tender_sources ADD CONSTRAINT tender_sources_role_chk
      CHECK (role IN ('discovery','detail','results'))`);
   await pg.raw(`ALTER TABLE unmatched_results ADD CONSTRAINT unmatched_results_reason_chk

@@ -19,6 +19,11 @@ import * as cheerio from 'cheerio';
  *       2026-10-26 11:10:00 ժամը ներառյալ)</p></div>
  *   </div>
  *
+ * The amendment listing («Հրավերում կատարված փոփոխություններ», ticket 07,
+ * verified 2026-10-21) is the same block without the `tender_time` class on
+ * its date paragraph, and an uploaded notice there is open-ended:
+ * «(Հրապարակված է 2026-10-20 10:28:43-ից անժամկետ)» — published, and no close.
+ *
  * There is no per-notice id page. What identifies a notice is where its link
  * points, so that is what `classify` reads:
  *   - <armeps host> …/listContractDocuments.do?resourceId=N  → an ARMEPS tender
@@ -134,6 +139,17 @@ export const classify = (href, { baseUrl, hosts }) => {
   return { kind: 'other', url: url.toString() };
 };
 
+/** The «(Հրապարակված է …)» paragraph: by its class where the listing gives it one, by its words where not. */
+const windowText = ($, $block) => {
+  const classed = $block.find('.tender_time');
+  if (classed.length) return classed.text();
+  return $block
+    .find('p')
+    .filter((_, p) => /Հրապարակված/u.test($(p).text()))
+    .first()
+    .text();
+};
+
 export const parseListing = (html, { baseUrl, hosts }) => {
   const $ = cheerio.load(html);
   const blocks = $('div.tender');
@@ -150,7 +166,7 @@ export const parseListing = (html, { baseUrl, hosts }) => {
       return;
     }
 
-    const { publishedAt, closesAt } = parseWindow($block.find('.tender_time').text());
+    const { publishedAt, closesAt } = parseWindow(windowText($, $block));
     // Without a publish datetime the item cannot take part in depth control,
     // and a paper deadline is counted from it. Counted, never guessed.
     if (!publishedAt) {

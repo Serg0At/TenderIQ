@@ -36,7 +36,7 @@ export default class TenderSourceRepository {
    * older than the stored one updates nothing else either — an old page's
    * status must not overwrite a newer one.
    */
-  static async upsert({ tenderId, source, externalId, url = null, role, observedStatus = null, seenAt = new Date() }, trx = db) {
+  static async upsert({ tenderId, source, externalId, url = null, role, observedStatus = null, pointsTo = null, seenAt = new Date() }, trx = db) {
     const newer = (column) =>
       trx.raw('case when excluded.last_seen_at >= ?? then excluded.?? else ?? end', [
         `${TABLE}.last_seen_at`, column, `${TABLE}.${column}`,
@@ -50,12 +50,16 @@ export default class TenderSourceRepository {
         url,
         role,
         observed_status: observedStatus,
+        points_to: pointsTo,
         first_seen_at: seenAt,
         last_seen_at: seenAt,
       })
       .onConflict(['source', 'external_id'])
       .merge({
         url: newer('url'),
+        // What a notice points at is its identity's other half and does not
+        // move; a blank (a row from before the column) is filled.
+        points_to: trx.raw('coalesce(??, excluded.points_to)', [`${TABLE}.points_to`]),
         role: newer('role'),
         // Sticky: a replaced run does not come back, whatever page is read.
         observed_status: trx.raw(
@@ -98,6 +102,21 @@ export default class TenderSourceRepository {
   }
 
   /**
+   * Every current detail link of `source` on the tender, other than `keep`,
+   * marked superseded: a re-posted paper invitation has joined its run and is
+   * the tender's file from now on (ticket 07). Paper names no predecessor, so
+   * which runs it replaced is read here, under the caller's row lock — the
+   * runs a concurrent re-post committed a moment ago included.
+   */
+  static async supersedeOthers({ tenderId, source, keep }, trx = db) {
+    await trx(TABLE)
+      .where({ tender_id: tenderId, source, role: 'detail' })
+      .whereNot({ external_id: String(keep) })
+      .whereRaw('observed_status is distinct from ?', [SUPERSEDED])
+      .update({ observed_status: SUPERSEDED });
+  }
+
+  /**
    * The source answered and nothing it says has changed — a 304, or a page
    * whose hash is already stored. Only `last_seen_at` moves. A link not yet
    * written (the tender's first fetch is still being normalized) is a no-op.
@@ -110,18 +129,17 @@ export default class TenderSourceRepository {
   }
 
   /**
-   * The links beside one link: every link of the tender that `(source,
-   * externalId)` belongs to whose external id starts with `prefix`, oldest
-   * first. A paper invitation reads its tender's notices (`paper:…`) this way
-   * on a replay, when no job carries them. None when the link is not written.
+   * The discovery links of `source` that point at one link, oldest first: a
+   * paper invitation reads its own notices this way on a replay, when no job
+   * carries them. Its own, not its tender's — once a re-posted invitation has
+   * joined a run (ticket 07), the tender holds the notices of every file it
+   * was, and a deadline counted from another file's notice is a wrong one.
    */
-  static async listSiblings({ source, externalId, prefix }, trx = db) {
-    return trx(`${TABLE} as l`)
-      .join(`${TABLE} as s`, 's.tender_id', 'l.tender_id')
-      .where({ 'l.source': source, 'l.external_id': String(externalId), 's.source': source })
-      .where('s.external_id', 'like', `${prefix}%`)
-      .orderBy([{ column: 's.first_seen_at' }, { column: 's.id' }])
-      .select('s.external_id', 's.url', 's.role');
+  static async listPointingAt({ source, pointsTo }, trx = db) {
+    return trx(TABLE)
+      .where({ source, points_to: pointsTo })
+      .orderBy([{ column: 'first_seen_at' }, { column: 'id' }])
+      .select('external_id', 'url', 'role');
   }
 
   /** One tender's links, oldest first: the creating source leads. */

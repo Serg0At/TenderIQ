@@ -35,6 +35,11 @@ second time to confirm it is a no-op:
       purpose**: run it before the deploy, run it **again after** the deploy to fill invitations
       stored in between, and only then delete it (step 4 of CLAUDE.md's schema workflow).
 - [ ] 8. `b5cd180:migrations/add_submission_address.js` (ticket 06).
+- [ ] 9. `<07>:migrations/add_tender_source_points_to.js`: `tender_sources.points_to`, filled for
+      existing gnumner notices (ticket 07). Run it before the deploy and **again after**, like step 7:
+      the old code writes notice links with the column blank, and the new code reads a paper
+      invitation's notices only through it — a replay of a file whose notice is blank finds none
+      and fails.
 
 Environment:
 
@@ -61,5 +66,5 @@ After the deploy:
   Record the counts. They all re-run on their next generate.
 - [ ] Delete `migrations/add_tender_document_text_hash.js` once step 7's second run is done, and
       commit.
-- [ ] Add any migration from tickets finished after this list was written (07–13, 19). Check
+- [ ] Add any migration from tickets finished after this list was written (08–13, 19). Check
       `git log --diff-filter=A -- 'migrations/add_*'` against this list.

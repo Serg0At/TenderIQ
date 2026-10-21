@@ -81,6 +81,12 @@ export const JOB = {
    * so it shares nothing with the other document jobs but the queue.
    */
   PAPER_DOCUMENTS: 'paper.documents',
+  /**
+   * One upload on gnumner's amendment listing: a buyer's notice that it
+   * changed a paper invitation (ticket 07). Stored, matched to its tender on
+   * code and dates, and recorded as an addendum document (workers/paper.js).
+   */
+  PAPER_AMENDMENT: 'paper.amendment',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',

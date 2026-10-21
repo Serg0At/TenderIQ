@@ -4,15 +4,19 @@ import { getStorage, rawKey, tenderDocKey } from '../libs/storage/index.js';
 import { fetchInvitation } from '../libs/adapters/source/gnumner/client.js';
 import { fileFormat, parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
 import { invitationArchive, uploadedName } from '../libs/adapters/source/gnumner/invitation.files.js';
-import { pathDigest } from '../libs/adapters/source/gnumner/observation.js';
+import { amendmentNoticeId, observeAmendment, pathDigest } from '../libs/adapters/source/gnumner/observation.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
+import { noticeOfJob } from '../services/paperNotice.service.js';
+import { lookupsFor, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
+import unmatchedResults from '../repositories/unmatchedResult.repo.js';
 import { ingestNormalizeQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
+import { isFinalAttempt } from '../utils/attempts.js';
 import { sha256 } from '../utils/hash.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
 import { RateLimitedError } from '../utils/rateLimiter.js';
@@ -76,6 +80,34 @@ const renormalize = async (invitationId, { priority, discovery = null, tag, dela
 };
 
 /**
+ * One upload's bytes, through the rate limit: a throttle defers the job
+ * without spending an attempt. A path gnumner does not have answers 200 with
+ * its error page — a missing file, not a format to count, and a stored copy
+ * would be replayed as an upload — so HTML throws, and the failed job is the
+ * record.
+ */
+const fetchUpload = async (job, token, path) => {
+  let result;
+  try {
+    result = await fetchInvitation(path);
+  } catch (error) {
+    if (error instanceof RateLimitedError) {
+      await job.moveToDelayed(Date.now() + error.retryAfterMs, token);
+      throw new DelayedError();
+    }
+    // Over the cap is a property of the file, not a transient failure.
+    if (/maxContentLength/.test(error.message)) {
+      throw new UnrecoverableError(`[${SOURCE}] upload ${path} is over the ${MAX_DOCUMENT_BYTES}-byte cap`);
+    }
+    throw error;
+  }
+  if (!result.bytes?.length) throw new Error(`[${SOURCE}] upload ${path} returned an empty body`);
+  const format = fileFormat(result.bytes);
+  if (format === 'html') throw new Error(`[${SOURCE}] upload ${path} returned an HTML page, not a file`);
+  return { ...result, format };
+};
+
+/**
  * Fetch one uploaded invitation, store it, and hand it to the normalizer.
  *
  * Whether the file can be read is not decided here: an .rar is stored like a
@@ -103,29 +135,8 @@ export const handlePaperInvitation = async (job, token) => {
   const { path, fileType = null } = job.data;
   const log = logger.child({ job: JOB.PAPER_INVITATION, source: SOURCE, notice: pathDigest(path) });
 
-  let result;
-  try {
-    result = await fetchInvitation(path);
-  } catch (error) {
-    if (error instanceof RateLimitedError) {
-      await job.moveToDelayed(Date.now() + error.retryAfterMs, token);
-      throw new DelayedError();
-    }
-    // Over the cap is a property of the file, not a transient failure.
-    if (/maxContentLength/.test(error.message)) {
-      throw new UnrecoverableError(`[${SOURCE}] invitation ${path} is over the ${MAX_DOCUMENT_BYTES}-byte cap`);
-    }
-    throw error;
-  }
-
-  const { bytes } = result;
-  if (!bytes?.length) throw new Error(`[${SOURCE}] invitation ${path} returned an empty body`);
-  // A path gnumner does not have answers 200 with its error page. That is a
-  // missing file, not a format to count, and a stored copy would be replayed
-  // as an upload. The failed job is the record.
-  const format = fileFormat(bytes);
-  if (format === 'html') throw new Error(`[${SOURCE}] invitation ${path} returned an HTML page, not a file`);
-
+  const result = await fetchUpload(job, token, path);
+  const { bytes, format } = result;
   const invitationId = sha256(bytes);
   // When the listing showed the notice, for its link's `last_seen_at`.
   const discovery = { ...job.data, seenAt: new Date(job.timestamp).toISOString() };
@@ -184,12 +195,31 @@ export const paperDocumentsJob = (observation, { sourceId, result, fresh, priori
  *
  * The archive is the upload itself when it is a .zip, and the .docx wrapped
  * in a one-entry ZIP otherwise (invitation.files.js), so the tender page lists
- * and serves it like any other document. A paper tender is one file, so it
- * holds one document set: a changed invitation is a new upload, and its
- * amendment is ticket 07's.
+ * and serves it like any other document. A changed invitation is a new
+ * upload; once it has joined its run (ticket 07) its set is compared with the
+ * one before it, as for every source (ticket 18).
+ *
+ * A job carrying a re-post's join (`data.amendment`) owes the tender one
+ * amendment alert whatever becomes of the document — the same guarantee as
+ * e-auction's (workers/documents.js): disabled, unreadable, refused or out of
+ * attempts, it is raised without the file list.
  */
 export const handlePaperDocuments = async (job) => {
-  const { invitationId, url, fileName } = job.data;
+  const { amendment = null } = job.data;
+  const owed = () => AddendumService.raiseJoin(amendment, { priority: job.opts?.priority });
+  let result;
+  try {
+    result = await storePaperDocuments(job);
+  } catch (error) {
+    if (amendment && (error instanceof UnrecoverableError || isFinalAttempt(job))) await owed();
+    throw error;
+  }
+  if (amendment && !result.amendmentRaised) await owed();
+  return result;
+};
+
+const storePaperDocuments = async (job) => {
+  const { invitationId, url, fileName, amendment = null } = job.data;
   if (!isInvitationId(invitationId) || typeof url !== 'string' || typeof fileName !== 'string') {
     throw new UnrecoverableError('paper.documents needs an invitation hash and its url');
   }
@@ -234,6 +264,7 @@ export const handlePaperDocuments = async (job) => {
       manifest,
     },
     priority: job.opts?.priority,
+    amendment,
   });
   // Queued only after the tender is saved, so a miss is a race worth retrying.
   if (facts.skipped === 'unknown_tender') {
@@ -242,6 +273,118 @@ export const handlePaperDocuments = async (job) => {
 
   log.info(`invitation stored as a document: ${manifest?.length ?? '?'} files, ${facts.lotsWritten} lots`);
   return { stored: true, storageKey: archiveKey, files: manifest?.length ?? null, ...facts };
+};
+
+/**
+ * A notice on gnumner's amendment listing (ticket 07): fetched, stored under
+ * its content hash, and recorded on its tender (`recordAmendment`). Stored
+ * whatever its format, as an invitation is, so a converter added later reads
+ * the .doc and .rar ones from storage.
+ */
+export const handlePaperAmendment = async (job, token) => {
+  if (!isNotice(job.data)) {
+    throw new UnrecoverableError('paper.amendment needs the notice: an upload path, slug, title and publishedAt');
+  }
+  const { path, fileType = null } = job.data;
+  const { bytes, format, contentType } = await fetchUpload(job, token, path);
+  const hash = sha256(bytes);
+
+  if (!(await sourcePayloads.existsWithHash(SOURCE, amendmentNoticeId(hash), hash))) {
+    const storage = await getStorage();
+    const key = rawKey({ source: SOURCE, ref: amendmentNoticeId(hash), hash, ext: extensionOf(format, fileType) });
+    await storage.put(key, bytes, { contentType: contentType || 'application/octet-stream' });
+    await sourcePayloads.record({ source: SOURCE, ref: amendmentNoticeId(hash), storageKey: key, hash });
+  }
+
+  const notice = { ...noticeOfJob(job.data), seenAt: new Date(job.timestamp) };
+  return recordAmendment({ hash, notice, priority: job.opts?.priority ?? PRIORITY.LIVE });
+};
+
+/**
+ * One stored amendment notice → its tender, through the resolution module:
+ * an addendum document when it matches exactly one open paper tender of its
+ * code, an unmatched result when it matches none or two, nothing when its
+ * code is another channel's. Reads the stored file, never the job's bytes,
+ * so running it again — a retry, a re-listed notice — decides the same and,
+ * by rule 1 and the document row, writes nothing twice.
+ */
+export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }) => {
+  const log = logger.child({ job: JOB.PAPER_AMENDMENT, source: SOURCE, amendment: hash.slice(0, 12) });
+  const stored = await sourcePayloads.findLatestByRef(SOURCE, amendmentNoticeId(hash));
+  if (!stored) throw new UnrecoverableError(`[${SOURCE}] no stored amendment notice ${hash}`);
+  const storage = await getStorage();
+  const bytes = Buffer.from(await storage.get(stored.storage_key));
+
+  const observation = observeAmendment(bytes, { externalId: hash, notice });
+  const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
+
+  if (decision.action === 'unmatched') {
+    await unmatchedResults.record({
+      source: SOURCE,
+      externalRef: observation.externalId,
+      procedureCode: observation.procedureCode,
+      reason: decision.reason,
+      candidateTenderIds: decision.candidateIds,
+      payloadHash: hash,
+      seenAt: stored.fetched_at,
+    });
+    log.warn(`amendment notice unmatched (${decision.reason})`, {
+      code: observation.procedureCode,
+      candidates: decision.candidateIds,
+      ...(observation.unreadable ? { format: observation.unreadable.format } : {}),
+    });
+    return { unmatched: decision.reason };
+  }
+  if (decision.action !== 'link') {
+    log.info(`amendment notice for ${observation.procedureCode} skipped — ${decision.reason ?? decision.action}`);
+    return { skipped: decision.reason ?? decision.action };
+  }
+
+  // Served like an invitation: a .zip as it is, a .docx wrapped in one.
+  const fileName = uploadedName(notice.url);
+  const archive = invitationArchive(bytes, { format: observation.format, fileName });
+  const archiveKey = tenderDocKey({ source: SOURCE, sourceId: amendmentNoticeId(hash), hash, ext: 'zip' });
+  await storage.put(archiveKey, archive, { contentType: 'application/zip' });
+
+  let manifest = null;
+  try {
+    manifest = await TenderDocumentService.manifestOf(bufferSource(archive));
+  } catch (error) {
+    log.warn(`amendment notice could not be listed: ${error.message}`);
+  }
+
+  const recorded = await AddendumService.recordNotice({
+    link: {
+      tenderId: decision.tenderId,
+      source: SOURCE,
+      externalId: observation.externalId,
+      url: observation.url,
+      role: observation.role,
+      seenAt: notice.seenAt,
+    },
+    facts: {
+      source: SOURCE,
+      externalId: observation.externalId,
+      sourceId: `${SOURCE}:${observation.externalId}`,
+      url: observation.url,
+      storageKey: archiveKey,
+      taxId: null,
+      cpvCode: null,
+      cpvCodes: [],
+      lots: [],
+      manifest,
+    },
+    fileName,
+    priority,
+  });
+  // A matched notice was resolved from a candidate that existed a moment ago.
+  if (recorded.skipped) throw new Error(`[${SOURCE}] amendment ${hash}: ${recorded.skipped}`);
+
+  // Only when the link is new, as in the normalizer: one already linked was never unmatched since.
+  if (decision.rule !== 'link') {
+    await unmatchedResults.markResolved({ source: SOURCE, externalRef: observation.externalId, tenderId: decision.tenderId });
+  }
+  return { tenderId: decision.tenderId, ...(recorded.addendum ? { version: recorded.addendum.version, notified: recorded.addendum.notify } : {}) };
 };
 
 /**
@@ -260,4 +403,4 @@ export const paperRefresher = {
   }),
 };
 
-export default { handlePaperInvitation, handlePaperDocuments, paperDocumentsJob, paperRefresher };
+export default { handlePaperInvitation, handlePaperDocuments, handlePaperAmendment, recordAmendment, paperDocumentsJob, paperRefresher };

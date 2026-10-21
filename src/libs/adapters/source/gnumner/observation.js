@@ -1,5 +1,5 @@
 import { sha256 } from '../../../../utils/hash.js';
-import { parseInvitation } from './invitation.parser.js';
+import { parseAmendmentNotice, parseInvitation } from './invitation.parser.js';
 
 /**
  * gnumner notices and paper invitations → observations for the resolution
@@ -242,4 +242,52 @@ export const observeInvitation = (bytes, { externalId, notices = [] }) => {
   };
 };
 
-export default { SOURCE, pathDigest, paperNoticeId, paperNoticeRef, observeArmepsNotice, observePaperNotice, observeInvitation, paperDeadline };
+/** The link id of an amendment notice: the file's content hash, as for an invitation, under its own prefix. */
+export const amendmentNoticeId = (hash) => `amendment:${hash}`;
+
+/**
+ * An upload on the amendment listing, and the notice that listed it → an
+ * observation (ticket 07). It names a tender only by its code: resolution
+ * matches it on code, channel and dates (`amendment: true`) and never
+ * creates from it. It is a notice of a tender the invitation created, so its
+ * link is a `discovery` one, never a detail run a re-post could supersede.
+ *
+ * The notice is what the file does not say: when it was published, which is
+ * what decides whether the tender was still open; and the title's code, used
+ * when the document's cannot be read.
+ */
+export const observeAmendment = (bytes, { externalId, notice }) => {
+  const parsed = parseAmendmentNotice(bytes);
+  return {
+    source: SOURCE,
+    role: 'discovery',
+    amendment: true,
+    externalId: amendmentNoticeId(externalId),
+    url: notice.url,
+    pointer: null,
+    procedureCode: parsed.document?.procedureCode ?? notice.procedureCode ?? null,
+    submissionChannel: 'paper',
+    procedureType: null,
+    buyerName: parsed.document?.buyerName ?? null,
+    publishedAt: new Date(notice.publishedAt),
+    deadlineAt: null,
+    lotNumbers: [],
+    status: null,
+    observedStatus: null,
+    format: parsed.format,
+    ...(parsed.readable ? {} : { unreadable: { format: parsed.format } }),
+  };
+};
+
+export default {
+  SOURCE,
+  pathDigest,
+  paperNoticeId,
+  paperNoticeRef,
+  amendmentNoticeId,
+  observeArmepsNotice,
+  observePaperNotice,
+  observeInvitation,
+  observeAmendment,
+  paperDeadline,
+};

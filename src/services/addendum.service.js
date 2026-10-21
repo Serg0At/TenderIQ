@@ -1,5 +1,6 @@
 import { withTransaction } from '../libs/knex.js';
 import tenders from '../repositories/tender.repo.js';
+import tenderSources from '../repositories/tenderSource.repo.js';
 import { isOpen } from './matcher.service.js';
 import { alertsQueue } from '../queues/index.js';
 import { JOB, PRIORITY, matchJobId, documentsMatchJobId } from '../queues/names.js';
@@ -48,6 +49,18 @@ export const documentChange = (previous, next) => {
 export const isChanged = (change) =>
   Boolean(change && (change.added.length || change.replaced.length || change.removed.length));
 
+/**
+ * The amendment alert of one version, through the matcher, which applies the
+ * open rule and adds the trackers. Keyed on the version, so a retry and the
+ * notification dedupe both absorb a second raise.
+ */
+const queueAmendment = async ({ tenderId, version, changedFields = [], documentChanges = null }, priority) =>
+  alertsQueue.add(
+    JOB.MATCH_TENDER,
+    { tenderId, event: 'TenderAmended', version, changedFields, ...(documentChanges ? { documentChanges } : {}) },
+    { jobId: matchJobId(tenderId, version), priority }
+  );
+
 /** `amended` replaces `active` only; a planned tender stays planned. */
 const statusAfter = (status, open) => (open && status === 'active' ? 'amended' : status);
 
@@ -92,7 +105,7 @@ export default class AddendumService {
       const applied = await tenders.applyInvitationFacts(facts, trx);
       if (applied.skipped) return applied;
 
-      const previous = await tenders.findPreviousDocument(applied.tenderId, facts.storageKey, trx);
+      const previous = await tenders.findPreviousDocument(applied.tenderId, facts.storageKey, facts.kind, trx);
       if (!previous) return applied;
 
       const change = documentChange(previous.manifest, facts.manifest);
@@ -131,21 +144,51 @@ export default class AddendumService {
 
     const { addendum } = result;
     if (addendum?.notify) {
-      await alertsQueue.add(
-        JOB.MATCH_TENDER,
-        {
-          tenderId: result.tenderId,
-          event: 'TenderAmended',
-          version: addendum.version,
-          // No field moved, and the alert must not say one did.
-          changedFields: [],
-          documentChanges: addendum.documentChanges,
-        },
-        { jobId: matchJobId(result.tenderId, addendum.version), priority }
-      );
+      // No field moved, and the alert must not say one did.
+      await queueAmendment({ tenderId: result.tenderId, version: addendum.version, documentChanges: addendum.documentChanges }, priority);
     }
     if (addendum) {
       logger.info(`[addendum] ${facts.sourceId} v${addendum.version}${addendum.notify ? '' : ' (not open, no alert)'}`, addendum.documentChanges);
+    }
+    return result;
+  }
+
+  /**
+   * Record a paper amendment notice on the tender resolution matched it to
+   * (ticket 07): its link, the notice as a document of kind `amendment`, and
+   * the addendum it is — a new `version`, `amended` while the tender is open,
+   * and the amendment alert naming the notice. Ticket 18's rule, with one
+   * difference: a notice is a document beside the invitation, not a set that
+   * replaces it, so the change is always the one file added, never a
+   * comparison with the set before it.
+   *
+   * The version moves only when the document row is new, in its transaction,
+   * so a notice recorded twice is one addendum. A retry after the commit
+   * re-queues the alert under the tender's current version, as
+   * `recordDocuments` does, and BullMQ and the notification dedupe absorb it.
+   */
+  static async recordNotice({ link, facts, fileName, priority = PRIORITY.LIVE }, now = new Date()) {
+    const result = await withTransaction(async (trx) => {
+      await tenderSources.upsert(link, trx);
+      const applied = await tenders.applyInvitationFacts({ ...facts, kind: 'amendment' }, trx);
+      if (applied.skipped) return applied;
+
+      const open = isOpen(applied.tender, now);
+      const version = applied.documentRecorded
+        ? await tenders.recordAddendum(applied.tenderId, { status: statusAfter(applied.tender.status, open) }, trx)
+        : applied.tender.version;
+      return { ...applied, addendum: { version, notify: open, documentChanges: { added: [fileName], replaced: [], removed: [] } } };
+    });
+
+    const { addendum } = result;
+    if (addendum?.notify) {
+      await queueAmendment({ tenderId: result.tenderId, version: addendum.version, documentChanges: addendum.documentChanges }, priority);
+    }
+    if (addendum) {
+      logger.info(
+        `[addendum] ${facts.sourceId} v${addendum.version}: amendment notice ${fileName}` +
+          `${addendum.notify ? '' : ' (not open, no alert)'}`
+      );
     }
     return result;
   }
@@ -159,17 +202,7 @@ export default class AddendumService {
    * absorbed by the job id and the notification dedupe.
    */
   static async raiseJoin({ tenderId, version, changedFields = [] }, { documentChanges = null, priority = PRIORITY.LIVE } = {}) {
-    await alertsQueue.add(
-      JOB.MATCH_TENDER,
-      {
-        tenderId,
-        event: 'TenderAmended',
-        version,
-        changedFields,
-        ...(documentChanges ? { documentChanges } : {}),
-      },
-      { jobId: matchJobId(tenderId, version), priority }
-    );
+    await queueAmendment({ tenderId, version, changedFields, documentChanges }, priority);
     logger.info(`[addendum] tender ${tenderId} v${version}: a replacement joined`, { changedFields, documentChanges });
   }
 }
