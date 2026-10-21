@@ -8,6 +8,17 @@ Spec: *Sources and parsers → gnumner* (amendment listing). User stories 6–7.
 
 **Status:** ready-for-agent
 
+- [ ] **A changed invitation re-posted on the invitation listing is also an amendment** (decided
+      2026-10-21, found in ticket 06). Example: `ԵՊՊՔ-ԳՀԱՊՁԲ-26-3` was uploaded on 10-08 and again,
+      changed, on 10-12 with the same deadline, and today it is two tenders.
+      - Paper has no predecessor pointer, so the rule is: a new paper invitation with the same
+        normalized procedure code and the same buyer as a paper tender that is **still open**
+        (alertable status, deadline ahead) joins it. Its document set change is an addendum
+        (ticket 18), and a moved deadline is a field amendment.
+      - Once that tender has closed or been cancelled, the same code is a new run
+        (a re-announcement, ADR 0004).
+      - No readable code → no join, as today.
+      - Fold the existing local pair, and record how.
 - [ ] The «Հրավերում կատարված փոփոխություններ» listing is swept with the same watermark rules as
       ticket 04.
 - [ ] An amendment is resolved to its paper tender through the resolution module (procedure code +
