@@ -26,6 +26,7 @@
  *
  *   { id, status, referenceCode, submissionChannel, buyerName, publishedAt, deadlineAt, lotNumbers,
  *     replacedRuns,                             // it holds a superseded run: publishedAt is its newest
+ *     runPublishedAt,                           // optional: every file's publication, for a paper re-post
  *     linkSuperseded }                          // linked candidates only: that link is a dead run
  *
  * **An e-auction amendment** is a new tid whose page names the runs it
@@ -151,14 +152,29 @@ const yerevanDay = (at) => {
  * same Yerevan day, and none they both carry disagrees. A missing date never
  * counts as agreement — a result with no dates, whose real run Tendra missed,
  * would otherwise link to a re-announced sibling under the same code.
+ *
+ * A paper tender a re-post joined (ticket 07) was published once per file,
+ * and its `publishedAt` is only the newest. A contract notice states the day
+ * its buyer remembers — the first file's, or the re-post's — so the
+ * publication agrees when it falls on the day of any of the run's files
+ * (`runPublishedAt`, decided 2026-10-23). They are one run: no file of a
+ * re-announcement is among them.
  */
+const publicationDays = (tender) =>
+  new Set([tender.publishedAt, ...(tender.runPublishedAt ?? [])].map(yerevanDay).filter(Boolean));
+
 const datesAgree = (observation, tender) => {
   let agreed = 0;
-  for (const field of ['publishedAt', 'deadlineAt']) {
-    const left = yerevanDay(observation[field]);
-    const right = yerevanDay(tender[field]);
-    if (left === null || right === null) continue;
-    if (left !== right) return false;
+  const published = yerevanDay(observation.publishedAt);
+  const days = publicationDays(tender);
+  if (published !== null && days.size) {
+    if (!days.has(published)) return false;
+    agreed += 1;
+  }
+  const deadline = yerevanDay(observation.deadlineAt);
+  const storedDeadline = yerevanDay(tender.deadlineAt);
+  if (deadline !== null && storedDeadline !== null) {
+    if (deadline !== storedDeadline) return false;
     agreed += 1;
   }
   return agreed > 0;

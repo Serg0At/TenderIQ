@@ -208,12 +208,59 @@ Left, on purpose:
   decision). This is ticket 19's question for suppliers.
 - **Rejection reasons are read, not stored** — `public_tender_bids` has no column. A migration if
   they should reach the API.
-- **A re-posted paper tender (ticket 07) may not take its result**: its `published_at` is its
-  newest file's, and the notice states the first invitation's date. Not seen live (ticket 07
-  found 2 re-posts); fixing it needs the run's first publication on the candidate.
+- ~~**A re-posted paper tender (ticket 07) may not take its result**~~ — resolved by the
+  follow-up below.
 - **A contract row typed «1» for six lots** (e906f6, priced at their sum) awards lot 1 only; read
   literally rather than guessed.
 - `prospects.repo.js` counts wins as `rank = 1`; paper bids have no rank, so it counts them as
   neither — it predates this and breaks the awards rule anyway.
 - The 9 other invitations on quotation page 38 and the 5 other notices on contract page 127 are
   recorded and their jobs left queued; `sweep:published:gnumner:contract` is set (2026-10-21T19:17:26Z).
+
+## Follow-up: a re-posted run matches on any of its files (decided 2026-10-23)
+
+**Decision.** A contract notice matches a re-posted paper tender (ticket 07) by the publish date
+of **any** of its invitation files, not only the newest one, which is all `tenders.published_at`
+holds.
+
+**Where the dates come from.** The decision assumed the superseded links carry their file's
+publish date; they do not. `tender_sources` has no such column, and a link's `first_seen_at` is
+when Tendra ingested the file (ԵՊՊՔ's superseded `4c63e8ac…`: 10-21 17:37, not 10-08 18:12).
+A file's publication exists in one place, the listing page its notice was stored with, which
+is where its deadline was already counted from. So no column was added:
+`paperNotice.service.js#runPublications` reads each file link's earliest notice back from
+storage (the `observeInvitation` rule), and `withRunPublications` attaches them to a contract
+notice's candidates as `runPublishedAt` — **only** for a paper candidate that holds a superseded
+run, so an ordinary tender costs no read. `resolution.service.js#datesAgree` stays pure: the
+notice's day agrees with any of the run's days. A column would be the alternative if
+these reads ever matter (a migration, a backfill from the same pages, a ticket 30 step).
+
+**Also, so the rule can fire.** A notice dated by a re-post's file and read before that file
+joined matched nothing, and the re-read hook fired only when a tender was created. The
+normalizer's hook (now `newFile`) also fires on a re-post join, and the retry job's id carries
+the tender's version, since BullMQ keeps a finished job's id.
+
+**Verified (2026-10-23, local `tendra`).** On ԵՊՊՔ-ԳՀԱՊՁԲ-26-3 as `tendra` holds it, the real
+candidate from `findCandidates` enriched from its two files' stored notices, `node:assert` on
+`resolve()` with throwaway contract notices (nothing written, 10 checks):
+
+| | |
+|---|---|
+| the stored run | `a6an3qgjtwm5g2gmurv9pehx`, `replaced_runs`, `published_at` 10-12 12:19:45 (the newest file), lots 1–4 |
+| `runPublishedAt` | 10-08 18:12:43 (`7206883e`) and 10-12 12:19:45 (`2935628f`; its byte-identical 12:40 re-upload is a later notice of the same file) |
+| invitation dated 10-08, **before** | `no_candidate` |
+| invitation dated 10-08, **now** | `link`, rule `code` |
+| dated 10-12 | `link`, before and now |
+| dated 10-10 (no file) | `no_candidate` |
+| lot 9 | `no_candidate` |
+| a same-code re-announced run also published 10-08 | `ambiguous`, both named |
+| a single-file paper run, an e-auction | not enriched |
+| `runPublications` | 2 dates — the 3 notice links and the amendment notice are not files |
+
+The 28 pure checks still pass. The 31 stored contract notices re-read: the same decisions,
+every checksum identical. `normalize:replay`: 1,222 unchanged and **one `TenderAmended`** —
+ԵՊՊՔ itself, `amended` v3 → `closed` v4, because its deadline (10-22 12:00) passed since the
+last replay. That is the paper close-out `refresh-gnumner` performs (no scheduler runs locally),
+seen live here for the first time; its match job → `skipped: status_closed`. The checks re-run
+on the closed run pass, and a second replay is identical. The join path of the hook was not
+exercised live: no re-post arrived, and ticket 07's way to make one deletes a tender.

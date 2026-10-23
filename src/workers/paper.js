@@ -17,7 +17,7 @@ import {
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
-import { noticeOfJob, storedNotice } from '../services/paperNotice.service.js';
+import { noticeOfJob, storedNotice, withRunPublications } from '../services/paperNotice.service.js';
 import { deriveStatus, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
@@ -461,7 +461,9 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
 
   const observation = observeContract(notice, { externalId, parsed: parseContractNotice(bytes) });
   for (const warning of observation.warnings) log.warn(warning);
-  const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
+  // A re-posted run is matched on any of its files' publications, not only the newest.
+  const candidates = await withRunPublications(await tenders.findCandidates(lookupsFor(observation)));
+  const decision = resolve(observation, candidates);
 
   if (decision.action === 'unmatched') {
     await unmatchedResults.record({
@@ -542,13 +544,16 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
 
 /**
  * Re-read every contract notice left unmatched under a code a paper tender
- * has just been created with — "a later-appearing tender picks it up". A
- * contract notice is usually read weeks after its invitation, but a cold
- * start, a backfill or an invitation that failed and was retried can put the
- * result first. One job per notice, from storage, no request; resolution
+ * has just been created with, or a re-posted file has just joined — "a
+ * later-appearing tender picks it up". A contract notice is usually read
+ * weeks after its invitation, but a cold start, a backfill or an invitation
+ * that failed and was retried can put the result first; and a notice naming
+ * a re-post's date matches nothing until that file has joined its run.
+ * Keyed on the tender's version, so a join re-reads what the create already
+ * did not take. One job per notice, from storage, no request; resolution
  * decides again, so one that still matches nothing stays unmatched.
  */
-export const queueContractRetries = async ({ tenderId, referenceCode, priority = PRIORITY.LIVE }) => {
+export const queueContractRetries = async ({ tenderId, version, referenceCode, priority = PRIORITY.LIVE }) => {
   const key = normalizeCode(referenceCode);
   if (!key) return 0;
   const open = await unmatchedResults.findOpenByCode({ source: SOURCE, refPrefix: 'contract:', key });
@@ -556,7 +561,7 @@ export const queueContractRetries = async ({ tenderId, referenceCode, priority =
     await ingestFetchQueue.add(
       JOB.PAPER_CONTRACT,
       { source: SOURCE, reason: 'retry', externalRef: row.external_ref },
-      { jobId: `${SOURCE}-contract-retry-${contractNoticeDigest(row.external_ref)}-${tenderId}`, priority }
+      { jobId: `${SOURCE}-contract-retry-${contractNoticeDigest(row.external_ref)}-${tenderId}-v${version}`, priority }
     );
   }
   if (open.length) logger.info(`[${SOURCE}] tender ${tenderId} (${referenceCode}): re-reading ${open.length} unmatched contract notices`);

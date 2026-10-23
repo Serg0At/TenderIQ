@@ -97,4 +97,43 @@ export const noticesFor = async ({ invitationId, discovery = null }) => {
   return notices;
 };
 
-export default { noticesFor, noticeOfJob, storedNotice };
+/** A paper invitation's content hash: what a file's detail link is keyed on. */
+const isFileLink = (link) => link.source === SOURCE && link.role === 'detail' && /^[0-9a-f]{64}$/.test(link.external_id);
+
+/**
+ * When each file of a paper run was published: the earliest notice of each,
+ * as `observeInvitation` counts it. A run a re-post joined (ticket 07) holds
+ * several files — the superseded ones too — and its `published_at` is only
+ * the newest's; nothing else stores the others, so they are read back from
+ * the listing pages their notices were stored with.
+ */
+export const runPublications = async (tenderId) => {
+  const files = (await tenderSources.listForTender(tenderId)).filter(isFileLink);
+  const dates = [];
+  for (const file of files) {
+    const notices = await noticesFor({ invitationId: file.external_id });
+    const first = Math.min(...notices.map((n) => new Date(n.publishedAt).getTime()).filter(Number.isFinite));
+    if (Number.isFinite(first)) dates.push(new Date(first));
+  }
+  return dates;
+};
+
+/**
+ * Candidates for a contract notice, each paper run a re-post joined given
+ * every file's publication (`runPublishedAt`), which rule 3 compares the
+ * notice's invitation date with (decided 2026-10-23). Only those: a run of
+ * one file is published when its `published_at` says, and reading notices
+ * back costs a storage read per notice.
+ */
+export const withRunPublications = async (candidates) => ({
+  ...candidates,
+  byCode: await Promise.all(
+    (candidates.byCode ?? []).map(async (tender) =>
+      tender.submissionChannel === 'paper' && tender.replacedRuns
+        ? { ...tender, runPublishedAt: await runPublications(tender.id) }
+        : tender
+    )
+  ),
+});
+
+export default { noticesFor, noticeOfJob, storedNotice, runPublications, withRunPublications };

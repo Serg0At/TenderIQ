@@ -658,7 +658,10 @@ decision that has already been made.
   only when the table places it — a «Հ/Հ» that looks like the lot number was shown not to be.
   `replaceLedger` replaces only the notice's lots, so two notices of one tender both stand. A
   notice is keyed by its upload path (`contract:{digest}`), so an unmatched one is re-read from
-  storage when a paper tender of its code is created. **Most contract notices will never match**:
+  storage when a paper tender of its code is created or a re-post joins one. A re-posted run
+  matches on **any** of its files' publish dates (decided 2026-10-23): `published_at` holds only
+  the newest, and `tender_sources` stores none — they are read back from the files' notices
+  (`paperNotice.service.js#withRunPublications`), only for a run that holds a superseded file. **Most contract notices will never match**:
   the template says the invitation was "sent or published", most quotations are sent to invited
   suppliers and never reach gnumner, and ~780 notices (10-07 → 10-21) held one code from the
   published quotation listing. Ticket 08 records the counts.

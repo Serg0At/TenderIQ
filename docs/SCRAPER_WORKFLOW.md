@@ -316,8 +316,9 @@ ARMEPS link on it is counted and not read (PPCM owns those results). Uploads bec
    in every channel, and one held only on e-auction or ARMEPS is skipped — asked before the
    format, so another channel's `.doc` is never counted as an unreadable paper result. Otherwise
    it matches a paper tender on code and the **invitation's** publication day (the notice's
-   «Հրավեր ուղարկելու կամ հրապարակելու ամսաթիվը», compared with the tender's `published_at`),
-   with lots that fit; none is `no_candidate`, two `ambiguous`, no code `no_code`. A result never
+   «Հրավեր ուղարկելու կամ հրապարակելու ամսաթիվը», compared with the tender's `published_at` —
+   for a run a re-post joined, with **any** of its files' publications, read back from their
+   notices' stored listing pages), with lots that fit; none is `no_candidate`, two `ambiguous`, no code `no_code`. A result never
    creates a tender.
 4. `TenderRepository.recordResults`, under the row lock: a `results` link, the lots' bids and
    awards with `source = 'gnumner'` — net into the `*_net` columns, total into the gross ones,
@@ -326,8 +327,8 @@ ARMEPS link on it is counted and not read (PPCM owns those results). Uploads bec
    lots both stand. With an award written, the tender becomes `awarded` through `deriveStatus`
    (gnumner owns paper's award), `version + 1`, `TenderAmended`; benchmarks recompute. The
    evaluation table is not a rejection list: a row is a rejection only when a criterion fails.
-5. **A later-appearing tender picks it up.** When the normalizer creates a paper tender, every
-   unresolved `contract:` row of its code (`no_candidate`, `ambiguous`) is queued again as a
+5. **A later-appearing tender picks it up.** When the normalizer creates a paper tender, or a
+   re-posted file joins one, every unresolved `contract:` row of its code (`no_candidate`, `ambiguous`) is queued again as a
    `paper.contract` retry: no request, the notice rebuilt from its stored listing page.
 
 **Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
