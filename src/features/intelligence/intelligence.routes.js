@@ -7,6 +7,7 @@ import {
   benchmarkQuerySchema,
   competitorPricesQuerySchema,
   expectedCompetitionQuerySchema,
+  profileQuerySchema,
 } from '../../validations/schemas/intelligence.query.schema.js';
 
 /**
@@ -35,7 +36,7 @@ export const competitionRoutes = Router();
 competitionRoutes.get( '/', ...gate, validate(expectedCompetitionQuerySchema, 'query'), IntelligenceController.expectedCompetition);
 
 export const supplierRoutes = Router();
-supplierRoutes.get('/:id/profile', ...gate, IntelligenceController.supplierProfile);
+supplierRoutes.get('/:id/profile', ...gate, validate(profileQuerySchema, 'query'), IntelligenceController.supplierProfile);
 
 export const buyerRoutes = Router();
-buyerRoutes.get('/:id/profile', ...gate, IntelligenceController.buyerProfile);
+buyerRoutes.get('/:id/profile', ...gate, validate(profileQuerySchema, 'query'), IntelligenceController.buyerProfile);

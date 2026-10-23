@@ -1,17 +1,16 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
+import { competitiveOnlySql } from './tender.repo.js';
 
 const TABLE = 'price_benchmarks';
 
 /**
- * A single-source price is what a buyer agreed with one supplier, not what a
- * market bid (ticket 31), so a comparable is a competitive award unless the
- * caller explicitly asks for single-source ones too. Materialised rows never
- * hold them: only a live, explicit request can.
+ * A comparable is a competitive award unless the caller explicitly asks for
+ * single-source ones too (tender.repo.js#competitiveOnlySql). Materialised
+ * rows never hold them: only a live, explicit request can.
  */
-const competitiveOnly = (query, alias = 't') =>
-  query.andWhereRaw(`${alias}.procedure_type is distinct from 'single_source'`);
+const competitiveOnly = (query) => query.andWhereRaw(competitiveOnlySql('t'));
 
 /**
  * Comparable awards and the materialised price statistics computed from them.

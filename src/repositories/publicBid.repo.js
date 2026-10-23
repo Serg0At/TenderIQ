@@ -1,5 +1,6 @@
 import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
+import { competitiveOnlySql } from './tender.repo.js';
 
 const TABLE = 'public_tender_bids';
 
@@ -269,7 +270,7 @@ export default class PublicBidRepository {
           .groupBy('b.tender_id', 'b.lot_number');
 
         if (buyerId) qb.andWhere('t.buyer_id', buyerId);
-        if (!includeSingleSource) qb.andWhereRaw(`t.procedure_type is distinct from 'single_source'`);
+        if (!includeSingleSource) qb.andWhereRaw(competitiveOnlySql('t'));
         if (cpvCode && exact) qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) = ?', [cpvCode]);
         if (cpvCode && !exact) {
           qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) like ?', [`${prefix}%`]);

@@ -186,9 +186,10 @@ The notice's unmatched row is resolved to it.
 - **`unmatched_results.was_public`** is set on every unmatched contract notice, not only on
   `no_candidate`. The operator alert's row is `no_candidate` **and** `was_public`.
 - **Single source in intelligence.** Single-source tenders are left out of every benchmark
-  tier, comparable awards, the materialised sets and expected competition. A single-source
-  tender's own competitor prices answer `status: 'single_source'`. `filter[includeSingleSource]
-  =true` puts them back on all four endpoints, and the benchmark is then computed live.
+  tier, comparable awards, the materialised sets and expected competition, and
+  `filter[includeSingleSource]=true` puts them back, with the benchmark then computed live.
+  The first cut also made a single-source tender's own competitor prices answer
+  `status: 'single_source'`; the follow-up below overruled that.
 - **`procedure_type` on unmatched invitation and amendment rows.** An invitation takes its
   listing's type, so the 5 rows recorded before the column existed say `unknown`: a re-read
   has no notice to take the type from. An amendment takes its code's type.
@@ -210,9 +211,8 @@ Fixed from it (assertions, notices, checksums re-run after):
 
 Left, on purpose:
 
-- **`status: 'single_source'` on competitor prices, and the exclusion from expected
-  competition.** The spec says competitor prices exclude single source unless asked, and that
-  is this reading. The owner can overrule it.
+- ~~**`status: 'single_source'` on competitor prices**~~ was overruled by the follow-up below.
+  The exclusion from expected competition stands.
 - **A relink of an existing paper tender can still queue `match.tender`** when its status
   moves. That is ticket 08's path, and the matcher's open rule silences it. A result-only
   tender never moves.
@@ -234,3 +234,41 @@ Left, on purpose:
 - **Re-processing stored notices** is a script today, not an npm command:
   `recordContract` for each `contract:` payload. A `contracts:replay` is a short addition if
   it is wanted.
+
+## Follow-up: a single-source tender's own ledger is shown (decided 2026-10-23)
+
+**Decision (the owner's, overruling the first cut).** For a single-source tender,
+competitor-prices returns that tender's own ledger by default, flagged so a client can say
+"single source, no competition". Excluding single source applies only to **aggregates across
+tenders**: benchmarks, expected competition, profiles and price ranges.
+`filter[includeSingleSource]=true` still opts in.
+
+**Built.**
+
+- `competitor-prices` lost its `single_source` status. Both of its answers carry
+  `singleSource: true|false`, and `includeSingleSource` now touches only the
+  `expectedCompetition` beside the ledger.
+- **Profiles** were an aggregate that still counted single source. Supplier and buyer profiles
+  now leave it out (`profile.repo.js#scoped`, every query), unless
+  `filter[includeSingleSource]=true` on `GET /suppliers/:id/profile` and `/buyers/:id/profile`
+  (a new `profileQuerySchema`). An opted-in profile says `includesSingleSource`.
+- The nightly `computeAll*` rebuild never includes single source. So a buyer's `spend` and
+  `volume` are its **competitive** spend and tenders; asking includes the rest.
+- **Price ranges across tenders** were already covered: the recommendation's observed range
+  comes from benchmarks and comparable awards. The `priceRange` in competitor prices is one
+  tender's own lot and is not filtered.
+- The filter is one SQL helper, `tender.repo.js#competitiveOnlySql`, which replaces the three
+  copies the review counted. `docs/API_REFERENCE.md`, CLAUDE.md and ADR 0004 are updated.
+
+**Verified (local `tendra`, read-only):**
+
+| | default | `includeSingleSource` |
+|---|---|---|
+| competitor prices, ՀՀԱՄ-ԱՐԵՎՈՒՏ-ՄԱԾՁԲ-26/24 | `ok`, `singleSource: true`; lot 1, 1 bidder, `sole`, «Ղազար Սարգսյան» Ա/Ձ 127 800 / net 127 800, range 127 800 | identical lots; corpus expected competition 6,420 → 6,421 lots |
+| competitor prices, ԳՀԱՊՁԲ-ՀՎԿԱԿ-2026-66 (ticket 08, quotation) | `ok`, `singleSource: false`; lot 1 Ագաթոն 805 800 / net 671 500 vs Մեյդ թու Մեյք 1 197 083; lot 5 Ագաթոն 2 227 500 / net 1 856 250 vs 2 004 750 | identical lots; 6,420 → 6,421 |
+| supplier profile, «Ղազար Սարգսյան» Ա/Ձ | 0 bid, 0 won, `no_data` | 1 bid, 1 won, win rate `insufficient_data`, 127 800 won |
+| buyer profile, Արեվուտի համայնքապետարան | 0 tenders, no spend, no top suppliers | 1 tender, 127 800 spend, top supplier «Ղազար Սարգսյան» Ա/Ձ |
+| supplier profile, Ագաթոն ՍՊԸ (no single source) | 2 bid, 2 won | the same |
+| nightly rebuild | neither party holds a row from it | — |
+
+The query schemas convert `'true'` and `'false'` and strip unknown parameters.

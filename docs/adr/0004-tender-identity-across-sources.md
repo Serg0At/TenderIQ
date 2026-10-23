@@ -144,8 +144,10 @@ so only `no_candidate` with a public procedure is a missed tender.
 
 A result-only tender is the same shape as a PPCM-history one: one `results` link, `awarded`,
 never biddable, never alerted. Discovery never receives it, because it is absent from every
-biddable list by construction. Single-source prices are kept out of benchmarks and competitor
-comparisons unless a caller asks for them: a price agreed with one supplier is not a market's.
+biddable list by construction. Single-source prices are kept out of every aggregate across
+tenders — benchmarks, expected competition, profiles — unless a caller asks for them: a price
+agreed with one supplier is not a market's. A single-source tender's own ledger is still shown,
+flagged as single source.
 
 ## Considered options
 

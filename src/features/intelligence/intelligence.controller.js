@@ -104,14 +104,16 @@ export default class IntelligenceController {
   static async supplierProfile(req, res) {
     const party = await parties.findById(req.params.id);
     if (!party || party.role === 'buyer') throw ApiError.notFound('Supplier');
-    return ok(res, await ProfileService.forSupplier(party));
+    const includeSingleSource = req.query.filter?.includeSingleSource === true;
+    return ok(res, await ProfileService.forSupplier(party, { includeSingleSource }));
   }
 
   /** A buying agency's profile — what it spends, and how contested its work is. */
   static async buyerProfile(req, res) {
     const party = await parties.findById(req.params.id);
     if (!party || party.role === 'supplier') throw ApiError.notFound('Buyer');
-    return ok(res, await ProfileService.forBuyer(party));
+    const includeSingleSource = req.query.filter?.includeSingleSource === true;
+    return ok(res, await ProfileService.forBuyer(party, { includeSingleSource }));
   }
 
   /**

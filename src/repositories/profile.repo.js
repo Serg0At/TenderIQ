@@ -1,5 +1,6 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
+import { competitiveOnlySql } from './tender.repo.js';
 
 const BUYER_TABLE = 'buyer_profiles';
 const SUPPLIER_TABLE = 'supplier_profiles';
@@ -28,6 +29,13 @@ const SUPPLIER_TABLE = 'supplier_profiles';
  * today — but a win rate does not, and a supplier that bid forty times over
  * four years is better characterised by all forty. `sinceMonths` is still
  * accepted so a caller can ask the narrower question.
+ *
+ * Single-source procurement is left out of every aggregate here unless the
+ * caller asks (`includeSingleSource`, ticket 31): a single-source award is a
+ * win nobody contested, so it would raise a win rate, lower a buyer's bidder
+ * count and fill its top suppliers with agreements rather than competitions.
+ * The nightly rebuild never includes it. A buyer's spend leaves it out too,
+ * so `spend` is its competitive spend; asking includes it.
  */
 
 /** One row per (tender, lot) — see the note in publicBid.repo.js on fanout. */
@@ -37,10 +45,15 @@ const lotCategoryCte = (qb) =>
     .from('tender_lots')
     .orderBy([{ column: 'tender_id' }, { column: 'lot_number' }, { column: 'item_sequence' }]);
 
-/** Applies the optional recency window. Null means the whole archive. */
-const withinWindow = (qb, sinceMonths, column = 't.published_at') => {
+/**
+ * Applies a query's scope over `tenders as t`: the optional recency window
+ * (null means the whole archive), and competitive procurement only unless
+ * single source is asked for.
+ */
+const scoped = (qb, { sinceMonths = null, includeSingleSource = false } = {}) => {
+  if (!includeSingleSource) qb.andWhereRaw(competitiveOnlySql('t'));
   if (sinceMonths === null || sinceMonths === undefined) return qb;
-  return qb.andWhereRaw(`${column} >= now() - (? || ' months')::interval`, [
+  return qb.andWhereRaw(`t.published_at >= now() - (? || ' months')::interval`, [
     String(Number(sinceMonths)),
   ]);
 };
@@ -60,14 +73,15 @@ export default class ProfileRepository {
    * awards on the wrong company. Four indexed lookups on one supplier are
    * comfortably inside the 2s intelligence budget.
    */
-  static async computeSupplier(supplierId, { sinceMonths = null } = {}, trx = db) {
+  static async computeSupplier(supplierId, { sinceMonths = null, includeSingleSource = false } = {}, trx = db) {
+    const scope = { sinceMonths, includeSingleSource };
     const [activity, wins, categories, rivals] = await Promise.all([
       // Participation — every bid, rejected included.
-      withinWindow(
+      scoped(
         trx('public_tender_bids as b')
           .join('tenders as t', 't.id', 'b.tender_id')
           .where('b.supplier_id', supplierId),
-        sinceMonths
+        scope
       )
         .select(
           // The unique key is (tender, lot, supplier, source), so one row IS
@@ -88,11 +102,11 @@ export default class ProfileRepository {
         )
         .first(),
 
-      withinWindow(
+      scoped(
         trx('awards as a')
           .join('tenders as t', 't.id', 'a.tender_id')
           .where('a.supplier_id', supplierId),
-        sinceMonths
+        scope
       )
         .select(
           trx.raw('count(*)::int as lots_won'),
@@ -109,7 +123,7 @@ export default class ProfileRepository {
 
       // Categories need a CPV, which exists for roughly a third of the corpus.
       // A supplier with none gets an empty list, not a wrong one.
-      withinWindow(
+      scoped(
         trx('public_tender_bids as b')
           .with('lot_category', lotCategoryCte)
           .join('tenders as t', 't.id', 'b.tender_id')
@@ -118,7 +132,7 @@ export default class ProfileRepository {
           })
           .where('b.supplier_id', supplierId)
           .whereRaw('coalesce(l.cpv_code, t.cpv_code) is not null'),
-        sinceMonths
+        scope
       )
         .groupByRaw('coalesce(l.cpv_code, t.cpv_code)')
         .select(
@@ -128,7 +142,7 @@ export default class ProfileRepository {
         .orderByRaw('count(*) desc')
         .limit(50),
 
-      ProfileRepository.rivalsFor(supplierId, { sinceMonths }, trx),
+      ProfileRepository.rivalsFor(supplierId, scope, trx),
     ]);
 
     return { activity, wins, categories, rivals };
@@ -141,8 +155,9 @@ export default class ProfileRepository {
    * where the rival took the award and this supplier did not — the answer to
    * "who keeps beating me", which is the question a supplier actually has.
    */
-  static async rivalsFor(supplierId, { sinceMonths = null, limit = 5 } = {}, trx = db) {
-    const rows = await withinWindow(
+  static async rivalsFor(supplierId, { sinceMonths = null, includeSingleSource = false, limit = 5 } = {}, trx = db) {
+    const scope = { sinceMonths, includeSingleSource };
+    const rows = await scoped(
       trx('public_tender_bids as mine')
         .join('public_tender_bids as theirs', function sameLot() {
           this.on('theirs.tender_id', '=', 'mine.tender_id')
@@ -158,7 +173,7 @@ export default class ProfileRepository {
             .andOn('a.source', '=', 'mine.source');
         })
         .where('mine.supplier_id', supplierId),
-      sinceMonths
+      scope
     )
       .groupBy('theirs.supplier_id', 'p.name')
       .select(
@@ -192,9 +207,10 @@ export default class ProfileRepository {
    * and this data cannot distinguish between them. The presentation layer is
    * required to keep it that way.
    */
-  static async computeBuyer(buyerId, { sinceMonths = null } = {}, trx = db) {
+  static async computeBuyer(buyerId, { sinceMonths = null, includeSingleSource = false } = {}, trx = db) {
+    const scope = { sinceMonths, includeSingleSource };
     const [volume, spend, competition, suppliers] = await Promise.all([
-      withinWindow(trx('tenders as t').where('t.buyer_id', buyerId), sinceMonths)
+      scoped(trx('tenders as t').where('t.buyer_id', buyerId), scope)
         .select(
           trx.raw('count(*)::int as tender_count'),
           trx.raw('sum(t.estimated_value)::numeric as total_estimated'),
@@ -203,9 +219,9 @@ export default class ProfileRepository {
         )
         .first(),
 
-      withinWindow(
+      scoped(
         trx('awards as a').join('tenders as t', 't.id', 'a.tender_id').where('t.buyer_id', buyerId),
-        sinceMonths
+        scope
       )
         .select(
           trx.raw('count(*)::int as lots_awarded'),
@@ -224,14 +240,14 @@ export default class ProfileRepository {
       // Participation, so rejected bids count.
       trx
         .with('lot_bidders', (qb) => {
-          withinWindow(
+          scoped(
             qb
               .select('b.tender_id', 'b.lot_number')
               .count('* as n')
               .from('public_tender_bids as b')
               .join('tenders as t', 't.id', 'b.tender_id')
               .where('t.buyer_id', buyerId),
-            sinceMonths
+            scope
           ).groupBy('b.tender_id', 'b.lot_number');
         })
         .select(
@@ -243,20 +259,21 @@ export default class ProfileRepository {
         .from('lot_bidders')
         .first(),
 
-      ProfileRepository.topSuppliersForBuyer(buyerId, { sinceMonths }, trx),
+      ProfileRepository.topSuppliersForBuyer(buyerId, scope, trx),
     ]);
 
     return { volume, spend, competition, suppliers };
   }
 
   /** Award counts and values per supplier for one buyer. Facts, ordered. */
-  static async topSuppliersForBuyer(buyerId, { sinceMonths = null, limit = 5 } = {}, trx = db) {
-    const rows = await withinWindow(
+  static async topSuppliersForBuyer(buyerId, { sinceMonths = null, includeSingleSource = false, limit = 5 } = {}, trx = db) {
+    const scope = { sinceMonths, includeSingleSource };
+    const rows = await scoped(
       trx('awards as a')
         .join('tenders as t', 't.id', 'a.tender_id')
         .join('parties as p', 'p.id', 'a.supplier_id')
         .where('t.buyer_id', buyerId),
-      sinceMonths
+      scope
     )
       .groupBy('a.supplier_id', 'p.name')
       .select(
@@ -295,12 +312,13 @@ export default class ProfileRepository {
    * it is assembled live for the one profile being read.
    */
   static async computeAllSuppliers({ sinceMonths = null } = {}, trx = db) {
+    const scope = { sinceMonths };
     const [activity, wins, categories] = await Promise.all([
-      withinWindow(
+      scoped(
         trx('public_tender_bids as b')
           .join('tenders as t', 't.id', 'b.tender_id')
           .whereNotNull('b.supplier_id'),
-        sinceMonths
+        scope
       )
         .groupBy('b.supplier_id')
         .select(
@@ -313,16 +331,16 @@ export default class ProfileRepository {
           )
         ),
 
-      withinWindow(
+      scoped(
         trx('awards as a')
           .join('tenders as t', 't.id', 'a.tender_id')
           .whereNotNull('a.supplier_id'),
-        sinceMonths
+        scope
       )
         .groupBy('a.supplier_id')
         .select('a.supplier_id', trx.raw('count(*)::int as lots_won')),
 
-      withinWindow(
+      scoped(
         trx('public_tender_bids as b')
           .with('lot_category', lotCategoryCte)
           .join('tenders as t', 't.id', 'b.tender_id')
@@ -331,7 +349,7 @@ export default class ProfileRepository {
           })
           .whereNotNull('b.supplier_id')
           .whereRaw('coalesce(l.cpv_code, t.cpv_code) is not null'),
-        sinceMonths
+        scope
       )
         .groupByRaw('b.supplier_id, coalesce(l.cpv_code, t.cpv_code)')
         .select(
@@ -362,14 +380,15 @@ export default class ProfileRepository {
 
   /** Every buyer's aggregates, same reasoning as computeAllSuppliers. */
   static async computeAllBuyers({ sinceMonths = null, topSuppliers = 5 } = {}, trx = db) {
+    const scope = { sinceMonths };
     const [volume, spend, top] = await Promise.all([
-      withinWindow(trx('tenders as t').whereNotNull('t.buyer_id'), sinceMonths)
+      scoped(trx('tenders as t').whereNotNull('t.buyer_id'), scope)
         .groupBy('t.buyer_id')
         .select('t.buyer_id', trx.raw('count(*)::int as tender_count')),
 
-      withinWindow(
+      scoped(
         trx('awards as a').join('tenders as t', 't.id', 'a.tender_id').whereNotNull('t.buyer_id'),
-        sinceMonths
+        scope
       )
         .groupBy('t.buyer_id')
         .select('t.buyer_id', trx.raw('sum(a.amount)::numeric as total_spend')),
@@ -379,7 +398,7 @@ export default class ProfileRepository {
       // for Node to sort and discard.
       trx
         .with('ranked', (qb) => {
-          withinWindow(
+          scoped(
             qb
               .select('t.buyer_id', 'a.supplier_id')
               .count('* as award_count')
@@ -388,7 +407,7 @@ export default class ProfileRepository {
               .join('tenders as t', 't.id', 'a.tender_id')
               .whereNotNull('t.buyer_id')
               .whereNotNull('a.supplier_id'),
-            sinceMonths
+            scope
           ).groupBy('t.buyer_id', 'a.supplier_id');
         })
         .select('buyer_id', 'supplier_id')

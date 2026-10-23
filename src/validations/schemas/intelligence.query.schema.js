@@ -21,9 +21,10 @@ export const competitorPricesQuerySchema = Joi.object({
      */
     includeRejected: Joi.boolean().default(true),
     /**
-     * Single-source procedures are left out of every comparison (ticket 31):
-     * a price agreed with one supplier is not a market's. Off by default, and
-     * only an explicit `true` puts them back.
+     * Single-source procedures are left out of aggregates across tenders
+     * (ticket 31) — here, the `expectedCompetition` beside the ledger. The
+     * tender's own ledger is returned either way. Only an explicit `true`
+     * puts them back.
      */
     includeSingleSource: Joi.boolean().default(false),
   }).default({}),
@@ -46,8 +47,16 @@ export const benchmarkQuerySchema = Joi.object({
   }).default({}),
 }).options({ stripUnknown: true });
 
+/** Supplier and buyer profiles: aggregates, so single source is opt-in here too. */
+export const profileQuerySchema = Joi.object({
+  filter: Joi.object({
+    includeSingleSource: Joi.boolean().default(false),
+  }).default({}),
+}).options({ stripUnknown: true });
+
 export default {
   competitorPricesQuerySchema,
   expectedCompetitionQuerySchema,
   benchmarkQuerySchema,
+  profileQuerySchema,
 };

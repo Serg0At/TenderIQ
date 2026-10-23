@@ -180,11 +180,11 @@ export default class CompetitorPriceService {
    * than re-fetched so the controller resolves existence (and returns 404)
    * exactly once.
    *
-   * A single-source tender (ticket 31) has a supplier and the price the buyer
-   * agreed with it, not competitors: it answers `single_source` with no lots,
-   * unless the caller asks for its ledger (`includeSingleSource`). Saying so
-   * is the honest answer; listing it would present one negotiated price as a
-   * lot nobody else contested.
+   * A single-source tender (ticket 31) returns its own ledger like any
+   * other — it is that tender's record — flagged `singleSource`, so a client
+   * can say "single source, no competition" rather than show a lot that
+   * merely drew one bidder. `includeSingleSource` touches only the
+   * `expectedCompetition` beside it, an aggregate across tenders.
    */
   static async forTender(tender, { lot = null, includeRejected = true, includeSingleSource = false } = {}) {
     const [ledger, awards, lotRows] = await Promise.all([
@@ -204,18 +204,7 @@ export default class CompetitorPriceService {
       includeSingleSource,
     });
 
-    if (tender.procedure_type === 'single_source' && !includeSingleSource) {
-      return {
-        status: 'single_source',
-        reason:
-          'A single-source procedure: its price is what the buyer agreed with one supplier, not a competitive bid. ' +
-          'Ask with filter[includeSingleSource]=true to see it.',
-        tenderId: tender.id,
-        settled: tender.status === 'awarded',
-        expectedCompetition: expected,
-        lots: [],
-      };
-    }
+    const singleSource = tender.procedure_type === 'single_source';
 
     if (!ledger.length) {
       return {
@@ -228,6 +217,7 @@ export default class CompetitorPriceService {
           'No public bid ledger for this tender. The source publishes one only after the auction settles.',
         tenderId: tender.id,
         settled: false,
+        singleSource,
         expectedCompetition: expected,
         lots: [],
       };
@@ -323,6 +313,7 @@ export default class CompetitorPriceService {
       status: 'ok',
       tenderId: tender.id,
       settled: true,
+      singleSource,
       currency: tender.currency,
       summary: CompetitorPriceService.summarize(lots, ledger),
       expectedCompetition: expected,

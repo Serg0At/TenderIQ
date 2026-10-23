@@ -4237,10 +4237,10 @@ price is entitled to know that price was disqualified.
 
 - `filter[lot]` (optional): integer ≥ 1 — narrow to a single lot.
 - `filter[includeRejected]` (optional, default `true`): boolean.
-- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
-  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
-  and only an explicit `true` puts them back. For a single-source tender it returns the ledger;
-  it also counts single-source lots in `expectedCompetition`.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Affects only
+  `expectedCompetition`, an aggregate across tenders, which leaves single-source lots out
+  unless this is `true`. The tender's own ledger is returned either way, a single-source
+  tender's included (see `singleSource` below).
 
 **Request data:**
 
@@ -4256,6 +4256,7 @@ Settled tender:
     "status": "ok",
     "tenderId": "cm9zx4k1p0010qw8fj3k9d2p1",
     "settled": true,
+    "singleSource": false,
     "currency": "AMD",
     "summary": {
       "lotCount": 3,
@@ -4351,25 +4352,11 @@ Tender not yet settled (no public bid ledger):
 }
 ```
 
-A single-source tender, not asked for (`filter[includeSingleSource]` absent or `false`):
-
-```json
-{
-  "data": {
-    "status": "single_source",
-    "reason": "A single-source procedure: its price is what the buyer agreed with one supplier, not a competitive bid. Ask with filter[includeSingleSource]=true to see it.",
-    "tenderId": "cm9zx4k1p0010qw8fj3k9d2p1",
-    "settled": true,
-    "expectedCompetition": { },
-    "lots": [],
-    "title": "…",
-    "referenceCode": "ՀՀԱՄ-ԱՐԵՎՈՒՏ-ՄԱԾՁԲ-26/24",
-    "buyer": { }
-  }
-}
-```
-
-- `status`: `ok`, `no_public_bids` or `single_source`.
+- `status`: `ok` or `no_public_bids`.
+- `singleSource`: `true` for a single-source procedure (`procedure_type = 'single_source'`).
+  Its ledger is the price the buyer agreed with one supplier, so the client should say "single
+  source, no competition" rather than present the lot as one that merely drew one bidder
+  (`competition: "sole"`). The lot's `priceRange` is that one price.
 - **Two prices per offer.** `finalOffer`, `initialOffer` and `winner.price` include VAT;
   `finalOfferNet`, `initialOfferNet` and `winner.netPrice` do not. The budget includes VAT and
   the source checks bids against it gross, so `discountPct` is computed on the VAT-inclusive
@@ -4682,6 +4669,13 @@ competitor.
 
 - `id`: the supplier party's CUID2 id.
 
+**Query parameters:**
+
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Every figure on the
+  profile is over competitive procurement only — a single-source award is a win nobody
+  contested, and would raise a win rate or fill a buyer's top suppliers with agreements. Only an
+  explicit `true` puts them back, and the profile then says `"includesSingleSource": true`.
+
 **Request data:**
 
 No request body
@@ -4772,6 +4766,15 @@ A buying agency's profile — what it spends, and how contested its work is.
 **Path parameters:**
 
 - `id`: the buyer party's CUID2 id.
+
+**Query parameters:**
+
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Every figure on the
+  profile is over competitive procurement only — a single-source award is a win nobody
+  contested, and would raise a win rate or fill a buyer's top suppliers with agreements. Only an
+  explicit `true` puts them back, and the profile then says `"includesSingleSource": true`.
+
+  A buyer's `spend` and `volume` are therefore its competitive spend and tenders.
 
 **Request data:**
 

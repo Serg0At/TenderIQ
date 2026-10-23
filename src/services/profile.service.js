@@ -20,6 +20,10 @@ const { INTELLIGENCE } = config;
  * The whole page is derived from published public record. Nothing tenant-
  * private is read, and every figure is reproducible from `tenders`, `awards`
  * and `public_tender_bids`.
+ *
+ * Every figure is over competitive procurement only, unless the caller asks
+ * for single-source too (`includeSingleSource`, ticket 31; see
+ * profile.repo.js). A profile that includes it says `includesSingleSource`.
  */
 
 const num = (value) => (value === null || value === undefined ? null : Number(value));
@@ -50,9 +54,10 @@ export default class ProfileService {
    * `party` is the row from `parties`, resolved by the controller so existence
    * (and the 404) is decided in one place.
    */
-  static async forSupplier(party, { sinceMonths = null } = {}) {
+  static async forSupplier(party, { sinceMonths = null, includeSingleSource = false } = {}) {
     const { activity, wins, categories, rivals } = await profiles.computeSupplier(party.id, {
       sinceMonths,
+      includeSingleSource,
     });
 
     const lotsBid = int(activity?.lots_bid);
@@ -115,13 +120,15 @@ export default class ProfileService {
        * the head-to-head record attached as evidence.
        */
       frequentRivals: rivals,
+      ...(includeSingleSource ? { includesSingleSource: true } : {}),
     };
   }
 
   /** A buying agency's profile. */
-  static async forBuyer(party, { sinceMonths = null } = {}) {
+  static async forBuyer(party, { sinceMonths = null, includeSingleSource = false } = {}) {
     const { volume, spend, competition, suppliers } = await profiles.computeBuyer(party.id, {
       sinceMonths,
+      includeSingleSource,
     });
 
     const lotsAwarded = int(spend?.lots_awarded);
@@ -187,6 +194,7 @@ export default class ProfileService {
         shareOfSpendPct:
           totalSpend > 0 ? Math.round(((s.totalValue ?? 0) / totalSpend) * 1000) / 10 : null,
       })),
+      ...(includeSingleSource ? { includesSingleSource: true } : {}),
     };
   }
 

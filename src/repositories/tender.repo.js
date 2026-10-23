@@ -311,6 +311,15 @@ const coversAnySql = (alias = 't') =>
   `exists (select 1 from unnest(${tenderCodesSql(alias)}) as c(code) ` +
   `join unnest(?::text[]) as p(prefix) on starts_with(c.code, p.prefix))`;
 
+/**
+ * Competitive procurement only, as SQL over a `tenders` alias: a single-source
+ * price is what a buyer agreed with one supplier, not what a market bid
+ * (ticket 31), so every aggregate across tenders — benchmarks, expected
+ * competition, profiles — leaves it out unless a caller explicitly asks.
+ * One tender's own ledger is never filtered by it.
+ */
+export const competitiveOnlySql = (alias = 't') => `${alias}.procedure_type is distinct from 'single_source'`;
+
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
   't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code', 't.cpv_codes',
