@@ -287,17 +287,20 @@ export const observeAmendment = (notice, { externalId, bodyCode = null }) => ({
  * The link and payload id of a contract-concluded notice: the upload's path,
  * as for the notice of an invitation (`paper:…`), not its content. That is
  * what lets an unmatched one be read again once its tender appears
- * (paper.js#queueContractRetries): the path finds the listing page the notice
+ * (paper.js#queueResultRetries): the path finds the listing page the notice
  * was stored with, and so its title and URL. A file uploaded twice is two
  * notices writing the same rows.
  */
 export const contractNoticeId = (path) => `contract:${pathDigest(path)}`;
 
-/** The path digest a contract-notice id carries, for a job id: BullMQ ids take no colon. */
-export const contractNoticeDigest = (id) => String(id).replace(/^contract:/, '');
+/**
+ * The path digest a result notice's id carries — a contract notice's or a
+ * failure notice's — for a job id: BullMQ ids take no colon.
+ */
+export const resultNoticeDigest = (id) => String(id).replace(/^(?:contract|failed):/, '');
 
-/** The listing's id for the notice a contract-notice id names: `paper:{digest}`, as `paperNoticeId` gives it. */
-export const noticeIdOfContract = (id) => `paper:${contractNoticeDigest(id)}`;
+/** The listing's id for the notice a result notice's id names: `paper:{digest}`, as `paperNoticeId` gives it. */
+export const noticeIdOfResult = (id) => `paper:${resultNoticeDigest(id)}`;
 
 /** A start of day in Yerevan, for a date a document states without a time. */
 const yerevanDay = (date) => (date ? new Date(`${date}T00:00:00+04:00`) : null);
@@ -445,8 +448,8 @@ export const observeContract = (notice, { externalId, parsed }) => {
 
 /**
  * The link and payload id of a failed-procedure notice: the upload's path, as
- * for a contract notice, so the listing page it was stored with can give its
- * title and URL back.
+ * for a contract notice, so one read before its tender existed can be read
+ * again from the listing page it was stored with.
  */
 export const failedNoticeId = (path) => `failed:${pathDigest(path)}`;
 

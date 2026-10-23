@@ -8,20 +8,21 @@ import { parseFailedNotice } from '../libs/adapters/source/gnumner/failed.parser
 import { invitationArchive, isOfficeFile, uploadedName } from '../libs/adapters/source/gnumner/invitation.files.js';
 import {
   amendmentNoticeId,
-  contractNoticeDigest,
   contractNoticeId,
   failedNoticeId,
-  noticeIdOfContract,
+  noticeIdOfResult,
   observeAmendment,
   observeContract,
   observeFailure,
   pathDigest,
+  resultNoticeDigest,
 } from '../libs/adapters/source/gnumner/observation.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
 import { noticeOfJob, storedNotice, withRunPublications } from '../services/paperNotice.service.js';
-import { deriveStatus, failureStatus, invitationSpan, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
+import FailureService from '../services/failure.service.js';
+import { deriveStatus, invitationSpan, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
@@ -416,21 +417,12 @@ export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }
  *
  * `reason: 'retry'` re-reads a notice that was left unmatched, from storage
  * and with no request, once a tender of its code has appeared
- * (`queueContractRetries`). The notice is rebuilt from the listing page it
- * was stored with, as a paper invitation's are.
+ * (`queueResultRetries`, `retriedNotice`).
  */
 export const handlePaperContract = async (job, token) => {
   const priority = job.opts?.priority ?? PRIORITY.LIVE;
 
-  if (job.data.reason === 'retry') {
-    const { externalRef } = job.data;
-    if (!/^contract:[0-9a-f]{24}$/.test(String(externalRef ?? ''))) {
-      throw new UnrecoverableError(`paper.contract retry needs a contract notice id, got ${JSON.stringify(externalRef)}`);
-    }
-    const notice = await storedNotice(noticeIdOfContract(externalRef));
-    if (!notice) throw new UnrecoverableError(`[${SOURCE}] contract notice ${externalRef}: no listing record to re-read it from`);
-    return recordContract({ externalId: externalRef, notice, priority });
-  }
+  if (job.data.reason === 'retry') return recordContract({ ...(await retriedNotice(job, 'contract')), priority });
 
   if (!isNotice(job.data)) {
     throw new UnrecoverableError('paper.contract needs the notice: an upload path, slug, title and publishedAt');
@@ -456,8 +448,15 @@ export const handlePaperContract = async (job, token) => {
  * under its notice id (`failed:{path digest}`), and recorded on its tender
  * (`recordFailedNotice`). Named `paper.` like every gnumner upload's job, but
  * it ends ARMEPS tenders as well as paper ones.
+ *
+ * `reason: 'retry'` is a contract notice's retry (`queueResultRetries`): a
+ * notice read before its tender existed, read again from storage once one of
+ * its code has appeared.
  */
 export const handlePaperFailed = async (job, token) => {
+  if (job.data.reason === 'retry') {
+    return recordFailedNotice({ ...(await retriedNotice(job, 'failed')), priority: job.opts?.priority ?? PRIORITY.LIVE });
+  }
   if (!isNotice(job.data)) {
     throw new UnrecoverableError('paper.failed needs the notice: an upload path, slug, title and publishedAt');
   }
@@ -481,15 +480,15 @@ export const handlePaperFailed = async (job, token) => {
  * One stored failed-procedure notice → its tender, through the resolution
  * module: a `results` link that records `cancelled` and the lots it names,
  * and `cancelled` on the tender once its notices name every lot it has
- * (`failureStatus`); an unmatched result when its code matches no ARMEPS or
+ * (`FailureService`); an unmatched result when its code matches no ARMEPS or
  * paper tender announced before it, or two, or the file cannot be read;
  * nothing when the code is an e-auction's. Reads only storage and the
  * database, so running it again decides the same and writes nothing twice.
  *
- * Not re-read when a tender of its code appears later, as a contract notice
- * is (`queueContractRetries`): the tender it ends was announced before it,
- * so the invitation sweeps reach that tender first — except a tender older
- * than a cold start's pages, which it then leaves `closed`.
+ * One read before its tender existed is read again when a tender of its code
+ * appears (`queueResultRetries`). One read before the tender's lots were
+ * written is linked and changes nothing until they are: the document stage
+ * derives the status again then (`AddendumService.recordDocuments`).
  */
 export const recordFailedNotice = async ({ externalId, notice, priority = PRIORITY.LIVE }) => {
   const log = logger.child({ job: JOB.PAPER_FAILED, source: SOURCE, failed: externalId });
@@ -536,13 +535,8 @@ export const recordFailedNotice = async ({ externalId, notice, priority = PRIORI
     return { skipped: decision.reason ?? decision.action };
   }
 
-  const { tender } = decision;
-  const status = failureStatus(observation, tender, new Date());
-  const result = await tenders.recordFailure({
+  const result = await FailureService.recordNotice({
     tenderId: decision.tenderId,
-    expectedStatus: tender.status,
-    expectedFailedLots: tender.failedLots,
-    status,
     link: {
       source: SOURCE,
       externalId,
@@ -568,14 +562,15 @@ export const recordFailedNotice = async ({ externalId, notice, priority = PRIORI
     );
   }
 
+  const lots = result.lotNumbers.length ? [...result.lotNumbers].sort((a, b) => a - b).join(', ') : 'unknown lots';
   log.info(
-    `failed-procedure notice recorded: lots ${observation.lotNumbers.join(', ') || 'none placed'} of ` +
-      `${tender.lotNumbers.length ? [...tender.lotNumbers].sort((a, b) => a - b).join(', ') : 'unknown lots'}, tender ${status}`,
+    `failed-procedure notice recorded: lots ${observation.lotNumbers.join(', ') || 'none placed'}; ` +
+      `failed ${result.failedLots.join(', ') || 'none'} of ${lots}, tender ${result.status}`,
     { tenderId: decision.tenderId, code: observation.procedureCode }
   );
   return {
     tenderId: decision.tenderId,
-    status,
+    status: result.status,
     failedLots: observation.lotNumbers,
     ...(result.event ? { version: result.version } : {}),
   };
@@ -712,7 +707,7 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
     await maintenanceQueue.add(
       JOB.RECOMPUTE_BENCHMARKS,
       { tenderId: result.tenderId },
-      { jobId: `benchmarks-${result.tenderId}-${contractNoticeDigest(externalId)}-${stored.hash.slice(0, 12)}`, priority }
+      { jobId: `benchmarks-${result.tenderId}-${resultNoticeDigest(externalId)}-${stored.hash.slice(0, 12)}`, priority }
     );
   }
 
@@ -772,7 +767,7 @@ const createResultOnly = async ({ observation, externalId, stored, notice, candi
   }
 
   await unmatchedResults.markResolved({ source: SOURCE, externalRef: externalId, tenderId: result.tenderId });
-  await queueContractRetries({ tenderId: result.tenderId, version: result.version, referenceCode: tender.referenceCode, priority });
+  await queueResultRetries({ tenderId: result.tenderId, version: result.version, referenceCode: tender.referenceCode, priority });
 
   log.info(
     `contract notice of a procedure never public (${observation.procedureType}): result-only tender, ` +
@@ -783,29 +778,58 @@ const createResultOnly = async ({ observation, externalId, stored, notice, candi
 };
 
 /**
- * Re-read every contract notice left unmatched under a code a paper tender
- * has just been created with, or a re-posted file has just joined — "a
- * later-appearing tender picks it up". A contract notice is usually read
- * weeks after its invitation, but a cold start, a backfill or an invitation
- * that failed and was retried can put the result first; and a notice naming
- * a re-post's date matches nothing until that file has joined its run.
- * Keyed on the tender's version, so a join re-reads what the create already
- * did not take. One job per notice, from storage, no request; resolution
- * decides again, so one that still matches nothing stays unmatched.
+ * The gnumner notices that are a tender's results, by their id's prefix, and
+ * the job that reads each again: a contract notice (ticket 08) and a failure
+ * notice (ticket 09).
  */
-export const queueContractRetries = async ({ tenderId, version, referenceCode, priority = PRIORITY.LIVE }) => {
+const RESULT_NOTICES = [
+  { kind: 'contract', job: JOB.PAPER_CONTRACT },
+  { kind: 'failed', job: JOB.PAPER_FAILED },
+];
+
+/**
+ * A result notice's `retry` job → the notice, rebuilt from the listing page it
+ * was stored with, as a paper invitation's are, and its id. No request.
+ */
+const retriedNotice = async (job, kind) => {
+  const { externalRef } = job.data;
+  if (!new RegExp(`^${kind}:[0-9a-f]{24}$`).test(String(externalRef ?? ''))) {
+    throw new UnrecoverableError(`${job.name} retry needs a ${kind} notice id, got ${JSON.stringify(externalRef)}`);
+  }
+  const notice = await storedNotice(noticeIdOfResult(externalRef));
+  if (!notice) throw new UnrecoverableError(`[${SOURCE}] ${externalRef}: no listing record to re-read it from`);
+  return { externalId: externalRef, notice };
+};
+
+/**
+ * Re-read every result notice — contract or failure — left unmatched under a
+ * code a tender has just been created with, or a re-posted file has just
+ * joined: "a later-appearing tender picks it up". A result is usually read
+ * long after its invitation, but a cold start, a backfill or an invitation
+ * that failed and was retried can put the result first; and a contract
+ * notice naming a re-post's date matches nothing until that file has joined
+ * its run. Keyed on the tender's version, so a join re-reads what the create
+ * already did not take. One job per notice, from storage, no request;
+ * resolution decides again, so one that still matches nothing — a contract
+ * notice for an ARMEPS tender, say — stays as it was.
+ */
+export const queueResultRetries = async ({ tenderId, version, referenceCode, priority = PRIORITY.LIVE }) => {
   const key = normalizeCode(referenceCode);
   if (!key) return 0;
-  const open = await unmatchedResults.findOpenByCode({ source: SOURCE, refPrefix: 'contract:', key });
-  for (const row of open) {
-    await ingestFetchQueue.add(
-      JOB.PAPER_CONTRACT,
-      { source: SOURCE, reason: 'retry', externalRef: row.external_ref },
-      { jobId: `${SOURCE}-contract-retry-${contractNoticeDigest(row.external_ref)}-${tenderId}-v${version}`, priority }
-    );
+  let queued = 0;
+  for (const { kind, job } of RESULT_NOTICES) {
+    const open = await unmatchedResults.findOpenByCode({ source: SOURCE, refPrefix: `${kind}:`, key });
+    for (const row of open) {
+      await ingestFetchQueue.add(
+        job,
+        { source: SOURCE, reason: 'retry', externalRef: row.external_ref },
+        { jobId: `${SOURCE}-${kind}-retry-${resultNoticeDigest(row.external_ref)}-${tenderId}-v${version}`, priority }
+      );
+    }
+    if (open.length) logger.info(`[${SOURCE}] tender ${tenderId} (${referenceCode}): re-reading ${open.length} unmatched ${kind} notices`);
+    queued += open.length;
   }
-  if (open.length) logger.info(`[${SOURCE}] tender ${tenderId} (${referenceCode}): re-reading ${open.length} unmatched contract notices`);
-  return open.length;
+  return queued;
 };
 
 /**
@@ -833,7 +857,7 @@ export default {
   recordContract,
   handlePaperFailed,
   recordFailedNotice,
-  queueContractRetries,
+  queueResultRetries,
   paperDocumentsJob,
   paperRefresher,
 };

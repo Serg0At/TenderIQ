@@ -679,14 +679,20 @@ decision that has already been made.
   `observed_status = 'cancelled'` and `tender_sources.failed_lots`; the tender turns `cancelled`
   (`resolution.service.js#failureStatus`, through `deriveStatus`) when its notices' lots,
   together, cover `tender_lots` ∪ the ledger's lots. Partly failed → status untouched; no
-  lots known → never cancelled (a wrong cancel is terminal and blocks the award); `awarded`
-  never moves. `recordFailure` re-reads the other notices' lots under the row lock. The notice
+  lots known → not cancelled yet (a wrong cancel is terminal and blocks the award); `awarded`
+  never moves. **Either side may come first, and the second decides**
+  (`services/failure.service.js#rederive`, under the row lock, from stored rows only): a
+  notice linked, or a document set writing lots (`AddendumService.recordDocuments`, the one
+  place lots are written) — so a notice read before the lots cancels the tender when they
+  arrive, with nothing re-read or re-downloaded. The notice
   states no invitation date, so it matches the ARMEPS/paper tender of its code **announced
   before it and past its deadline when it was published, the latest** (a code is re-announced
   only after its run failed, and a live re-announcement is never cancelled by its
   predecessor's late notice); e-auction codes (held only on e-auction, or `ԷԱՃ` with no
   ARMEPS/paper tender) are skipped before the format is asked; unreadable files are `unsupported_format`; it never
-  creates, and is not re-read when a tender of its code appears later.
+  creates. One read before its tender existed is re-read when a paper or ARMEPS tender of its
+  code is created, through the contract notice's path (`paper.js#queueResultRetries`, a
+  `reason: 'retry'` job rebuilt from the stored listing page).
 - **A result of a procedure that was never public is a result-only tender** (ticket 31, ADR 0004's
   second exception to "results never create"). `resolution.service.js#wasPublic` decides from
   facts only: an invitation of the code ever on the `open`/`quotation` listings

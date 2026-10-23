@@ -30,7 +30,6 @@
  *     replacedRuns,                             // it holds a superseded run: publishedAt is its newest
  *     runPublishedAt,                           // optional: every file's publication, for a paper re-post
  *     resultOnly,                               // only results created it: no invitation, no page (ticket 31)
- *     failedLots,                               // the lots its other failed-procedure notices named (ticket 09)
  *     linkSuperseded }                          // linked candidates only: that link is a dead run
  *
  * **An e-auction amendment** is a new tid whose page names the runs it
@@ -674,30 +673,38 @@ export const deriveStatus = ({ submissionChannel, links = [], current = null, de
 };
 
 /**
- * A tender's status once a failed-procedure notice is linked to it (ticket
- * 09): `cancelled`, through `deriveStatus` and its owners table, when the
- * lots its notices name — this one's and those already linked
- * (`tender.failedLots`) — are every lot the tender has. Otherwise the status
- * it has: a partly failed procedure is not a cancelled one, and its other
- * lots go on to a contract or a failure of their own. A tender whose lots are
- * not known is never cancelled by a notice, since nothing proves the notice
- * named them all — a missed cancellation leaves a tender past its deadline
- * `closed`, a wrong one stops its award from ever landing. Never moves a
- * tender back from `awarded`: `deriveStatus` keeps a terminal status.
+ * A tender's status from the failure notices linked to it (ticket 09):
+ * `cancelled`, through `deriveStatus` and its owners table, when the lots
+ * they name, together, are every lot the tender has. Otherwise the status it
+ * has: a partly failed procedure is not a cancelled one, and its other lots
+ * go on to a contract or a failure of their own.
+ *
+ * Asked again whenever either side moves — a notice linked, or the tender's
+ * lots written (services/failure.service.js) — so a notice read before the
+ * lots arrived cancels the tender once they do. A tender whose lots are not
+ * known is never cancelled: nothing proves the notices named them all, and a
+ * missed cancellation leaves a tender past its deadline `closed`, while a
+ * wrong one stops its award from ever landing. It only ever moves a tender to
+ * `cancelled`: a terminal status stays (`awarded` above all), and a source
+ * that does not own the channel's cancellation moves nothing.
+ *
+ * `tender` is `{ status, submissionChannel, deadlineAt, lotNumbers }`;
+ * `failures` is `[{ source, lots }]`, one per linked notice.
  */
-export const failureStatus = (observation, tender, now) => {
-  const failed = new Set([...(tender.failedLots ?? []), ...observation.lotNumbers].map(Number));
+export const failureStatus = (tender, failures, now) => {
+  const failed = new Set(failures.flatMap((failure) => failure.lots).map(Number));
   const lots = tender.lotNumbers ?? [];
-  if (!lots.length || !lots.every((lot) => failed.has(Number(lot)))) return tender.status;
-  return deriveStatus(
+  if (!failures.length || !lots.length || !lots.every((lot) => failed.has(Number(lot)))) return tender.status;
+  const next = deriveStatus(
     {
       submissionChannel: tender.submissionChannel,
-      links: [{ source: observation.source, status: observation.status }],
+      links: failures.map((failure) => ({ source: failure.source, status: 'cancelled' })),
       current: tender.status,
       deadlineAt: tender.deadlineAt,
     },
     now
   );
+  return next === 'cancelled' ? next : tender.status;
 };
 
 export default {

@@ -321,6 +321,16 @@ const coversAnySql = (alias = 't') =>
  */
 export const competitiveOnlySql = (alias = 't') => `${alias}.procedure_type is distinct from 'single_source'`;
 
+/**
+ * A tender's lot numbers: its lots, and the lots its ledger names. One
+ * definition, for resolution's "do the lots fit" and for "has every lot
+ * failed" (ticket 09).
+ */
+const lotNumbersSql = (tenderIdSql) =>
+  `array(select lot_number from tender_lots where tender_id = ${tenderIdSql}
+          union
+          select lot_number from public_tender_bids where tender_id = ${tenderIdSql})`;
+
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
   't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code', 't.cpv_codes',
@@ -742,19 +752,7 @@ export default class TenderRepository {
           `exists(select 1 from tender_sources where tender_id = t.id and role = 'results')
            and not exists(select 1 from tender_sources where tender_id = t.id and role <> 'results') as result_only`
         ),
-        trx.raw(
-          `array(select lot_number from tender_lots where tender_id = t.id
-                 union
-                 select lot_number from public_tender_bids where tender_id = t.id) as lot_numbers`
-        ),
-        // The lots its failed-procedure notices named, other than the
-        // observation's own link (ticket 09): what a notice adds its own to.
-        trx.raw(
-          `array(select distinct unnest(failed_lots) from tender_sources
-                  where tender_id = t.id and failed_lots is not null
-                    and not (source = ? and external_id = ?) order by 1) as failed_lots`,
-          [link.source, String(link.externalId)]
-        )
+        trx.raw(`${lotNumbersSql('t.id')} as lot_numbers`)
       );
     const byLink = async (ref) =>
       ref
@@ -795,7 +793,6 @@ export default class TenderRepository {
       publishedAt: row.published_at,
       deadlineAt: row.deadline_at,
       lotNumbers: row.lot_numbers ?? [],
-      failedLots: (row.failed_lots ?? []).map(Number),
     });
     const linked = await byLink(link);
     const pointed = await byLink(pointer);
@@ -950,11 +947,13 @@ export default class TenderRepository {
   }
 
   /**
-   * An addendum's version: one more, and the status the caller decided. The
-   * same counter `saveNormalized` advances, under the row lock
-   * `applyInvitationFacts` took, so the two never hand out one version twice.
+   * One more version, and the status the caller decided: an addendum's
+   * (services/addendum.service.js), or a cancellation its failure notices
+   * completed (services/failure.service.js). The same counter `saveNormalized`
+   * advances, under the row lock the caller took, so the two never hand out
+   * one version twice.
    */
-  static async recordAddendum(id, { status }, trx = db) {
+  static async advanceVersion(id, { status }, trx = db) {
     const [row] = await trx(TABLE)
       .where({ id })
       .update({ version: trx.raw('version + 1'), status })
@@ -1262,35 +1261,30 @@ export default class TenderRepository {
   }
 
   /**
-   * A failed-procedure notice's word on its tender (ticket 09): its link, with
-   * the lots it declared failed, and the status they move the tender to — one
-   * transaction under the row lock.
-   *
-   * `status` was derived from `expectedStatus` and from the lots the tender's
-   * other notices had named, `expectedFailedLots`, both read when the notice
-   * was resolved. Either having moved since throws, and the retry derives
-   * again: two notices naming lots 1 and 2 of a two-lot tender, recorded at
-   * once, would otherwise each find the other absent and neither cancel it.
-   * A status that moves is an amendment like any other, as in
-   * `recordResults`; a notice recorded again moves nothing.
+   * What decides whether a tender's failure notices cancel it (ticket 09),
+   * read under a row lock — the caller's transaction, which writes the lots
+   * or the link it is asked after: its status and the lots it has, and the
+   * lots each linked failure notice named. Null when the tender is gone.
    */
-  static async recordFailure({ tenderId, expectedStatus, expectedFailedLots, status, link }) {
-    return db.transaction(async (trx) => {
-      const existing = await trx(TABLE).where({ id: tenderId }).forUpdate().first();
-      if (!existing) throw new Error(`[tenders] resolved tender ${tenderId} no longer exists — re-resolve`);
-      if (existing.status !== expectedStatus) {
-        throw new Error(`[tenders] tender ${tenderId} is ${existing.status}, not ${expectedStatus} as resolved — re-resolve`);
-      }
-      const others = await tenderSources.failedLotsOf(tenderId, { except: link }, trx);
-      if (others.join() !== [...expectedFailedLots].sort((a, b) => a - b).join()) {
-        throw new Error(`[tenders] tender ${tenderId} has had failed lots recorded since it was resolved — re-resolve`);
-      }
-
-      await tenderSources.upsert({ ...link, tenderId }, trx);
-      if (status === existing.status) return { event: null, tenderId, version: existing.version };
-      const version = existing.version + 1;
-      await trx(TABLE).where({ id: tenderId }).update({ status, version });
-      return { event: 'TenderAmended', tenderId, version, changedFields: ['status'] };
-    });
+  static async findFailureFacts(id, trx = db) {
+    // `t.id`, never a bare `id`: inside the subquery that is the lot's own.
+    const tender = await trx(`${TABLE} as t`)
+      .where('t.id', id)
+      .forUpdate()
+      .first('t.status', 't.version', 't.submission_channel', 't.deadline_at', trx.raw(`${lotNumbersSql('t.id')} as lot_numbers`));
+    if (!tender) return null;
+    const failures = await trx('tender_sources')
+      .where({ tender_id: id })
+      .whereNotNull('failed_lots')
+      .orderBy([{ column: 'first_seen_at' }, { column: 'id' }])
+      .select('source', 'failed_lots');
+    return {
+      status: tender.status,
+      version: tender.version,
+      submissionChannel: tender.submission_channel,
+      deadlineAt: tender.deadline_at,
+      lotNumbers: (tender.lot_numbers ?? []).map(Number),
+      failures: failures.map((row) => ({ source: row.source, lots: row.failed_lots.map(Number) })),
+    };
   }
 }

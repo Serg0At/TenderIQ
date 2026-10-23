@@ -15,7 +15,7 @@ import { logger } from '../utils/logger.js';
 import { validateNormalizedTender } from '../validations/index.js';
 import { eauctionDocumentsJob } from './documents.js';
 import { armepsDocumentsJob } from './armeps.js';
-import { paperDocumentsJob, queueContractRetries } from './paper.js';
+import { paperDocumentsJob, queueResultRetries } from './paper.js';
 import { linkDiscovery, linkPaperDiscovery } from '../services/discoveryLink.service.js';
 import { noticesFor } from '../services/paperNotice.service.js';
 
@@ -45,8 +45,10 @@ import { noticesFor } from '../services/paperNotice.service.js';
  * when it was published, which its deadline is counted from. `context` reads
  * the notices that listed it — from the job on a first run, from storage on
  * a replay (services/paperNotice.service.js). A paper tender, once created or
- * joined by a re-posted file, takes any contract notice already read for its
- * code (ticket 08): the new file's publication may be the date it states.
+ * joined by a re-posted file, takes any contract or failure notice already
+ * read for its code (tickets 08, 09): the new file's publication may be the
+ * date it states. An ARMEPS tender, once created, takes any failure notice
+ * read before it (ticket 09).
  */
 const SOURCES = {
   [eauction.SOURCE]: { observe: eauction.observeDetail, documentsJob: eauctionDocumentsJob },
@@ -55,6 +57,8 @@ const SOURCES = {
     documentsJob: armepsDocumentsJob,
     link: ({ discovery, observation }) =>
       linkDiscovery({ discovery, pointer: { source: armeps.SOURCE, externalId: observation.externalId } }),
+    newFile: ({ tenderId, version, tender, priority }) =>
+      queueResultRetries({ tenderId, version, referenceCode: tender.referenceCode, priority }),
   },
   [gnumner.SOURCE]: {
     observe: gnumner.observeInvitation,
@@ -63,7 +67,7 @@ const SOURCES = {
     context: async ({ sourceId, discovery }) => ({ notices: await noticesFor({ invitationId: sourceId, discovery }) }),
     link: ({ discovery, observation }) => linkPaperDiscovery({ discovery, invitationId: observation.externalId }),
     newFile: ({ tenderId, version, tender, priority }) =>
-      queueContractRetries({ tenderId, version, referenceCode: tender.referenceCode, priority }),
+      queueResultRetries({ tenderId, version, referenceCode: tender.referenceCode, priority }),
   },
 };
 

@@ -150,20 +150,6 @@ export default class TenderSourceRepository {
       .select('external_id', 'url', 'role');
   }
 
-  /**
-   * The lots the failed-procedure notices linked to a tender declared failed,
-   * other than the one link `except` (ticket 09), ascending: what a notice
-   * being recorded adds its own lots to.
-   */
-  static async failedLotsOf(tenderId, { except }, trx = db) {
-    const rows = await trx(TABLE)
-      .where({ tender_id: tenderId })
-      .whereNotNull('failed_lots')
-      .whereNot((q) => q.where({ source: except.source, external_id: String(except.externalId) }))
-      .select(trx.raw('distinct unnest(failed_lots) as lot'));
-    return rows.map((row) => Number(row.lot)).sort((a, b) => a - b);
-  }
-
   /** One tender's links, oldest first: the creating source leads. */
   static async listForTender(tenderId, trx = db) {
     return trx(TABLE)

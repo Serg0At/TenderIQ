@@ -168,9 +168,9 @@ identical.
   terminal (`deriveStatus` never moves out of it), so a wrong one would stop a later contract
   notice from awarding the lots that went on. A missed one leaves a tender past its deadline
   `closed`, which is not shown as open either.
-- **No lots known, no cancel.** 36 of `tendra`'s 54 ARMEPS tenders and 3 of 18 paper tenders have
-  no stored lots, because their document jobs are still queued locally. A notice cannot prove it
-  named every lot of such a tender.
+- **No lots known, no cancel — until they are known** (follow-up below). 36 of `tendra`'s 54
+  ARMEPS tenders and 3 of 18 paper tenders have no stored lots, because their document jobs are
+  still queued locally. A notice cannot prove it named every lot of such a tender.
 - **Rows with a blank lot cell are not read**, as in ticket 08: a lot is read only when the table
   places it. Numbering by position, as the invitation parser does, would be wrong here because
   the table holds only the failed lots.
@@ -187,8 +187,9 @@ identical.
 - **`was_public`** asks only whether the code was ever listed. Asking the covered window would
   use the failure notice's own publication as the invitation's day and could say `false` for a
   public procedure.
-- **Race guard:** `recordFailure` re-reads the other notices' lots under the row lock and throws
-  if they moved, as `recordResults` does for the status.
+- **Race guard:** ~~`recordFailure` re-reads the other notices' lots under the row lock and throws
+  if they moved~~ — replaced by the follow-up: the decision is taken from stored rows under the
+  lock, so there is nothing to compare.
 - **Keyed by upload path** (`failed:{digest}`), as a contract notice is, so it can be rebuilt
   from its stored listing page.
 - **The armeps-link guard** on the contract listing now covers the failed listing too: a
@@ -217,8 +218,8 @@ re-run. Checksums were identical throughout.
 - A no-op `publishedAt: null` in the `wasPublic` call was removed.
 
 Not changed:
-- **`recordFailedNotice` repeats `recordContract`'s tail, and `recordFailure` repeats
-  `recordResults`' lock-and-check head.** That is the fourth copy of the idiom. Folding them is a
+- **`recordFailedNotice` repeats `recordContract`'s tail** (and `recordFailure` repeated
+  `recordResults`' lock-and-check head until the follow-up removed it). That is the fourth copy of the idiom. Folding them is a
   refactor of existing code, as tickets 06 and 08 said.
 - **The other notices' failed lots are defined twice:** in SQL for candidates and in
   `failedLotsOf` under the lock. Both are distinct and ascending. They are compared to detect a
@@ -231,14 +232,98 @@ Not changed:
 
 ## Left, on purpose
 
-- **No re-read when a tender of its code appears later**, unlike a contract notice. The tender it
-  ends was announced before it, so the invitation sweeps reach it first. The exception is a tender
-  older than a cold start's pages, or one whose invitation failed and was retried after the notice
-  was read. Such a notice stays `no_candidate` with `was_public` true, which reads as a missed
-  tender (as the 08:02 ՔԲԿ notice did, until it was re-read by hand). If the operator alert finds
-  these, extending `queueContractRetries` to `failed:` rows is the fix.
+- ~~**No re-read when a tender of its code appears later**~~ — reversed by the follow-up below.
 - **A failure notice after a contract notice for the same lots** is linked and changes nothing
   (`awarded` is terminal). Nothing compares the two.
+
+## Follow-up: either side may come first (decided 2026-10-23)
+
+**Decision.** (1) A failure notice left `no_candidate` because its tender did not exist yet is
+re-read when a tender of its code appears, through the path contract notices already use, not a
+copy of it. (2) When a tender's lots are written or change, its status is derived again from
+its links' stored `failed_lots`, so a notice processed before the lots arrived cancels the
+tender once they cover it: no re-download, no re-read.
+
+**What changed.**
+- **One retry path.** `queueContractRetries` became `queueResultRetries`: for each result kind
+  (`RESULT_NOTICES`: `contract` → `paper.contract`, `failed` → `paper.failed`), every unresolved
+  row of the new tender's code is queued as a `reason: 'retry'` job. Both handlers rebuild the
+  notice through one `retriedNotice`. `contractNoticeDigest`/`noticeIdOfContract` became
+  `resultNoticeDigest`/`noticeIdOfResult`. The normalizer hook (`newFile`) now runs on ARMEPS
+  creates too: a failure notice ends ARMEPS tenders as well. A contract notice re-read for an
+  ARMEPS tender is skipped by resolution, as before.
+- **One decision, from stored rows.** `services/failure.service.js#rederive` reads, under the
+  tender's row lock, its status, its lots (`tender_lots` ∪ the ledger's, one `lotNumbersSql`
+  shared with `findCandidates`) and every link's `failed_lots`. It applies
+  `resolution.service.js#failureStatus(tender, failures, now)` and writes `version + 1` and
+  `cancelled` when that moves. It has two callers, both under that lock:
+  - `FailureService.recordNotice`: the link, then `rederive`. This replaces
+    `tenders.recordFailure` and its `expectedFailedLots` guard, and the candidates no longer
+    carry `failedLots`;
+  - `AddendumService.recordDocuments`, the one place lots are written for every source, in
+    its own transaction whenever a set writes lots. The cancellation's `TenderAmended` is queued
+    after the commit.
+
+  `failureStatus` now only ever moves a tender to `cancelled`. A failure source that does not
+  own the channel's cancellation moves nothing, rather than re-deriving from the deadline.
+  `tenders.recordAddendum` is now `advanceVersion`, since a cancellation uses it too.
+- **Found while verifying.** `findFailureFacts` first selected `lot_numbers` with a bare `id`
+  inside the subquery, which Postgres reads as `tender_lots.id`, so every tender looked lotless
+  and nothing ever cancelled. Caught by the ARMEPS case below; the query uses `t.id`.
+
+**Verified (2026-10-23, local `tendra`, MinIO, Redis; no worker running; jobs run in-process).**
+
+Pure rules: 45 assertions (the 42 above, with `failureStatus` re-checked on its new signature):
+- two notices together → `cancelled`;
+- no failure linked → unchanged;
+- lots grown past the notices → unchanged;
+- a failure on a channel gnumner does not cancel → unchanged, not re-derived from the deadline.
+
+**ՔԲԿ-ԳՀԾՁԲ-26/38, notice first, then tender.** The tender (then `kfxee55d…`) was deleted with its
+links, lots and documents, along with both notices' unmatched rows, and the stored files were
+replayed in cold-start order:
+
+| step | result |
+|---|---|
+| both failure notices, from storage | `no_candidate`, `was_public` true, twice |
+| the invitation normalized (stored file, its stored notice) | `TenderIngested` `w92c7iby…` v1; «re-reading 2 unmatched failed notices»; queued `gnumner-failed-retry-{digest}-{tender}-v1` ×2 beside `gnumner-docs-972b9dec…` |
+| the two retries (before the lots) | linked; «failed 1–6 of unknown lots, tender closed»; unmatched rows resolved to the tender; **still `closed` v1** |
+| `paper.documents` (writes the 6 lots) | «[failure] … its lots complete the failure notices — cancelled v2» |
+| matcher | `match-…-v2` → `skipped: status_cancelled` |
+
+The same run, with the document job first (the other order the queue can produce: tender
+`iewdke6t…`): `closed` v1 with lots 1–6, then the retries → «failed 1–6 of 1–6, tender
+cancelled», v2. Both orders end the same.
+
+**ARMEPS, lots after a throwaway notice: ՀԱՆ-ԳՀԱՊՁԲ-31/26** (`jdc4hcie…`, 6 lots, `active` v1,
+deadline 10-26 11:00). Every ARMEPS tender in `tendra` is still open, so the throwaway notice was
+dated 10-27, after the deadline:
+
+| step | result |
+|---|---|
+| its 6 `tender_lots` rows removed (the archive not stored yet) | — |
+| throwaway notice naming lots 1–6 → `resolve` (link, its tender) → `FailureService.recordNotice` | **still `active` v1, no event**, «lots [] failed [1–6]» |
+| `AddendumService.recordDocuments` with the stored archive's facts (`armeps:12541430`, its `contract_documents` key and manifest, the 6 lots), the document stage's own call | 6 lots written → **`cancelled` v2**, `match-…-v2` queued (`TenderAmended`, `status`) |
+| the same set again | `cancelled` v2, no event |
+
+Restored afterwards: the throwaway link was deleted, the original lot rows were re-inserted with
+their ids, and status and version were reset. The `match-…-v2` and the set's `match-…-docs-5178a6eb…`
+re-match job were removed. No other ARMEPS tender had a `-docs-` job queued, so that one was
+presumably the run's own. Checksums back to identical.
+
+**Nothing else moved.**
+- The documents job and both retries, re-run: no version, no event. Every table was identical
+  except `tender_lots`, with the same count but new row ids. That is what any re-run document
+  job does, since `applyInvitationFacts` replaces its lots, and it predates this change.
+- One contract notice (`contract:12a5247f…`) through the shared `retriedNotice` path:
+  `no_candidate` as before.
+- `normalize:replay` (1,234 payloads): 1,226 unchanged, 6 unmatched, 2 superseded, every
+  checksum identical.
+- All 35 stored failure notices re-read: the same decisions, identical.
+- ԵՊՊՔ-ԳՀԱՊՁԲ-26-3's partial case on the new path, then restored with checksums identical:
+  - lot 2 → `closed` v4;
+  - two notices **at once**, lots 1, 3 and lot 4 → the first to commit `closed`, the second
+    reads its lots under the lock: «failed 1, 2, 3, 4 of 1–4» → `cancelled` v5.
 
 ## For the owner
 

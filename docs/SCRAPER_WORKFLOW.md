@@ -389,15 +389,22 @@ Uploads become `paper.failed` jobs:
    moment → `ambiguous`; none → `no_candidate` (a run still open, or with no deadline, is never
    it); lots the notice names that a run lacks rule it out. `was_public` asks only whether the code was ever listed.
    It never creates.
-4. `TenderRepository.recordFailure`, under the row lock: a `results` link with `observed_status
+4. `FailureService.recordNotice`, under the row lock: a `results` link with `observed_status
    = 'cancelled'` and `failed_lots` the lots it named. **The tender becomes `cancelled`**
    (`failureStatus`, through `deriveStatus`) **only when its notices, together, name every lot
    it has** (`tender_lots` ∪ the ledger's lots); then `version + 1`, `TenderAmended`, and the
-   matcher skips it as `status_cancelled`. A partly failed tender keeps its status. A tender
-   with no known lots is never cancelled. An awarded one stays awarded. The other notices' lots
-   are read again under the lock, so two notices recorded at once cannot each miss the other.
-5. Not re-read when a tender of its code appears later: the tender it ends was announced
-   before it, so the invitation sweeps reach it first.
+   matcher skips it as `status_cancelled`. A partly failed tender keeps its status. An awarded
+   one stays awarded. A tender with no known lots is not cancelled yet.
+5. **The lots may come second.** Every document set that writes lots
+   (`AddendumService.recordDocuments`, for every source) asks `FailureService.rederive` in the
+   same transaction: the tender's stored `failed_lots` against its lots, now. A notice read
+   before an ARMEPS archive or a paper tender's `paper.documents` cancels the tender when they
+   land — nothing is re-read or re-downloaded. Both sides decide under the row lock from stored
+   rows, so whichever comes second decides, and two at once cannot each miss the other.
+6. **A later-appearing tender picks it up**, through the contract notice's path: when the
+   normalizer creates a paper or ARMEPS tender (or a re-post joins one), `queueResultRetries`
+   queues every unresolved `contract:` and `failed:` row of its code as a `reason: 'retry'` job,
+   rebuilt from its stored listing page, no request. Resolution decides again.
 
 **Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
 refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders

@@ -1,6 +1,7 @@
 import { withTransaction } from '../libs/knex.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
+import FailureService from './failure.service.js';
 import { isOpen } from './matcher.service.js';
 import { alertsQueue } from '../queues/index.js';
 import { JOB, PRIORITY, matchJobId, documentsMatchJobId } from '../queues/names.js';
@@ -99,9 +100,14 @@ export default class AddendumService {
    * normalizer: the version is already raised, so none is raised here, and the
    * one alert goes out with the join's moved fields and this set's file
    * changes together.
+   *
+   * A set that writes lots asks the tender's failure notices again, in the
+   * same transaction (ticket 09): a notice read before the lots existed
+   * cancels the tender once they show it named every one. This is the one
+   * place a tender's lots are written, for every source.
    */
   static async recordDocuments({ facts, priority = PRIORITY.LIVE, amendment = null }, now = new Date()) {
-    const result = await withTransaction(async (trx) => {
+    const recordSet = async (trx) => {
       const applied = await tenders.applyInvitationFacts(facts, trx);
       if (applied.skipped) return applied;
 
@@ -121,10 +127,27 @@ export default class AddendumService {
 
       const open = isOpen(applied.tender, now);
       const version = applied.documentRecorded
-        ? await tenders.recordAddendum(applied.tenderId, { status: statusAfter(applied.tender.status, open) }, trx)
+        ? await tenders.advanceVersion(applied.tenderId, { status: statusAfter(applied.tender.status, open) }, trx)
         : applied.tender.version;
       return { ...applied, addendum: { version, notify: open, documentChanges: change } };
+    };
+
+    const result = await withTransaction(async (trx) => {
+      const recorded = await recordSet(trx);
+      if (recorded.skipped || !recorded.lotsWritten) return recorded;
+      return { ...recorded, failure: await FailureService.rederive(recorded.tenderId, trx, now) };
     });
+
+    // The cancellation the lots completed: an amendment like any other, for
+    // the matcher's open rule to decide.
+    if (result.failure?.event) {
+      await alertsQueue.add(
+        JOB.MATCH_TENDER,
+        { tenderId: result.tenderId, event: result.failure.event, version: result.failure.version, changedFields: result.failure.changedFields },
+        { jobId: matchJobId(result.tenderId, result.failure.version), priority }
+      );
+      logger.info(`[failure] ${facts.sourceId}: its lots complete the failure notices — cancelled v${result.failure.version}`);
+    }
 
     // A `tender-match`, not an amendment: the organizations it adds have never
     // heard of this tender. One already alerted is deduped by
@@ -175,7 +198,7 @@ export default class AddendumService {
 
       const open = isOpen(applied.tender, now);
       const version = applied.documentRecorded
-        ? await tenders.recordAddendum(applied.tenderId, { status: statusAfter(applied.tender.status, open) }, trx)
+        ? await tenders.advanceVersion(applied.tenderId, { status: statusAfter(applied.tender.status, open) }, trx)
         : applied.tender.version;
       return { ...applied, addendum: { version, notify: open, documentChanges: { added: [fileName], replaced: [], removed: [] } } };
     });

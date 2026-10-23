@@ -160,7 +160,8 @@ a link that records `cancelled` and the lots it names (`tender_sources.failed_lo
 tender is cancelled only once its notices, together, name every lot it has**. A partly failed
 procedure is not a cancelled one: its other lots go on to a contract, and a cancellation is
 terminal, so a wrong one would stop that award from ever landing. A tender whose lots are not
-known is never cancelled by a notice; past its deadline it stays `closed`.
+known is not cancelled by a notice until they are: whichever of the two arrives second decides,
+from what is stored, so a notice read before the lots cancels the tender when they land.
 
 The notice names a code and its own publication, and no date of the invitation it ends. A
 procedure is declared failed once its bids are opened, so it matches the ARMEPS or paper tender
