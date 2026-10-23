@@ -30,12 +30,15 @@ const SUPPLIER_TABLE = 'supplier_profiles';
  * four years is better characterised by all forty. `sinceMonths` is still
  * accepted so a caller can ask the narrower question.
  *
- * Single-source procurement is left out of every aggregate here unless the
- * caller asks (`includeSingleSource`, ticket 31): a single-source award is a
- * win nobody contested, so it would raise a win rate, lower a buyer's bidder
- * count and fill its top suppliers with agreements rather than competitions.
- * The nightly rebuild never includes it. A buyer's spend leaves it out too,
- * so `spend` is its competitive spend; asking includes it.
+ * **Single source: a figure that measures competition leaves it out, a total
+ * counts it** (ticket 31, decided 2026-10-23). A single-source award is a win
+ * nobody contested, so win rates, discounts from budget, bidder counts and
+ * head-to-head records are over competitive procurement only, unless the
+ * caller asks (`includeSingleSource`). Totals — a buyer's tenders and spend, a
+ * supplier's contracts and revenue, the suppliers a buyer pays — count
+ * everything and carry the split (`*_single_source` columns), so a buyer whose
+ * contracts are all single-source shows its spend rather than an empty page.
+ * The nightly rebuild follows the same line.
  */
 
 /** One row per (tender, lot) — see the note in publicBid.repo.js on fanout. */
@@ -45,18 +48,28 @@ const lotCategoryCte = (qb) =>
     .from('tender_lots')
     .orderBy([{ column: 'tender_id' }, { column: 'lot_number' }, { column: 'item_sequence' }]);
 
-/**
- * Applies a query's scope over `tenders as t`: the optional recency window
- * (null means the whole archive), and competitive procurement only unless
- * single source is asked for.
- */
-const scoped = (qb, { sinceMonths = null, includeSingleSource = false } = {}) => {
-  if (!includeSingleSource) qb.andWhereRaw(competitiveOnlySql('t'));
+/** Applies the optional recency window over `tenders as t`. Null means the whole archive. */
+const withinWindow = (qb, { sinceMonths = null } = {}) => {
   if (sinceMonths === null || sinceMonths === undefined) return qb;
   return qb.andWhereRaw(`t.published_at >= now() - (? || ' months')::interval`, [
     String(Number(sinceMonths)),
   ]);
 };
+
+/**
+ * A figure that measures competition: the window, and competitive procurement
+ * only unless single source is asked for.
+ */
+const competitive = (qb, scope = {}) => {
+  if (!scope.includeSingleSource) qb.andWhereRaw(competitiveOnlySql('t'));
+  return withinWindow(qb, scope);
+};
+
+/** Inside an aggregate over `tenders as t`: this row is single source, the total's other half. */
+const SINGLE_SOURCE = `not (${competitiveOnlySql('t')})`;
+
+/** A competition figure computed beside totals in one query: its row filter. */
+const competitionFilter = (scope) => (scope.includeSingleSource ? 'true' : competitiveOnlySql('t'));
 
 const num = (value) => (value === null || value === undefined ? null : Number(value));
 const int = (value) => Number(value ?? 0);
@@ -75,9 +88,10 @@ export default class ProfileRepository {
    */
   static async computeSupplier(supplierId, { sinceMonths = null, includeSingleSource = false } = {}, trx = db) {
     const scope = { sinceMonths, includeSingleSource };
-    const [activity, wins, categories, rivals] = await Promise.all([
-      // Participation — every bid, rejected included.
-      scoped(
+    const [activity, wins, contracts, categories, rivals] = await Promise.all([
+      // Participation — every bid, rejected included. Competition: a bid on a
+      // single-source lot was the only one.
+      competitive(
         trx('public_tender_bids as b')
           .join('tenders as t', 't.id', 'b.tender_id')
           .where('b.supplier_id', supplierId),
@@ -102,7 +116,8 @@ export default class ProfileRepository {
         )
         .first(),
 
-      scoped(
+      // Wins, the win rate's numerator: competition, like its denominator.
+      competitive(
         trx('awards as a')
           .join('tenders as t', 't.id', 'a.tender_id')
           .where('a.supplier_id', supplierId),
@@ -111,8 +126,6 @@ export default class ProfileRepository {
         .select(
           trx.raw('count(*)::int as lots_won'),
           trx.raw('count(distinct a.tender_id)::int as tenders_won'),
-          trx.raw('sum(a.amount)::numeric as total_won'),
-          trx.raw('max(a.amount)::numeric as largest_win'),
           trx.raw(
             `round(avg((a.estimated_value - a.amount) / nullif(a.estimated_value, 0) * 100)
                filter (where a.estimated_value > 0)::numeric, 2)
@@ -121,9 +134,27 @@ export default class ProfileRepository {
         )
         .first(),
 
+      // Contracts and revenue: a total, every award, with the split.
+      withinWindow(
+        trx('awards as a')
+          .join('tenders as t', 't.id', 'a.tender_id')
+          .where('a.supplier_id', supplierId),
+        scope
+      )
+        .select(
+          trx.raw('count(*)::int as lots'),
+          trx.raw('count(distinct a.tender_id)::int as tenders'),
+          trx.raw('sum(a.amount)::numeric as total_value'),
+          trx.raw('max(a.amount)::numeric as largest'),
+          trx.raw(`count(*) filter (where ${SINGLE_SOURCE})::int as lots_single_source`),
+          trx.raw(`sum(a.amount) filter (where ${SINGLE_SOURCE})::numeric as value_single_source`)
+        )
+        .first(),
+
       // Categories need a CPV, which exists for roughly a third of the corpus.
-      // A supplier with none gets an empty list, not a wrong one.
-      scoped(
+      // A supplier with none gets an empty list, not a wrong one. What a
+      // supplier covers, not how it competes: every bid counts.
+      withinWindow(
         trx('public_tender_bids as b')
           .with('lot_category', lotCategoryCte)
           .join('tenders as t', 't.id', 'b.tender_id')
@@ -145,7 +176,7 @@ export default class ProfileRepository {
       ProfileRepository.rivalsFor(supplierId, scope, trx),
     ]);
 
-    return { activity, wins, categories, rivals };
+    return { activity, wins, contracts, categories, rivals };
   }
 
   /**
@@ -157,7 +188,7 @@ export default class ProfileRepository {
    */
   static async rivalsFor(supplierId, { sinceMonths = null, includeSingleSource = false, limit = 5 } = {}, trx = db) {
     const scope = { sinceMonths, includeSingleSource };
-    const rows = await scoped(
+    const rows = await competitive(
       trx('public_tender_bids as mine')
         .join('public_tender_bids as theirs', function sameLot() {
           this.on('theirs.tender_id', '=', 'mine.tender_id')
@@ -210,37 +241,45 @@ export default class ProfileRepository {
   static async computeBuyer(buyerId, { sinceMonths = null, includeSingleSource = false } = {}, trx = db) {
     const scope = { sinceMonths, includeSingleSource };
     const [volume, spend, competition, suppliers] = await Promise.all([
-      scoped(trx('tenders as t').where('t.buyer_id', buyerId), scope)
+      // Totals, every tender, with the split.
+      withinWindow(trx('tenders as t').where('t.buyer_id', buyerId), scope)
         .select(
           trx.raw('count(*)::int as tender_count'),
+          trx.raw(`count(*) filter (where ${SINGLE_SOURCE})::int as tender_count_single_source`),
           trx.raw('sum(t.estimated_value)::numeric as total_estimated'),
           trx.raw('min(t.published_at) as first_seen'),
           trx.raw('max(t.published_at) as last_seen')
         )
         .first(),
 
-      scoped(
+      // Spend is a total, with the split; the discount and the number of
+      // distinct winners measure competition, so they read competitive rows.
+      withinWindow(
         trx('awards as a').join('tenders as t', 't.id', 'a.tender_id').where('t.buyer_id', buyerId),
         scope
       )
         .select(
           trx.raw('count(*)::int as lots_awarded'),
+          trx.raw(`count(*) filter (where ${SINGLE_SOURCE})::int as lots_awarded_single_source`),
           trx.raw('count(distinct a.tender_id)::int as tenders_awarded'),
           trx.raw('sum(a.amount)::numeric as total_spend'),
+          trx.raw(`sum(a.amount) filter (where ${SINGLE_SOURCE})::numeric as spend_single_source`),
           trx.raw('sum(a.estimated_value)::numeric as total_budget'),
-          trx.raw('count(distinct a.supplier_id)::int as distinct_winners'),
+          trx.raw(
+            `count(distinct a.supplier_id) filter (where ${competitionFilter(scope)})::int as distinct_winners`
+          ),
           trx.raw(
             `round(avg((a.estimated_value - a.amount) / nullif(a.estimated_value, 0) * 100)
-               filter (where a.estimated_value > 0)::numeric, 2)
+               filter (where a.estimated_value > 0 and ${competitionFilter(scope)})::numeric, 2)
              as avg_discount_pct`
           )
         )
         .first(),
 
-      // Participation, so rejected bids count.
+      // Participation, so rejected bids count. Competition.
       trx
         .with('lot_bidders', (qb) => {
-          scoped(
+          competitive(
             qb
               .select('b.tender_id', 'b.lot_number')
               .count('* as n')
@@ -259,27 +298,31 @@ export default class ProfileRepository {
         .from('lot_bidders')
         .first(),
 
-      ProfileRepository.topSuppliersForBuyer(buyerId, scope, trx),
+      ProfileRepository.topSuppliersForBuyer(buyerId, { sinceMonths }, trx),
     ]);
 
     return { volume, spend, competition, suppliers };
   }
 
-  /** Award counts and values per supplier for one buyer. Facts, ordered. */
-  static async topSuppliersForBuyer(buyerId, { sinceMonths = null, includeSingleSource = false, limit = 5 } = {}, trx = db) {
-    const scope = { sinceMonths, includeSingleSource };
-    const rows = await scoped(
+  /**
+   * Award counts and values per supplier for one buyer. Facts, ordered. Who
+   * this buyer pays is a total: every award counts, its single-source share
+   * carried beside it.
+   */
+  static async topSuppliersForBuyer(buyerId, { sinceMonths = null, limit = 5 } = {}, trx = db) {
+    const rows = await withinWindow(
       trx('awards as a')
         .join('tenders as t', 't.id', 'a.tender_id')
         .join('parties as p', 'p.id', 'a.supplier_id')
         .where('t.buyer_id', buyerId),
-      scope
+      { sinceMonths }
     )
       .groupBy('a.supplier_id', 'p.name')
       .select(
         'a.supplier_id',
         'p.name',
         trx.raw('count(*)::int as award_count'),
+        trx.raw(`count(*) filter (where ${SINGLE_SOURCE})::int as single_source_count`),
         trx.raw('sum(a.amount)::numeric as total_value'),
         trx.raw('max(t.published_at) as last_won_at')
       )
@@ -290,6 +333,7 @@ export default class ProfileRepository {
       supplierId: r.supplier_id,
       name: r.name,
       awardCount: int(r.award_count),
+      singleSourceAwards: int(r.single_source_count),
       totalValue: num(r.total_value),
       lastWonAt: r.last_won_at,
     }));
@@ -307,6 +351,9 @@ export default class ProfileRepository {
    * 2.5% seeded. These aggregates are a `GROUP BY supplier_id` — the loop was
    * never doing anything the database could not do in one pass.
    *
+   * The win rate's bids and wins are competitive procurement only; the
+   * categories a supplier covers count every bid.
+   *
    * `rivalsFor` is deliberately NOT batched: it is a self-join over shared
    * lots, its all-suppliers form is a cross product, and nothing persists it —
    * it is assembled live for the one profile being read.
@@ -314,7 +361,9 @@ export default class ProfileRepository {
   static async computeAllSuppliers({ sinceMonths = null } = {}, trx = db) {
     const scope = { sinceMonths };
     const [activity, wins, categories] = await Promise.all([
-      scoped(
+      // Every bidder gets a row — a supplier with only single-source contracts
+      // still has categories — while the bids and discount are competitive.
+      withinWindow(
         trx('public_tender_bids as b')
           .join('tenders as t', 't.id', 'b.tender_id')
           .whereNotNull('b.supplier_id'),
@@ -323,15 +372,15 @@ export default class ProfileRepository {
         .groupBy('b.supplier_id')
         .select(
           'b.supplier_id',
-          trx.raw('count(*)::int as lots_bid'),
+          trx.raw(`count(*) filter (where ${competitionFilter(scope)})::int as lots_bid`),
           trx.raw(
             `round(avg((b.budget_price - b.final_offer_price) / nullif(b.budget_price, 0) * 100)
-               filter (where b.status = 'accepted' and b.budget_price > 0)::numeric, 2)
+               filter (where b.status = 'accepted' and b.budget_price > 0 and ${competitionFilter(scope)})::numeric, 2)
              as avg_discount_pct`
           )
         ),
 
-      scoped(
+      competitive(
         trx('awards as a')
           .join('tenders as t', 't.id', 'a.tender_id')
           .whereNotNull('a.supplier_id'),
@@ -340,7 +389,7 @@ export default class ProfileRepository {
         .groupBy('a.supplier_id')
         .select('a.supplier_id', trx.raw('count(*)::int as lots_won')),
 
-      scoped(
+      withinWindow(
         trx('public_tender_bids as b')
           .with('lot_category', lotCategoryCte)
           .join('tenders as t', 't.id', 'b.tender_id')
@@ -378,15 +427,18 @@ export default class ProfileRepository {
     }));
   }
 
-  /** Every buyer's aggregates, same reasoning as computeAllSuppliers. */
+  /**
+   * Every buyer's aggregates, same reasoning as computeAllSuppliers. All three
+   * are totals — tenders, spend, who is paid — so single source counts.
+   */
   static async computeAllBuyers({ sinceMonths = null, topSuppliers = 5 } = {}, trx = db) {
     const scope = { sinceMonths };
     const [volume, spend, top] = await Promise.all([
-      scoped(trx('tenders as t').whereNotNull('t.buyer_id'), scope)
+      withinWindow(trx('tenders as t').whereNotNull('t.buyer_id'), scope)
         .groupBy('t.buyer_id')
         .select('t.buyer_id', trx.raw('count(*)::int as tender_count')),
 
-      scoped(
+      withinWindow(
         trx('awards as a').join('tenders as t', 't.id', 'a.tender_id').whereNotNull('t.buyer_id'),
         scope
       )
@@ -398,7 +450,7 @@ export default class ProfileRepository {
       // for Node to sort and discard.
       trx
         .with('ranked', (qb) => {
-          scoped(
+          withinWindow(
             qb
               .select('t.buyer_id', 'a.supplier_id')
               .count('* as award_count')

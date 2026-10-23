@@ -272,3 +272,50 @@ tenders**: benchmarks, expected competition, profiles and price ranges.
 | nightly rebuild | neither party holds a row from it | — |
 
 The query schemas convert `'true'` and `'false'` and strip unknown parameters.
+
+## Second follow-up: competition is filtered, totals are split (decided 2026-10-23)
+
+**Decision (the owner's).** The line is "does this figure measure competition?", not "is it
+an aggregate?".
+
+- **Figures that measure competition** exclude single source unless the request opts in, as
+  before: win rate, discount from budget, bidder counts, price comparisons and benchmarks.
+- **Totals count everything and carry a competitive / single-source split:** a buyer's spend
+  and volume, and a supplier's contract count and revenue.
+
+A buyer whose contracts are all single-source shows its spend, not an empty profile. This
+replaces the first follow-up's "profiles leave single source out", including its spend caveat.
+
+**Built (`profile.repo.js`, `profile.service.js`).** Each query is either `competitive(…)`,
+which applies the window and the competitive filter unless asked, or `withinWindow(…)`, which
+counts everything. A query that mixes the two filters the competition figure inside the
+aggregate.
+
+- **Supplier.**
+  - Competition: `activity`, `winRate`, `pricing` and `frequentRivals`. `activity.lotsWon` is
+    the win rate's numerator.
+  - New `contracts`: lots, tenders, total value and largest, every award counted, with
+    `split.{competitive,singleSource}`. It takes over `pricing.totalWon`/`largestWin`, which
+    were revenue.
+  - `categories` counts every bid: what a company covers, not how it competes.
+- **Buyer.**
+  - Totals: `volume` (with `split`), `spend.totalSpend`/`totalBudget`/`totalEstimated` (with
+    `spend.split`), and `topSuppliers`, each with `singleSourceAwards`.
+  - Competition: `spend.avgDiscountPct`, `spend.distinctWinners` and `competition`.
+- **Nightly rebuild.** `supplier_profiles.win_rate` and `avg_discount_pct` are competitive,
+  and `categories` counts everything. Every bidder gets a row: a single-source-only supplier
+  has `lotsBid` 0, so its win rate is null. `buyer_profiles` (`total_spend`, `tender_count`,
+  `favored_supplier_ids`) counts everything. No column is added; the split is the API's. The
+  per-party `recompute*` reads the same queries.
+
+**Verified (local `tendra`, read-only; nightly rows computed, not written):**
+
+| | default | `includeSingleSource` |
+|---|---|---|
+| buyer Արեվուտի համայնքապետարան | 1 tender, spend 127 800 (competitive 0 / single source 127 800); 1 lot awarded (0 / 1); discount null, 0 winners, competition 0 lots; top supplier «Ղազար Սարգսյան» Ա/Ձ, 1 award, 1 single source, 100% of spend | totals the same; discount 0, 1 winner, 1 lot, 1 sole bidder; `includesSingleSource` |
+| buyer NCDC (ticket 08's) | 1 tender, spend 3 033 300 (3 033 300 / 0); discount 4.08, 1 winner, 2 lots, 0 sole; Ագաթոն 2 awards, 0 single source | the same |
+| supplier Ագաթոն ՍՊԸ | 2 bid, 2 won (`insufficient_data`); discount 4.08 / 4.08; contracts 2 lots, 3 033 300 (2 / 0); 1 rival | the same |
+| supplier «Ղազար Սարգսյան» Ա/Ձ | 0 bid, 0 won (`no_data`); contracts 1 lot, 127 800, all single source | 1 bid, 1 won (`insufficient_data`); contracts unchanged |
+| nightly | Արեվուտի: 1 tender, 127 800, «Ղազար Սարգսյան» paid; NCDC: 1, 3 033 300, Ագաթոն; Ագաթոն: 2 bid, 2 won, 4.08; Ղազար: a row with 0 bid (win rate withheld) | — |
+
+The nightly supplier rows number 757, one for each of the 757 bidders.

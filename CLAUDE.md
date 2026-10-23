@@ -458,13 +458,13 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
   `is_latest`. Re-notification includes a change summary.
 - **Never fabricate intelligence.** Below the comparables threshold, return `insufficient_data`.
   Benchmarks use only public award data and retain provenance.
-- **Single-source prices are not a market's** (ticket 31). Every aggregate across tenders —
-  benchmarks (every tier, every materialised row), comparable awards, expected competition,
-  supplier and buyer profiles (and their nightly rows) — leaves out
-  `procedure_type = 'single_source'` (`tender.repo.js#competitiveOnlySql`) unless the request
-  says `filter[includeSingleSource]=true`, which computes live and says `includesSingleSource`.
-  One tender's own ledger is never filtered: competitor prices return a single-source tender's
-  ledger by default, flagged `singleSource` (decided 2026-10-23, overruling the first cut).
+- **Single source: a figure that measures competition excludes it unless the request opts in
+  (`filter[includeSingleSource]=true`); a total counts it and carries a competitive /
+  single-source split** (ticket 31). Competition means win rates, discounts from budget, bidder
+  counts, rivals, price comparisons and benchmarks; totals are a buyer's tenders, spend and
+  suppliers paid, and a supplier's contracts and revenue. The nightly profile rows follow the
+  same line, and one tender's own ledger is never filtered (it is flagged `singleSource`). The
+  filter is `tender.repo.js#competitiveOnlySql`.
 - **Non-competitive / "wired-spec" flags are signals with evidence, never accusations.** This framing
   is mandatory — it is a legal and reputational constraint, not a wording preference.
 - **No duplicate alert** for the same tender/event to the same organization — enforced by

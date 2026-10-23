@@ -4671,10 +4671,10 @@ competitor.
 
 **Query parameters:**
 
-- `filter[includeSingleSource]` (optional, default `false`): boolean. Every figure on the
-  profile is over competitive procurement only — a single-source award is a win nobody
-  contested, and would raise a win rate or fill a buyer's top suppliers with agreements. Only an
-  explicit `true` puts them back, and the profile then says `"includesSingleSource": true`.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. The figures that
+  measure competition leave single-source procurement out, because a single-source award is a
+  win nobody contested. Only an explicit `true` puts it back into them, and the profile then
+  says `"includesSingleSource": true`. Totals count it either way.
 
 **Request data:**
 
@@ -4708,10 +4708,18 @@ No request body
     },
     "pricing": {
       "avgDiscountPct": 7.2,
-      "avgWinningDiscountPct": 11.8,
-      "totalWon": 1840000000,
-      "largestWin": 96000000,
-      "currency": "AMD"
+      "avgWinningDiscountPct": 11.8
+    },
+    "contracts": {
+      "lots": 71,
+      "totalValue": 1910000000,
+      "tenders": 36,
+      "largest": 96000000,
+      "currency": "AMD",
+      "split": {
+        "competitive": { "lots": 63, "totalValue": 1840000000 },
+        "singleSource": { "lots": 8, "totalValue": 70000000 }
+      }
     },
     "categories": {
       "status": "ok",
@@ -4733,6 +4741,16 @@ No request body
 }
 ```
 
+**Single source:** a figure that measures competition leaves single-source procurement out, and a
+total counts it with a competitive / single-source split (ticket 31).
+
+- **Competition, competitive procurement only:** `activity`, `winRate`, `pricing`,
+  `frequentRivals`. `activity.lotsWon` is the win rate's numerator, the wins of competitive
+  procurement.
+- **Totals, everything counted:** `contracts`, every award the company holds and what it was
+  worth, with `split.competitive` and `split.singleSource`. A company with only single-source
+  contracts has `activity` at zero and its revenue under `contracts`. `categories` (what it
+  covers, not how it competes) counts every bid.
 - `winRate.value` is a **percentage** here (29.4 = 29.4%), unlike
   [`/tracked-tenders/performance`](#bid-performance) where it is a fraction.
 - `winRate.status` is `ok`, `insufficient_data` (with `required`), or `no_data`; `value` is
@@ -4769,12 +4787,10 @@ A buying agency's profile — what it spends, and how contested its work is.
 
 **Query parameters:**
 
-- `filter[includeSingleSource]` (optional, default `false`): boolean. Every figure on the
-  profile is over competitive procurement only — a single-source award is a win nobody
-  contested, and would raise a win rate or fill a buyer's top suppliers with agreements. Only an
-  explicit `true` puts them back, and the profile then says `"includesSingleSource": true`.
-
-  A buyer's `spend` and `volume` are therefore its competitive spend and tenders.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. The figures that
+  measure competition leave single-source procurement out, because a single-source award is a
+  win nobody contested. Only an explicit `true` puts it back into them, and the profile then
+  says `"includesSingleSource": true`. Totals count it either way.
 
 **Request data:**
 
@@ -4796,7 +4812,11 @@ No request body
       "tendersAwarded": 118,
       "lotsAwarded": 306,
       "firstSeen": "2018-06-02T00:00:00.000Z",
-      "lastSeen": "2026-08-30T00:00:00.000Z"
+      "lastSeen": "2026-08-30T00:00:00.000Z",
+      "split": {
+        "competitive": { "tenderCount": 131, "lotsAwarded": 288 },
+        "singleSource": { "tenderCount": 11, "lotsAwarded": 18 }
+      }
     },
     "spend": {
       "totalSpend": 4820000000,
@@ -4804,7 +4824,11 @@ No request body
       "totalEstimated": 5402000000,
       "avgDiscountPct": 8.1,
       "distinctWinners": 46,
-      "currency": "AMD"
+      "currency": "AMD",
+      "split": {
+        "competitive": { "totalSpend": 4610000000 },
+        "singleSource": { "totalSpend": 210000000 }
+      }
     },
     "competition": {
       "sampleLots": 306,
@@ -4822,6 +4846,7 @@ No request body
         "supplierId": "cm9zx4k1p0100qw8fn2j5l8w1",
         "name": "«Շինարար» ՍՊԸ",
         "awardCount": 22,
+        "singleSourceAwards": 2,
         "totalValue": 412000000,
         "lastWonAt": "2026-07-18T00:00:00.000Z",
         "shareOfAwardsPct": 7.2,
@@ -4831,6 +4856,16 @@ No request body
   }
 }
 ```
+
+**Single source:** a figure that measures competition leaves single-source procurement out, and a
+total counts it with a competitive / single-source split (ticket 31).
+
+- **Totals, everything counted:** `volume`, `spend.totalSpend`, `totalBudget`,
+  `totalEstimated` and `topSuppliers` (who this buyer pays, each with its `singleSourceAwards`).
+  `volume.split` and `spend.split` give the competitive and single-source halves. A buyer whose
+  contracts are all single-source shows its spend, under `split.singleSource`.
+- **Competition, competitive procurement only:** `spend.avgDiscountPct`,
+  `spend.distinctWinners` and `competition`.
 
 `topSuppliers` is named that, **not "favored"** (even though the stored column is
 `favored_supplier_ids`), and carries counted evidence only — award count, value, share. Repeat

@@ -21,10 +21,22 @@ const { INTELLIGENCE } = config;
  * private is read, and every figure is reproducible from `tenders`, `awards`
  * and `public_tender_bids`.
  *
- * Every figure is over competitive procurement only, unless the caller asks
- * for single-source too (`includeSingleSource`, ticket 31; see
- * profile.repo.js). A profile that includes it says `includesSingleSource`.
+ * Single source (ticket 31; profile.repo.js): a figure that measures
+ * competition — a win rate, a discount, bidder counts, rivals — is over
+ * competitive procurement only unless the caller asks
+ * (`includeSingleSource`, and the profile then says `includesSingleSource`);
+ * a total — tenders, spend, contracts, revenue — counts everything and
+ * carries its `split` into competitive and single source.
  */
+
+/** A total and its two halves. `all` and `singleSource` come from one query, so `competitive` is their difference. */
+const split = (all, singleSource, keys) => {
+  const half = (pick) => Object.fromEntries(keys.map((k) => [k, pick(k)]));
+  return {
+    competitive: half((k) => (all[k] === null ? null : all[k] - (singleSource[k] ?? 0))),
+    singleSource: half((k) => (all[k] === null ? null : (singleSource[k] ?? 0))),
+  };
+};
 
 const num = (value) => (value === null || value === undefined ? null : Number(value));
 const int = (value) => Number(value ?? 0);
@@ -55,13 +67,14 @@ export default class ProfileService {
    * (and the 404) is decided in one place.
    */
   static async forSupplier(party, { sinceMonths = null, includeSingleSource = false } = {}) {
-    const { activity, wins, categories, rivals } = await profiles.computeSupplier(party.id, {
+    const { activity, wins, contracts, categories, rivals } = await profiles.computeSupplier(party.id, {
       sinceMonths,
       includeSingleSource,
     });
 
     const lotsBid = int(activity?.lots_bid);
     const lotsWon = int(wins?.lots_won);
+    const contractTotals = { lots: int(contracts?.lots), totalValue: num(contracts?.total_value) };
 
     return {
       supplier: {
@@ -71,6 +84,7 @@ export default class ProfileService {
         region: party.region ?? null,
       },
 
+      // Competition: bids on and wins of competitive procurement.
       activity: {
         lotsBid,
         lotsWon,
@@ -98,9 +112,19 @@ export default class ProfileService {
         // two is the useful signal: a competitor whose winning discount is far
         // below its typical one is winning on something other than price.
         avgWinningDiscountPct: num(wins?.avg_winning_discount_pct),
-        totalWon: num(wins?.total_won),
-        largestWin: num(wins?.largest_win),
+      },
+
+      // A total: every contract this company holds, single source included.
+      contracts: {
+        ...contractTotals,
+        tenders: int(contracts?.tenders),
+        largest: num(contracts?.largest),
         currency: 'AMD',
+        split: split(
+          contractTotals,
+          { lots: int(contracts?.lots_single_source), totalValue: num(contracts?.value_single_source) ?? 0 },
+          ['lots', 'totalValue']
+        ),
       },
 
       /**
@@ -134,6 +158,7 @@ export default class ProfileService {
     const lotsAwarded = int(spend?.lots_awarded);
     const totalSpend = num(spend?.total_spend);
     const sampleLots = int(competition?.sample_lots);
+    const tenderCount = int(volume?.tender_count);
 
     return {
       buyer: {
@@ -143,23 +168,31 @@ export default class ProfileService {
         region: party.region ?? null,
       },
 
+      // Totals: every tender and award, single source included, with the split.
       volume: {
-        tenderCount: int(volume?.tender_count),
+        tenderCount,
         tendersAwarded: int(spend?.tenders_awarded),
         lotsAwarded,
         firstSeen: volume?.first_seen ?? null,
         lastSeen: volume?.last_seen ?? null,
+        split: split(
+          { tenderCount, lotsAwarded },
+          { tenderCount: int(volume?.tender_count_single_source), lotsAwarded: int(spend?.lots_awarded_single_source) },
+          ['tenderCount', 'lotsAwarded']
+        ),
       },
 
       spend: {
         totalSpend,
         totalBudget: num(spend?.total_budget),
         totalEstimated: num(volume?.total_estimated),
-        // How far below its own budget this buyer typically settles — the
-        // number a supplier uses to judge how aggressively to price.
+        // Competition, so competitive awards only: how far below its own
+        // budget this buyer typically settles — the number a supplier uses to
+        // judge how aggressively to price — and how many companies win it.
         avgDiscountPct: num(spend?.avg_discount_pct),
         distinctWinners: int(spend?.distinct_winners),
         currency: 'AMD',
+        split: split({ totalSpend }, { totalSpend: num(spend?.spend_single_source) ?? 0 }, ['totalSpend']),
       },
 
       /**

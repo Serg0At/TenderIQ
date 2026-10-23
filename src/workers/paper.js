@@ -595,8 +595,9 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
  * `match.tender` is queued, now or by any later notice, since its status is
  * terminal from the start. Its prices reach what is keyed by tender, buyer
  * or supplier — competitor prices, expected competition, profiles — and a
- * single-source one is kept out of every aggregate across tenders by its
- * procedure type, and shown on its own page flagged as single source.
+ * single-source one is kept out of every figure that measures competition by
+ * its procedure type, counted in totals with the split, and shown on its own
+ * page flagged as single source.
  * Not benchmarks: those are keyed by CPV, which no contract notice states,
  * so no recompute is queued.
  *

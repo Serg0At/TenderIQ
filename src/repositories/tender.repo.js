@@ -314,9 +314,10 @@ const coversAnySql = (alias = 't') =>
 /**
  * Competitive procurement only, as SQL over a `tenders` alias: a single-source
  * price is what a buyer agreed with one supplier, not what a market bid
- * (ticket 31), so every aggregate across tenders — benchmarks, expected
- * competition, profiles — leaves it out unless a caller explicitly asks.
- * One tender's own ledger is never filtered by it.
+ * (ticket 31), so every figure that measures competition — win rates,
+ * discounts, bidder counts, price comparisons, benchmarks — leaves it out
+ * unless a caller explicitly asks. Totals (spend, contracts, revenue) count it
+ * and split it out, and one tender's own ledger is never filtered by it.
  */
 export const competitiveOnlySql = (alias = 't') => `${alias}.procedure_type is distinct from 'single_source'`;
 
