@@ -18,18 +18,22 @@ import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
 import { noticeOfJob, storedNotice, withRunPublications } from '../services/paperNotice.service.js';
-import { deriveStatus, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
+import { deriveStatus, invitationSpan, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
+import listingNotices from '../repositories/listingNotice.repo.js';
 import { alertsQueue, ingestFetchQueue, ingestNormalizeQueue, maintenanceQueue } from '../queues/index.js';
 import { JOB, PRIORITY, matchJobId } from '../queues/names.js';
 import { isFinalAttempt } from '../utils/attempts.js';
 import { sha256 } from '../utils/hash.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
 import { RateLimitedError } from '../utils/rateLimiter.js';
+import { readCoverage } from '../utils/sweepState.js';
 import { logger } from '../utils/logger.js';
+import { validateNormalizedTender } from '../validations/index.js';
+import { gnumnerBoard, invitationListings } from './gnumner.js';
 
 /**
  * Paper tenders: the invitation a gnumner notice uploaded, read into a tender.
@@ -335,6 +339,7 @@ export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }
       source: SOURCE,
       externalRef: observation.externalId,
       procedureCode: observation.procedureCode,
+      procedureType: observation.procedureType,
       reason: decision.reason,
       candidateTenderIds: decision.candidateIds,
       payloadHash: hash,
@@ -444,13 +449,42 @@ export const handlePaperContract = async (job, token) => {
 };
 
 /**
+ * The window gnumner's invitation listings are all read without a gap, as
+ * `{ from, to }` in ms: the newest floor to the oldest watermark
+ * (sweepState.js#floorKey). Null while any listing has no floor yet. Every
+ * invitation listing, not the result's own: a buyer files a quotation on the
+ * open-tender listing often enough that one listing's coverage proves nothing.
+ */
+const coveredWindow = async () => {
+  const windows = await Promise.all(invitationListings().map((l) => readCoverage(gnumnerBoard.watermarkKey(l.slug))));
+  if (!windows.length || windows.some((w) => !w)) return null;
+  const from = Math.max(...windows.map((w) => w.from));
+  const to = Math.min(...windows.map((w) => w.to));
+  return from < to ? { from, to } : null;
+};
+
+/** `wasPublic`'s facts for a contract notice (services/resolution.service.js): what the sweeps have read, and what the listings showed. */
+const publicityOf = async (observation) => {
+  const span = invitationSpan(observation);
+  const shown = await listingNotices.publicityFacts({
+    source: SOURCE,
+    key: normalizeCode(observation.procedureCode),
+    from: span?.from ?? null,
+    to: span?.to ?? null,
+  });
+  return { window: await coveredWindow(), ...shown };
+};
+
+/**
  * One stored contract notice → its tender's results, through the resolution
  * module: the bids and awards of the lots it covers and `awarded`, when its
  * code, the paper channel and the invitation's date match exactly one tender;
- * an unmatched result when they match none or two, or the file cannot be
- * read; nothing when the code is another channel's. Reads only storage, so
- * running it again — a retry, a re-listed notice, the re-read once a tender
- * appears — decides the same and writes the same rows.
+ * a result-only tender of its own when they match none and the procedure was
+ * never public (ticket 31); an unmatched result when they match none or two,
+ * or the file cannot be read; nothing when the code is another channel's.
+ * Reads only storage, the database and the sweep's window, so running it
+ * again — a retry, a re-listed notice, the re-read once a tender appears —
+ * decides the same and writes the same rows.
  */
 export const recordContract = async ({ externalId, notice, priority = PRIORITY.LIVE }) => {
   const log = logger.child({ job: JOB.PAPER_CONTRACT, source: SOURCE, contract: externalId });
@@ -463,24 +497,34 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
   for (const warning of observation.warnings) log.warn(warning);
   // A re-posted run is matched on any of its files' publications, not only the newest.
   const candidates = await withRunPublications(await tenders.findCandidates(lookupsFor(observation)));
-  const decision = resolve(observation, candidates);
+  const decision = resolve(observation, { ...candidates, publicity: await publicityOf(observation) });
 
-  if (decision.action === 'unmatched') {
-    await unmatchedResults.record({
+  const recordUnmatched = (reason, { candidateIds = [], wasPublic = null } = {}) =>
+    unmatchedResults.record({
       source: SOURCE,
       externalRef: externalId,
       procedureCode: observation.procedureCode,
-      reason: decision.reason,
-      candidateTenderIds: decision.candidateIds,
+      procedureType: observation.procedureType,
+      reason,
+      wasPublic,
+      candidateTenderIds: candidateIds,
       payloadHash: stored.hash,
       seenAt: stored.fetched_at,
     });
+
+  if (decision.action === 'unmatched') {
+    await recordUnmatched(decision.reason, decision);
     log.warn(`contract notice unmatched (${decision.reason})`, {
       code: observation.procedureCode,
       candidates: decision.candidateIds,
+      wasPublic: decision.wasPublic,
+      ...(observation.procedureType ? { procedure: observation.procedureType } : {}),
       ...(observation.unreadable ? { format: observation.unreadable.format } : {}),
     });
-    return { unmatched: decision.reason };
+    return { unmatched: decision.reason, wasPublic: decision.wasPublic };
+  }
+  if (decision.action === 'create') {
+    return createResultOnly({ observation, externalId, stored, notice, candidates, priority, recordUnmatched, log });
   }
   if (decision.action !== 'link') {
     log.info(`contract notice for ${observation.procedureCode} skipped — ${decision.reason ?? decision.action}`);
@@ -529,8 +573,9 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
     );
   }
   // Awards landed, so "what similar tenders were won at" moved. Keyed on the
-  // file, so the same notice read again recomputes nothing new.
-  if (result.awards > 0) {
+  // file, so the same notice read again recomputes nothing new. A
+  // result-only tender has no CPV for a benchmark to be keyed by.
+  if (result.awards > 0 && !decision.tender.resultOnly) {
     await maintenanceQueue.add(
       JOB.RECOMPUTE_BENCHMARKS,
       { tenderId: result.tenderId },
@@ -540,6 +585,66 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
 
   log.info(`contract notice recorded: ${result.bids} bids, ${result.awards} awards, tender ${status}`, { tenderId: decision.tenderId });
   return { tenderId: decision.tenderId, status, bids: result.bids, awards: result.awards, ...(result.event ? { version: result.version } : {}) };
+};
+
+/**
+ * A contract notice of a procedure that was never public, written as a
+ * tender of its own (ticket 31): `paper`, its procedure type, `awarded`, a
+ * `results` link and nothing else — no invitation, deadline or CPV, because
+ * the notice states none. Never biddable, and never alerted: no
+ * `match.tender` is queued, now or by any later notice, since its status is
+ * terminal from the start. Its prices reach what is keyed by tender, buyer
+ * or supplier — competitor prices, expected competition, profiles — and a
+ * single-source one is kept out of every comparison by its procedure type.
+ * Not benchmarks: those are keyed by CPV, which no contract notice states,
+ * so no recompute is queued.
+ *
+ * Created under the same lock on its code as a paper invitation's run, so two
+ * notices of one procedure read at once are one tender: the loser throws, and
+ * its retry finds the winner by rule 3. Any notice left unmatched under the
+ * code is then read again, as when an invitation creates a run.
+ */
+const createResultOnly = async ({ observation, externalId, stored, notice, candidates, priority, recordUnmatched, log }) => {
+  const status = deriveStatus(
+    { submissionChannel: observation.submissionChannel, links: [{ source: SOURCE, status: observation.status }] },
+    new Date()
+  );
+  const tender = validateNormalizedTender({ ...observation.tender, status });
+  const result = await tenders.saveNormalized({
+    source: SOURCE,
+    sourceId: `${SOURCE}:${externalId}`,
+    buyerName: observation.buyerName,
+    tender,
+    lots: observation.ledger,
+    link: {
+      source: SOURCE,
+      externalId,
+      url: observation.url,
+      role: observation.role,
+      observedStatus: null,
+      seenAt: notice.seenAt ?? stored.fetched_at,
+    },
+    runGuard: {
+      key: normalizeCode(observation.procedureCode),
+      submissionChannel: observation.submissionChannel,
+      knownIds: candidates.byCode.map((c) => c.id),
+    },
+  });
+  if (result.skipped === 'no_buyer') {
+    await recordUnmatched('no_candidate', { wasPublic: false });
+    log.warn('contract notice of a procedure never public, but no buyer to write it under — left unmatched');
+    return { unmatched: 'no_candidate', wasPublic: false };
+  }
+
+  await unmatchedResults.markResolved({ source: SOURCE, externalRef: externalId, tenderId: result.tenderId });
+  await queueContractRetries({ tenderId: result.tenderId, version: result.version, referenceCode: tender.referenceCode, priority });
+
+  log.info(
+    `contract notice of a procedure never public (${observation.procedureType}): result-only tender, ` +
+      `${result.bids} bids, ${result.awards} awards`,
+    { tenderId: result.tenderId, code: observation.procedureCode }
+  );
+  return { tenderId: result.tenderId, resultOnly: true, status, bids: result.bids, awards: result.awards };
 };
 
 /**

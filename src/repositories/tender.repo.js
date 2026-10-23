@@ -727,6 +727,11 @@ export default class TenderRepository {
           'exists(select 1 from tender_sources where tender_id = t.id and observed_status = ?) as replaced_runs',
           [SUPERSEDED]
         ),
+        // Only results ever said anything about it (ticket 31): no invitation, no page.
+        trx.raw(
+          `exists(select 1 from tender_sources where tender_id = t.id and role = 'results')
+           and not exists(select 1 from tender_sources where tender_id = t.id and role <> 'results') as result_only`
+        ),
         trx.raw(
           `array(select lot_number from tender_lots where tender_id = t.id
                  union
@@ -768,6 +773,7 @@ export default class TenderRepository {
       submissionChannel: row.submission_channel,
       buyerName: row.buyer_name,
       replacedRuns: row.replaced_runs,
+      resultOnly: row.result_only,
       publishedAt: row.published_at,
       deadlineAt: row.deadline_at,
       lotNumbers: row.lot_numbers ?? [],

@@ -41,6 +41,13 @@ second time to confirm it is a no-op:
       invitation's notices only through it — a replay of a file whose notice is blank finds none
       and fails.
 
+- [ ] 10. `migrations/add_listing_notices.js`: the `listing_notices` table and
+      `unmatched_results.{procedure_type,was_public}` (ticket 31). **Still on disk**: delete it
+      after this step has run on Neon (step 4 of CLAUDE.md's schema workflow). Then
+      `npm run notices:backfill`, which fills the table from gnumner listing pages already in
+      storage. Neon has none today, so it reports 0, but run it anyway: a page stored by a
+      sweep under the old code is otherwise a notice the publicity check never sees.
+
 Environment:
 
 - [ ] Rename any `SOURCE_ARMEPS_*` variable to `SOURCE_EAUCTION_{BASE,CRON,REFRESH_CRON,DETAIL_BASE}`
@@ -56,6 +63,11 @@ After the deploy:
 
 - [ ] `npm run scheduler`, so the new repeatable jobs (gnumner sweeps, ARMEPS refresh,
       `refresh-gnumner` paper close-out) are registered.
+- [ ] Every gnumner invitation listing has a floor beside its watermark
+      (`sweep:published:gnumner:{open,quotation}:floor`, ticket 31). Its first sweep is a cold
+      start and writes it. A watermark with no floor (a sweep under older code) leaves the
+      covered window empty: every competitive contract notice stays "unknown", which is safe
+      but not useful. Delete that listing's watermark to force a cold start.
 - [ ] One repeat sweep per source writes 0 rows and enqueues 0 jobs. A `normalize:replay` changes
       nothing.
 - [ ] Neon checks the tickets left for deploy time:

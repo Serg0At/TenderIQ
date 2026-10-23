@@ -20,6 +20,12 @@ export const competitorPricesQuerySchema = Joi.object({
      * can offer a "accepted bids only" view, not so the default can hide them.
      */
     includeRejected: Joi.boolean().default(true),
+    /**
+     * Single-source procedures are left out of every comparison (ticket 31):
+     * a price agreed with one supplier is not a market's. Off by default, and
+     * only an explicit `true` puts them back.
+     */
+    includeSingleSource: Joi.boolean().default(false),
   }).default({}),
 }).options({ stripUnknown: true });
 
@@ -28,10 +34,20 @@ export const expectedCompetitionQuerySchema = Joi.object({
     cpv: Joi.string().trim().max(20),
     buyerId: Joi.string().trim().max(40),
     sinceMonths: Joi.number().integer().min(1).max(120),
+    includeSingleSource: Joi.boolean().default(false),
+  }).default({}),
+}).options({ stripUnknown: true });
+
+/** Both benchmark endpoints. `buyerId` is the category endpoint's own narrowing. */
+export const benchmarkQuerySchema = Joi.object({
+  buyerId: Joi.string().trim().max(40),
+  filter: Joi.object({
+    includeSingleSource: Joi.boolean().default(false),
   }).default({}),
 }).options({ stripUnknown: true });
 
 export default {
   competitorPricesQuerySchema,
   expectedCompetitionQuerySchema,
+  benchmarkQuerySchema,
 };

@@ -20,13 +20,15 @@
  *     status,                                   // the source's status as a domain value, null if unmapped
  *     unreadable: { format } | undefined,       // a file its parser could not read (a paper .rar)
  *     amendment: boolean | undefined,           // a notice amending a tender it does not name (gnumner)
- *     channelUnstated: boolean | undefined }    // a result whose source names no channel (a gnumner contract notice)
+ *     channelUnstated: boolean | undefined,     // a result whose source names no channel (a gnumner contract notice)
+ *     createsWhenNeverPublic: boolean | undefined } // a result that is its own tender when none was ever public (ticket 31)
  *
  * A candidate is a stored tender:
  *
  *   { id, status, referenceCode, submissionChannel, buyerName, publishedAt, deadlineAt, lotNumbers,
  *     replacedRuns,                             // it holds a superseded run: publishedAt is its newest
  *     runPublishedAt,                           // optional: every file's publication, for a paper re-post
+ *     resultOnly,                               // only results created it: no invitation, no page (ticket 31)
  *     linkSuperseded }                          // linked candidates only: that link is a dead run
  *
  * **An e-auction amendment** is a new tid whose page names the runs it
@@ -201,7 +203,9 @@ const codeMatches = (observation, candidates) => {
       normalizeCode(tender.referenceCode) === key &&
       tender.submissionChannel === observation.submissionChannel &&
       datesAgree(observation, tender) &&
-      lotsFit(observation.lotNumbers, tender.lotNumbers)
+      // A result-only tender's lots are only those its notices have named so
+      // far, not the procedure's: a second notice for another lot is still its.
+      (tender.resultOnly || lotsFit(observation.lotNumbers, tender.lotNumbers))
   );
 };
 
@@ -239,7 +243,8 @@ const sameProcedure = (observation, tender) =>
  * observation is a file, and its run's status is whatever the stored one says.
  */
 const repostOf = (observation, tender) => {
-  if (!sameProcedure(observation, tender)) return null;
+  // A result-only tender has no file to be a re-post of, and no deadline it was open until.
+  if (tender.resultOnly || !sameProcedure(observation, tender)) return null;
   const buyer = normalizeBuyer(observation.buyerName);
   if (!buyer || buyer !== normalizeBuyer(tender.buyerName)) return null;
 
@@ -283,11 +288,76 @@ const link = (tender, rule) => ({ action: 'link', tenderId: tender.id, tender, r
  * the tender back to the version its replacement amended.
  */
 const supersededRun = (tender, rule = 'link') => ({ action: 'superseded', tenderId: tender.id, tender, rule });
-const unmatched = (reason, tenders = []) => ({
+const unmatched = (reason, tenders = [], wasPublic = null) => ({
   action: 'unmatched',
   reason,
   candidateIds: tenders.map((t) => t.id),
+  wasPublic,
 });
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The stretch of the invitation listings a result's invitation must fall in
+ * for Tendra to know it was never public: its stated day, and the day either
+ * side. The date is typed by the buyer into the notice — "sent or published"
+ * — so a day's slip either way must not turn a public invitation into a
+ * private one at the edge of what the sweeps have read. Null with no date.
+ */
+export const invitationSpan = (observation) => {
+  const day = yerevanDay(observation.publishedAt);
+  if (!day) return null;
+  const start = new Date(`${day}T00:00:00+04:00`).getTime();
+  return { from: new Date(start - DAY_MS), to: new Date(start + 2 * DAY_MS) };
+};
+
+/**
+ * Was a result's procedure ever announced publicly (ticket 31)? `true`,
+ * `false` or `null` for "not known" — decided from facts, never guessed:
+ *
+ *   - an invitation of its code was seen on gnumner's invitation listings, at
+ *     any date (`codeSeen`): public;
+ *   - a single-source procedure: never public, there is no invitation to
+ *     announce;
+ *   - otherwise only inside the window the sweeps have read without a gap
+ *     (`window`, `{ from, to }` in ms: the newest of the listings' floors to
+ *     the oldest of their watermarks, workers/listingChain.js): no invitation
+ *     of its code there means none was published — unless a notice whose code
+ *     nobody knows (a title without one, a file nobody could read) was
+ *     published in its span, which could be it (`uncodedNearby`).
+ *
+ * Outside the window it is unknown, and so is an e-auction, whose coverage
+ * is eauction's sweep, not these listings'. `false` is what lets a result
+ * become its own tender; `true` with no tender is what Tendra missed.
+ */
+export const wasPublic = (observation, { window = null, codeSeen = false, uncodedNearby = false } = {}) => {
+  if (codeSeen) return true;
+  if (observation.procedureType === 'single_source') return false;
+  if (observation.procedureType === 'e_auction') return null;
+  const span = invitationSpan(observation);
+  if (!span || !window) return null;
+  // Strictly above the floor: a notice published in the floor's own minute
+  // may sit on the page after the one the chain stopped at.
+  if (!(window.from < span.from.getTime() && span.to.getTime() <= window.to)) return null;
+  return uncodedNearby ? null : false;
+};
+
+/**
+ * What a result-only tender needs to be written at all: a code and an
+ * invitation date later notices can find it by (rule 3 needs both — without
+ * the date, every notice of the procedure would be a tender of its own), a
+ * buyer, a procedure type, and an award — its status is `awarded`, and a
+ * notice that names no winner says nothing that would be.
+ */
+const standsAlone = (observation) =>
+  Boolean(
+    observation.createsWhenNeverPublic &&
+      observation.status === 'awarded' &&
+      yerevanDay(observation.publishedAt) &&
+      observation.procedureType &&
+      normalizeBuyer(observation.buyerName) &&
+      normalizeCode(observation.procedureCode)
+  );
 
 /**
  * A gnumner notice names a code and no channel, and the same listing carries
@@ -339,9 +409,10 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
  *   4. anything else is unmatched — never guessed onto a tender.
  *
  * A detail or discovery source that is not linked creates its tender. A
- * result source never does, the same rule as the listing writing no domain
- * rows. ADR 0004's one exception, a PPCM history backfill whose tenders are
- * never biddable, is its own decision and adds its own mode when it is built.
+ * result source does not, the same rule as the listing writing no domain
+ * rows — with two exceptions, both tenders that are never biddable: a PPCM
+ * history backfill (ADR 0004, its own mode when it is built), and a result
+ * of a procedure that was never public (below).
  *
  * A replacement whose predecessors are on two tenders is `create` with an
  * `unmatched` beside it: a new run, the two tenders untouched, and the join
@@ -383,14 +454,28 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
  * not: nothing is created for a dead run, and its replacement records it
  * when it arrives.
  *
- * `candidates` is `{ linked, pointed, predecessorTenders, byCode, codeRuns }`,
- * the answers to `lookupsFor`; `predecessorTenders` hold the observation's
- * predecessors.
+ * **A result of a procedure that was never public** (ticket 31, the second
+ * exception to "a result never creates", beside ADR 0004's PPCM history):
+ * a gnumner contract notice with no candidate, whose procedure `wasPublic`
+ * says was never announced, is `create` with `resultOnly` — a tender that is
+ * only its results, `awarded`, never biddable and never alerted. Anything
+ * short of `false` stays `no_candidate`, and every unmatched result carries
+ * `wasPublic`, so a miss (`true`) can be told from the unknown (`null`) and
+ * from the never public (`false`) without reading the notice again.
+ *
+ * `candidates` is `{ linked, pointed, predecessorTenders, byCode, codeRuns,
+ * publicity }`, the answers to `lookupsFor`; `predecessorTenders` hold the
+ * observation's predecessors, and `publicity` is `wasPublic`'s facts, which
+ * only a result needs.
  */
-export const resolve = (observation, { linked = [], pointed = [], predecessorTenders = [], byCode = [], codeRuns = [] } = {}) => {
+export const resolve = (
+  observation,
+  { linked = [], pointed = [], predecessorTenders = [], byCode = [], codeRuns = [], publicity = {} } = {}
+) => {
   if (observation.amendment) return resolveAmendment(observation, { linked, byCode });
   if (observation.channelUnstated && !linked.length && heldElsewhere(observation, byCode)) return OTHER_CHANNEL;
-  if (observation.unreadable) return unmatched('unsupported_format');
+  const resultPublic = () => (observation.role === 'results' ? wasPublic(observation, publicity) : null);
+  if (observation.unreadable) return unmatched('unsupported_format', [], resultPublic());
 
   const byLink = unique(linked);
   if (byLink.length === 1) {
@@ -429,11 +514,13 @@ export const resolve = (observation, { linked = [], pointed = [], predecessorTen
     return uncoded ? { action: 'create', unmatched: unmatched('no_code') } : { action: 'create' };
   }
 
-  if (!normalizeCode(observation.procedureCode)) return unmatched('no_code');
+  if (!normalizeCode(observation.procedureCode)) return unmatched('no_code', [], resultPublic());
   const fits = unique(codeMatches(observation, byCode));
   if (fits.length === 1) return link(fits[0], 'code');
   if (fits.length > 1) return unmatched('ambiguous', fits);
-  return unmatched('no_candidate');
+  const isPublic = resultPublic();
+  if (isPublic === false && standsAlone(observation)) return { action: 'create', resultOnly: true };
+  return unmatched('no_candidate', [], isPublic);
 };
 
 /**
@@ -518,4 +605,14 @@ export const deriveStatus = ({ submissionChannel, links = [], current = null, de
   return STEP[next] < STEP[current] ? current : next;
 };
 
-export default { normalizeCode, normalizeBuyer, lookupsFor, resolve, deriveStatus, STATUS_OWNERS, JOINS_ON_CODE };
+export default {
+  normalizeCode,
+  normalizeBuyer,
+  lookupsFor,
+  invitationSpan,
+  wasPublic,
+  resolve,
+  deriveStatus,
+  STATUS_OWNERS,
+  JOINS_ON_CODE,
+};

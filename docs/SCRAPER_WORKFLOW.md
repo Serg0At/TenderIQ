@@ -318,8 +318,10 @@ ARMEPS link on it is counted and not read (PPCM owns those results). Uploads bec
    it matches a paper tender on code and the **invitation's** publication day (the notice's
    «Հրավեր ուղարկելու կամ հրապարակելու ամսաթիվը», compared with the tender's `published_at` —
    for a run a re-post joined, with **any** of its files' publications, read back from their
-   notices' stored listing pages), with lots that fit; none is `no_candidate`, two `ambiguous`, no code `no_code`. A result never
-   creates a tender.
+   notices' stored listing pages), with lots that fit; none is `no_candidate`, two `ambiguous`, no code `no_code`. A result
+   creates a tender only when its procedure was **never public** (step 6).
+   Every unmatched row records the procedure (`procedure_type`) and whether it was public
+   (`was_public`: true, false, or null for unknown).
 4. `TenderRepository.recordResults`, under the row lock: a `results` link, the lots' bids and
    awards with `source = 'gnumner'` — net into the `*_net` columns, total into the gross ones,
    no rank (a sealed bid list is not a ranking), the award the contract names at the winning
@@ -330,6 +332,37 @@ ARMEPS link on it is counted and not read (PPCM owns those results). Uploads bec
 5. **A later-appearing tender picks it up.** When the normalizer creates a paper tender, or a
    re-posted file joins one, every unresolved `contract:` row of its code (`no_candidate`, `ambiguous`) is queued again as a
    `paper.contract` retry: no request, the notice rebuilt from its stored listing page.
+6. **A procedure never announced publicly becomes a result-only tender** (ticket 31). Most
+   contract notices are of quotations sent straight to invited suppliers, or of single-source
+   purchases: there was never an invitation to miss. `resolution.service.js#wasPublic` decides
+   from facts only:
+   - an invitation of the code was ever listed on `open` or `quotation` — `listing_notices`, by
+     the title's code or, for a title naming none, the code of the tender its link created —
+     → **public** (a `no_candidate` here is a tender Tendra missed: the operator alert's row);
+   - a single-source procedure (the code's method marker `ՄԱ`, or the notice's procedure row
+     citing article 23 — the two must not disagree) → **never public**;
+   - otherwise only inside the **covered window**: the invitation's day, and one day either
+     side, lies strictly above every invitation listing's **floor** and at or below its
+     **watermark**. A cold start sets the floor to the oldest notice it read; a chain that reaches
+     the watermark leaves it; a chain stopped by the page ceiling raises it to what it read (the
+     hole below is forgotten, not vouched for). Floors live beside the watermarks in Redis
+     (`sweep:published:gnumner:{slug}:floor`). Inside the window, with no notice of the code and
+     no code-less notice published in that span, → **never public**;
+   - anything else (outside the window, an e-auction code, no invitation date) → **unknown**:
+     `no_candidate` with `was_public` null, as before.
+
+   A never-public notice with a code, an invitation date, a buyer, a procedure type and an award
+   creates a tender of
+   its own: `submission_channel = 'paper'`, its procedure type, `awarded`, a `gnumner` link of
+   role `results`, `published_at` the invitation's day, and the bids and awards — no deadline,
+   CPV, lots or address, because the notice states none. Same lock on the code as a paper
+   invitation's create. It is **never biddable and never alerted**: no `match.tender` job is
+   queued, now or by a later notice (its status is terminal from the start). A later notice of
+   the same procedure joins it by rule 3, its lots not checked (they are only what notices have
+   named so far), and a paper invitation never joins it as a re-post. The cold start's depth is
+   only `maxListingPages` (five pages of `quotation` were about ten hours on 2026-10-19), so the
+   window starts at the first sweep and competitive notices start qualifying a few weeks later,
+   once contracts for invitations sent inside it are filed.
 
 **Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
 refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders

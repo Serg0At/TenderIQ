@@ -4,6 +4,7 @@ import { authenticate } from '../../middlewares/auth.js';
 import { authorize } from '../../middlewares/authorize.js';
 import { validate } from '../../middlewares/validate.js';
 import {
+  benchmarkQuerySchema,
   competitorPricesQuerySchema,
   expectedCompetitionQuerySchema,
 } from '../../validations/schemas/intelligence.query.schema.js';
@@ -18,7 +19,7 @@ import {
 const gate = [authenticate, authorize('intelligence:read')];
 
 export const tenderIntelligenceRoutes = Router();
-tenderIntelligenceRoutes.get('/:id/benchmark', ...gate, IntelligenceController.tenderBenchmark);
+tenderIntelligenceRoutes.get('/:id/benchmark', ...gate, validate(benchmarkQuerySchema, 'query'), IntelligenceController.tenderBenchmark);
 tenderIntelligenceRoutes.get( '/:id/competitor-prices', ...gate, validate(competitorPricesQuerySchema, 'query'), IntelligenceController.competitorPrices);
 // The AI recommendation. A GET because it is a read, and it is safe to treat as
 // one: the answer is cached in Redis under a hash of its own evidence, so
@@ -28,7 +29,7 @@ tenderIntelligenceRoutes.get( '/:id/price-recommendation', ...gate, Intelligence
 
 /** Category benchmarks, keyed by CPV. */
 export const benchmarkRoutes = Router();
-benchmarkRoutes.get('/:cpv', ...gate, IntelligenceController.categoryBenchmark);
+benchmarkRoutes.get('/:cpv', ...gate, validate(benchmarkQuerySchema, 'query'), IntelligenceController.categoryBenchmark);
 
 export const competitionRoutes = Router();
 competitionRoutes.get( '/', ...gate, validate(expectedCompetitionQuerySchema, 'query'), IntelligenceController.expectedCompetition);

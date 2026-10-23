@@ -34,6 +34,7 @@ async function down(pg) {
     'public_tender_bids',
     'awards',
     'unmatched_results',
+    'listing_notices',
     'tender_sources',
     'tenders',
     'users',

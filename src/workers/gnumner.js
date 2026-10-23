@@ -52,6 +52,35 @@ const UPLOAD_JOBS = {
   contract: { name: JOB.PAPER_CONTRACT, tag: 'contract' },
 };
 
+/** The listings whose uploads are invitations: what the covered window and the notice index are about (ticket 31). */
+export const invitationListings = () =>
+  getSourceConfig(SOURCE).listingPaths.filter((l) => listingKind(l.slug) === 'invitation');
+
+/**
+ * A notice's `listing_notices` row (ticket 31), for the invitation listings
+ * only: "was an invitation of this code ever published" is asked of them.
+ * Every notice on them, ingested or not — an e-auction link, an excluded
+ * buyer's upload, a link nobody recognises was published all the same, and
+ * leaving it out would let the covered window vouch that its code never was.
+ * An ingested notice's id is its discovery-link id, so a title naming no code
+ * finds its tender's. Null on any other listing.
+ */
+const indexId = (item) => {
+  if (item.kind === 'paper') return paperNoticeId(item.externalId);
+  if (item.kind === 'armeps' || item.kind === 'eauction') return `${item.kind}:${item.externalId}`;
+  return `other:${pathDigest(item.url)}`;
+};
+
+export const noticeIndex = (item, slug) => {
+  if (listingKind(slug) !== 'invitation') return null;
+  return {
+    externalId: indexId(item),
+    listing: slug,
+    procedureCode: item.procedureCode ?? null,
+    publishedAt: item.publishedAt,
+  };
+};
+
 const discoveryJob = (item, { slug, ref, hash }) => {
   const discovery = {
     source: SOURCE,
@@ -103,17 +132,19 @@ export const gnumnerBoard = {
   markOf: (item) => item.publishedAt.getTime(),
 
   toNotice: (item, { slug, log }) => {
+    const index = noticeIndex(item, slug);
+
     // Counted for coverage only. A tmid cannot be mapped to a tid today, and
     // the eauction board already ingests every e-auction directly.
-    if (item.kind === 'eauction') return { tally: 'eauction' };
+    if (item.kind === 'eauction') return { tally: 'eauction', index };
 
     if (item.kind === 'other') {
       log.warn(`unrecognised link target — not ingested: ${item.url}`);
-      return { tally: 'other' };
+      return { tally: 'other', index };
     }
 
     if (item.kind === 'paper' && excludedBuyer(item, getSourceConfig(SOURCE).excludedBuyers)) {
-      return { tally: 'excluded' };
+      return { tally: 'excluded', index };
     }
 
     // A contract notice that links to armeps.am is an ARMEPS tender's result,
@@ -124,7 +155,7 @@ export const gnumnerBoard = {
 
     const ref = noticeRef(item);
     const hash = itemFingerprint(item);
-    return { tally: item.kind, notice: { ref, hash, job: discoveryJob(item, { slug, ref, hash }) } };
+    return { tally: item.kind, index, notice: { ref, hash, job: discoveryJob(item, { slug, ref, hash }) } };
   },
 
   // Per classification, for the coverage check: every block on the page is in
@@ -136,4 +167,4 @@ export const gnumnerBoard = {
     `${changed} new/changed`,
 };
 
-export default { gnumnerBoard };
+export default { gnumnerBoard, noticeIndex, invitationListings };

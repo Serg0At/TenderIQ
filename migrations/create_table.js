@@ -94,6 +94,12 @@ function up(pg) {
       table.string('external_ref').notNullable();
       table.string('procedure_code');
       table.string('reason').notNullable();         // no_candidate | ambiguous | no_code | unsupported_format
+      // The procedure, as far as the result says (`single_source`, `quotation`, …): the unreadable
+      // count is split on it (ticket 31).
+      table.string('procedure_type');
+      // A result's procedure was announced publicly: true (so a `no_candidate` is a tender Tendra
+      // missed — the operator alert's row), false (never public), NULL (not known). Ticket 31.
+      table.boolean('was_public');
       table.specificType('candidate_tender_ids', 'text[]').notNullable().defaultTo('{}');
       table.string('payload_hash').notNullable();   // the stored raw payload it was read from
       table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
@@ -101,6 +107,23 @@ function up(pg) {
       table.string('resolved_tender_id').references('id').inTable('tenders').onDelete('SET NULL');
       table.timestamp('resolved_at');
       table.unique(['source', 'external_ref'], { indexName: 'unmatched_results_source_ref_uq' });
+    })
+
+    // listing_notices — Every notice gnumner's invitation listings have shown, with the code its
+    // title names and when it was published (ticket 31): what "no invitation of this code was ever
+    // seen" is asked of, since a notice whose job failed or whose file was unreadable leaves no
+    // tender behind. `external_id` is the notice's discovery-link id (`paper:{digest}`,
+    // `armeps:{resourceId}`), so a notice whose title has no code finds its tender's through
+    // `tender_sources`. Written by the listing chain. Public data: no organization_id.
+    .createTable('listing_notices', table => {
+      table.string('id').primary();
+      table.string('source').notNullable();
+      table.string('external_id').notNullable();
+      table.string('listing').notNullable();        // the listing's slug: open | quotation
+      table.string('procedure_code');               // the title's, raw; NULL when it names none
+      table.timestamp('published_at').notNullable();
+      table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.unique(['source', 'external_id'], { indexName: 'listing_notices_source_external_uq' });
     })
 
     // awards — The winner of each individual lot, with the price it won at alongside the
@@ -685,6 +708,9 @@ async function indexes(pg) {
      CHECK (role IN ('discovery','detail','results'))`);
   await pg.raw(`ALTER TABLE unmatched_results ADD CONSTRAINT unmatched_results_reason_chk
      CHECK (reason IN ('no_candidate','ambiguous','no_code','unsupported_format'))`);
+  // "Was a notice published on these days": the publicity facts read a span around one date.
+  await pg.raw(`CREATE INDEX IF NOT EXISTS listing_notices_published_idx
+     ON listing_notices (source, published_at)`);
 
   await pg.raw(`CREATE INDEX IF NOT EXISTS tracked_tenders_org_status_idx
      ON tracked_tenders (organization_id, status)`);

@@ -4139,6 +4139,14 @@ multi-category tender is benchmarked on its headline code.
 
 - `id`: the tender's CUID2 id.
 
+**Query parameters:**
+
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
+  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
+  and only an explicit `true` puts them back. The answer is then computed live (stored
+  benchmarks never hold them) and carries `includesSingleSource: true`; the threshold is the
+  same, so a thin category is still `insufficient_data`.
+
 **Request data:**
 
 No request body
@@ -4229,6 +4237,10 @@ price is entitled to know that price was disqualified.
 
 - `filter[lot]` (optional): integer ≥ 1 — narrow to a single lot.
 - `filter[includeRejected]` (optional, default `true`): boolean.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
+  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
+  and only an explicit `true` puts them back. For a single-source tender it returns the ledger;
+  it also counts single-source lots in `expectedCompetition`.
 
 **Request data:**
 
@@ -4339,7 +4351,25 @@ Tender not yet settled (no public bid ledger):
 }
 ```
 
-- `status`: `ok` or `no_public_bids`.
+A single-source tender, not asked for (`filter[includeSingleSource]` absent or `false`):
+
+```json
+{
+  "data": {
+    "status": "single_source",
+    "reason": "A single-source procedure: its price is what the buyer agreed with one supplier, not a competitive bid. Ask with filter[includeSingleSource]=true to see it.",
+    "tenderId": "cm9zx4k1p0010qw8fj3k9d2p1",
+    "settled": true,
+    "expectedCompetition": { },
+    "lots": [],
+    "title": "…",
+    "referenceCode": "ՀՀԱՄ-ԱՐԵՎՈՒՏ-ՄԱԾՁԲ-26/24",
+    "buyer": { }
+  }
+}
+```
+
+- `status`: `ok`, `no_public_bids` or `single_source`.
 - **Two prices per offer.** `finalOffer`, `initialOffer` and `winner.price` include VAT;
   `finalOfferNet`, `initialOfferNet` and `winner.netPrice` do not. The budget includes VAT and
   the source checks bids against it gross, so `discountPct` is computed on the VAT-inclusive
@@ -4518,8 +4548,10 @@ question, with no tender to hang it off.
 
 **Query parameters:**
 
-- `buyerId` (optional): narrow the comparables to one buying agency. Note: **not** validated by
-  a Joi schema on this route — it is read straight off `req.query`.
+- `buyerId` (optional): narrow the comparables to one buying agency, max 40 chars.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
+  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
+  and only an explicit `true` puts them back. Computed live, with `includesSingleSource: true`.
 
 **Request data:**
 
@@ -4580,6 +4612,10 @@ more useful than a corpus-wide average.
   division 30, never 31–39.
 - `filter[buyerId]` (optional): buyer party id, max 40 chars.
 - `filter[sinceMonths]` (optional): integer 1–120. Defaults to `INTELLIGENCE.RECENCY_MONTHS`.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
+  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
+  and only an explicit `true` puts them back. A single-source lot draws one supplier by design,
+  and would read as a sole-bidder market.
 
 **Request data:**
 

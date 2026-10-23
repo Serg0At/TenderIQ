@@ -458,6 +458,10 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
   `is_latest`. Re-notification includes a change summary.
 - **Never fabricate intelligence.** Below the comparables threshold, return `insufficient_data`.
   Benchmarks use only public award data and retain provenance.
+- **Single-source prices are not a market's** (ticket 31). Benchmarks (every tier, and every
+  materialised row), comparable awards, expected competition and a single-source tender's own
+  competitor prices leave out `procedure_type = 'single_source'` unless the request says
+  `filter[includeSingleSource]=true`, which computes live and says `includesSingleSource`.
 - **Non-competitive / "wired-spec" flags are signals with evidence, never accusations.** This framing
   is mandatory — it is a legal and reputational constraint, not a wording preference.
 - **No duplicate alert** for the same tender/event to the same organization — enforced by
@@ -665,6 +669,20 @@ decision that has already been made.
   the template says the invitation was "sent or published", most quotations are sent to invited
   suppliers and never reach gnumner, and ~780 notices (10-07 → 10-21) held one code from the
   published quotation listing. Ticket 08 records the counts.
+- **A result of a procedure that was never public is a result-only tender** (ticket 31, ADR 0004's
+  second exception to "results never create"). `resolution.service.js#wasPublic` decides from
+  facts only: an invitation of the code ever on the `open`/`quotation` listings
+  (`listing_notices`, every entry of those listings, ingested or not, written by the listing chain) → public; single source (the code's `ՄԱ`
+  marker or the notice citing article 23, never disagreeing) → never; otherwise only inside the
+  **covered window** — the invitation's day ±1 strictly above every invitation listing's floor
+  (`sweep:published:gnumner:{slug}:floor`, beside the watermark: a cold start's oldest notice,
+  raised past any page-ceiling hole) and at or below its watermark, with no code-less notice
+  published in that span → never; anything else unknown. Never public, with a code, an
+  invitation date (rule 3 needs it to join a later notice), a buyer, a procedure type and an award: a `paper` tender, `awarded`, one `results` link, **no
+  `match.tender` ever**. Every unmatched result records `procedure_type` and `was_public`, so
+  the operator alert reads `no_candidate` **and** `was_public` — the rest is not a miss. Do not
+  widen "never public" to a guess (a title's «ՄԱ գնման» wording, a date near the window): a
+  wrong `false` hides a real miss and creates a tender that should not exist.
 - **A code whose method marker `ՁԲ` runs straight into a digit is the same code with the dash**
   (ՄԿԻ-ԳՀԱՊՁԲ26/47 = ՄԿԻ-ԳՀԱՊՁԲ-26/47, ticket 07; 14 stored tenders are written that way). The
   title extractor reads it, and `normalizeCode` and its SQL twin `codeKeySql` put the dash back in

@@ -231,13 +231,25 @@ export const parseInvitation = (bytes) => {
   // never worth it at ~4% of contract value). They are meant to become
   // supported. The raw file is stored either way, so a converter added later
   // replays from storage (`npm run normalize:replay`) without re-crawling
-  // gnumner. Which formats matter:
+  // gnumner. Which formats matter, per kind of notice and per procedure
+  // (ticket 31) — a single-source contract notice is a price kept out of
+  // every comparison, so it should not choose the converter:
   //
-  //   select substring(p.storage_key from '\.([a-z0-9]+)$') as ext, count(*)
+  //   select case when u.external_ref like 'contract:%' then 'contract'
+  //               when u.external_ref like 'amendment:%' then 'amendment'
+  //               else 'invitation' end as kind,
+  //          case when u.procedure_type = 'single_source' then 'single_source'
+  //               when u.procedure_type is null then 'unknown'
+  //               else 'competitive' end as procedure,
+  //          substring(p.storage_key from '\.([a-z0-9]+)$') as ext, count(*)
   //     from unmatched_results u
   //     join source_payloads p on p.source = u.source and p.hash = u.payload_hash
+  //                           and p.ref in (u.external_ref, 'detail:' || u.external_ref)
   //    where u.source = 'gnumner' and u.reason = 'unsupported_format' and u.resolved_at is null
-  //    group by 1 order by 2 desc;
+  //    group by 1, 2, 3 order by 1, 2, 4 desc;
+  //
+  // An invitation's procedure is its listing's, so one recorded before the
+  // column existed, and re-read with no notice beside it, says `unknown`.
   //
   // An amendment notice is never counted here: its content is not read, so it
   // attaches whatever its format (ticket 07).

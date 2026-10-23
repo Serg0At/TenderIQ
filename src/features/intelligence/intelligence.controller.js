@@ -23,7 +23,11 @@ export default class IntelligenceController {
     // benchmarks are available through the category endpoint.
     const cpvCode = tender.cpv_code ?? tender.lots?.find((l) => l.cpv_code)?.cpv_code ?? null;
 
-    const benchmark = await BenchmarkService.forCategory({ cpvCode, buyerId: tender.buyer_id });
+    const benchmark = await BenchmarkService.forCategory({
+      cpvCode,
+      buyerId: tender.buyer_id,
+      includeSingleSource: req.query.filter?.includeSingleSource === true,
+    });
 
     return ok(res, {
       tenderId: tender.id,
@@ -38,7 +42,8 @@ export default class IntelligenceController {
   static async categoryBenchmark(req, res) {
     const { cpv } = req.params;
     const buyerId = req.query.buyerId ?? null;
-    return ok(res, await BenchmarkService.forCategory({ cpvCode: cpv, buyerId }));
+    const includeSingleSource = req.query.filter?.includeSingleSource === true;
+    return ok(res, await BenchmarkService.forCategory({ cpvCode: cpv, buyerId, includeSingleSource }));
   }
 
   /**
@@ -57,6 +62,7 @@ export default class IntelligenceController {
     const result = await CompetitorPriceService.forTender(tender, {
       lot: f.lot ?? null,
       includeRejected: f.includeRejected !== false,
+      includeSingleSource: f.includeSingleSource === true,
     });
 
     return ok(res, {
@@ -82,6 +88,7 @@ export default class IntelligenceController {
         cpvCode: f.cpv ?? null,
         buyerId: f.buyerId ?? null,
         ...(f.sinceMonths ? { sinceMonths: f.sinceMonths } : {}),
+        includeSingleSource: f.includeSingleSource === true,
       })
     );
   }

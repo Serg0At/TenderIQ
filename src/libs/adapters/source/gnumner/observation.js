@@ -1,5 +1,6 @@
 import { sha256 } from '../../../../utils/hash.js';
 import { parseInvitation } from './invitation.parser.js';
+import { procedureTypeOfCode } from './listing.parser.js';
 
 /**
  * gnumner notices and paper invitations → observations for the resolution
@@ -180,7 +181,8 @@ export const observeInvitation = (bytes, { externalId, notices = [] }) => {
       ...base,
       unreadable: { format: parsed.format },
       procedureCode: notice?.procedureCode ?? null,
-      procedureType: null,
+      // Its listing's, so the unreadable count can be split by procedure.
+      procedureType: notice?.procedureType ?? null,
       buyerName: null,
       publishedAt: notice?.publishedAt ? new Date(notice.publishedAt) : null,
       deadlineAt: null,
@@ -271,7 +273,8 @@ export const observeAmendment = (notice, { externalId, bodyCode = null }) => ({
   pointer: null,
   procedureCode: notice.procedureCode ?? bodyCode ?? null,
   submissionChannel: 'paper',
-  procedureType: null,
+  // Read off the code, only so an unmatched notice can be counted by procedure.
+  procedureType: procedureTypeOfCode(notice.procedureCode ?? bodyCode),
   buyerName: null,
   publishedAt: new Date(notice.publishedAt),
   deadlineAt: null,
@@ -371,22 +374,38 @@ const ledgerLot = (lot) => {
  * Its code is the title's, else the one its body states (decided 2026-10-21,
  * as for an amendment notice). An unreadable file is `unreadable` and counted;
  * its title's code still lets resolution skip another channel's tender first.
+ *
+ * Most of these notices are of procedures never announced publicly (ticket
+ * 31): a quotation sent to invited suppliers, a single-source purchase. When
+ * resolution finds no tender and the facts say there was never a public one,
+ * the notice creates a result-only tender (`createsWhenNeverPublic`, and
+ * `tender`, its row). Its procedure type is what the code's method marker and
+ * the notice's own procedure row say — null when they disagree or neither
+ * says, since a single-source price is kept out of every comparison and a
+ * wrong type puts it back in.
  */
+const statedProcedure = (byCode, byNotice) =>
+  byCode && byNotice && byCode !== byNotice ? null : (byCode ?? byNotice ?? null);
+
 export const observeContract = (notice, { externalId, parsed }) => {
   const read = parsed.readable ? parsed.notice : null;
   const ledger = read ? read.lots.filter((lot) => lot.bids.length).map(ledgerLot) : [];
+  const procedureCode = notice.procedureCode ?? read?.procedureCode ?? null;
+  const procedureType = statedProcedure(procedureTypeOfCode(procedureCode), read?.procedure ?? null);
+  const publishedAt = yerevanDay(read?.invitationDate);
   return {
     source: SOURCE,
     role: 'results',
     channelUnstated: true,
+    createsWhenNeverPublic: true,
     externalId: String(externalId),
     url: notice.url ?? null,
     pointer: null,
-    procedureCode: notice.procedureCode ?? read?.procedureCode ?? null,
+    procedureCode,
     submissionChannel: 'paper',
-    procedureType: null,
-    buyerName: null,
-    publishedAt: yerevanDay(read?.invitationDate),
+    procedureType,
+    buyerName: read?.buyerName ?? null,
+    publishedAt,
     deadlineAt: null,
     lotNumbers: read ? read.lots.map((lot) => lot.lotNumber) : [],
     // A contract was concluded — the notice exists for nothing else — but the
@@ -397,6 +416,30 @@ export const observeContract = (notice, { externalId, parsed }) => {
     ...(read ? {} : { unreadable: { format: parsed.format } }),
     ledger,
     warnings: read?.unreadRows ? [`${read.unreadRows} rows could not be placed in a lot and were not read`] : [],
+    // The row of a result-only tender, written only when resolution says so.
+    // The notice states no deadline, CPV, budget total or address, so none is
+    // invented: the tender is what the notice says and nothing more.
+    tender: {
+      sourceStatus: null,
+      title: notice.title || procedureCode,
+      referenceCode: procedureCode,
+      procedureType,
+      submissionChannel: 'paper',
+      goodsWorksServices: null,
+      evaluationMethod: null,
+      cpvCode: null,
+      cpvCodes: [],
+      description: null,
+      submissionAddress: null,
+      estimatedValue: null,
+      currency: 'AMD',
+      // The day the invitation was sent, the date rule 3 matches later notices on.
+      publishedAt,
+      deadlineAt: null,
+      qnaDeadlineAt: null,
+      auctionAt: null,
+      invitationUrl: null,
+    },
   };
 };
 

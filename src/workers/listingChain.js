@@ -3,11 +3,12 @@ import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
+import listingNotices from '../repositories/listingNotice.repo.js';
 import { ingestFetchQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256 } from '../utils/hash.js';
 import { withLock, RateLimitedError } from '../utils/rateLimiter.js';
-import { markSweepHealthy, readHighWater, advanceHighWater } from '../utils/sweepState.js';
+import { markSweepHealthy, readHighWater, advanceHighWater, floorKey, setFloor, raiseFloor } from '../utils/sweepState.js';
 import { logger } from '../utils/logger.js';
 
 const { SCRAPER } = config;
@@ -24,8 +25,10 @@ const { SCRAPER } = config;
  *   formatMark(value)      a mark as a log reader wants to see it
  *   read(path, page)       { notModified?, blocksSeen, entries, hasNextPage, response }
  *   markOf(entry)          the entry's watermark value, a number
- *   toNotice(entry, ctx)   { tally?, notice?: { ref, hash, job: { name, data, opts } } }
- *                          — no notice means counted and skipped
+ *   toNotice(entry, ctx)   { tally?, index?, notice?: { ref, hash, job: { name, data, opts } } }
+ *                          — no notice means counted and skipped; `index` is the
+ *                          entry's `listing_notices` row, for a board whose
+ *                          entries answer "was this code ever published"
  *   summarize(stats)       the source's part of the page log line
  *
  * Whatever a board needs to decide, it decides in those functions; nothing
@@ -61,7 +64,7 @@ export const nextStep = ({ page, since, pageLow, pageHigh, prevLow, hasNextPage,
   const cap = since ? maxPages : Math.min(coldStartPages, maxPages);
   if (pageLow <= since) return { more: false, reachedWatermark: true, reason: 'reached the watermark' };
   if (!hasNextPage) return { more: false, reachedWatermark: false, reason: 'no next page' };
-  if (page >= cap) return { more: false, reachedWatermark: false, reason: `page cap ${cap}` };
+  if (page >= cap) return { more: false, reachedWatermark: false, capped: true, reason: `page cap ${cap}` };
   return { more: true, reachedWatermark: false, reason: null };
 };
 
@@ -171,8 +174,13 @@ export const readListingPage = async (job, token, board) => {
   let changed = 0;
 
   for (const entry of result.entries) {
-    const { tally: bucket, notice } = board.toNotice(entry, { slug, log });
+    const { tally: bucket, index, notice } = board.toNotice(entry, { slug, log });
     if (bucket) tally[bucket] = (tally[bucket] ?? 0) + 1;
+    // Not a domain row: the ingestion's own record of what was published —
+    // every entry, ingested or skipped, on every read, so an entry whose
+    // notice is unchanged is still recorded once. An upsert, so a re-read is
+    // a no-op.
+    if (index) await listingNotices.record({ source, ...index });
     if (!notice) continue;
 
     if (await sourcePayloads.existsWithHash(source, notice.ref, notice.hash)) continue;
@@ -226,6 +234,11 @@ export const readListingPage = async (job, token, board) => {
       { priority: PRIORITY.LIVE }
     );
   } else {
+    // The floor first (sweepState.js#floorKey): a crash before the watermark
+    // moves can only leave the covered window narrower than it is.
+    const oldest = Number.isFinite(pageLow) ? pageLow : prevLow;
+    if (!since) await setFloor(floorKey(board.watermarkKey(slug)), oldest);
+    else if (step.capped) await raiseFloor(floorKey(board.watermarkKey(slug)), oldest);
     await advanceHighWater(board.watermarkKey(slug), high);
   }
 

@@ -128,6 +128,50 @@ const readCode = (paragraphs) => {
 };
 
 /**
+ * The buyer, from the sentence that presents the notice: «X-ը, որը գտնվում է
+ * … հասցեում, ստորև ներկայացնում է …», or without the address, «X-ը ստորև
+ * ներկայացնում է …». As the invitation parser reads it, quotes and all, with
+ * only the definite article the sentence adds removed, so a paper tender's
+ * buyer and its contract notice's are one party.
+ *
+ * A name starting with a lowercase letter is a template filled in wrong
+ * (seen: «կարիքների համար , Ալավերդի համայնքի …» in the paragraph above the
+ * real one), so the first sentence that does not is taken, and none is null.
+ */
+const readBuyer = (paragraphs) => {
+  for (const text of paragraphs) {
+    const found = text.match(/^(.+?)\s*,?\s*(?:որ(?:ը|ն)\s+գտնվում|ստորև\s+ներկայացնում)/u);
+    if (!found) continue;
+    const name = found[1]
+      .replace(/^(?:Պատվիրատու(?:ն)?\s*[`՝’':]*\s*)+/u, '')
+      .replace(/\s*[-–]\s*(?:ը|ն)$|ը$/u, '')
+      .trim();
+    if (name && name.length <= 200 && !/^[ա-և]/u.test(name)) return name;
+  }
+  return null;
+};
+
+/**
+ * The procedure the notice says was applied, from its «Կիրառված գնման
+ * ընթացակարգը և դրա ընտրության հիմնավորումը» row: named outright (Գնանշման
+ * հարցում, մեկ անձից), or by the article of the procurement law it cites —
+ * 22 for a quotation, 23 for single source. Seen on the stored notices
+ * (ticket 31): every ՄԱ code cites article 23, every ԳՀ code 22 (with 15 or
+ * 18 beside it in two). An empty row, another article, or both is null.
+ */
+const readProcedure = (rows) => {
+  const row = rows.find((cells) => /^Կիրառված գնման ընթացակարգ/u.test(armenianPart(cells[0] ?? '')));
+  if (!row) return null;
+  const text = row.slice(1).map(armenianPart).join(' ');
+  if (/մեկ անձից/iu.test(text)) return 'single_source';
+  if (/գնանշման հարցում/iu.test(text)) return 'quotation';
+  const articles = new Set([...text.matchAll(/(\d+)\s*-?\s*(?:րդ|ին)?\s*հոդված/gu)].map((m) => Number(m[1])));
+  if (articles.has(23) && !articles.has(22)) return 'single_source';
+  if (articles.has(22) && !articles.has(23)) return 'quotation';
+  return null;
+};
+
+/**
  * Walk the notice's rows in order, as one state machine: which section a row
  * is in is told by the headings before it, never by its position, since the
  * number of rows in each section varies.
@@ -412,6 +456,8 @@ const readNotice = ($, entryName) => {
   return {
     entryName,
     procedureCode: readCode(paragraphs),
+    buyerName: readBuyer(paragraphs),
+    procedure: readProcedure(rows),
     invitationDate: read.invitationDate,
     priceTableFound: read.priceTableFound,
     lots,
@@ -424,9 +470,10 @@ const readNotice = ($, entryName) => {
  * One upload → what the contract notice says.
  *
  * @returns {{ format: string, readable: boolean, notice: object|null }}
- *   `notice` is `{ entryName, procedureCode, invitationDate, priceTableFound,
- *   lots, unreadRows, bidCount }` — `entryName` the .docx inside a .zip, null
- *   for a .docx — each
+ *   `notice` is `{ entryName, procedureCode, buyerName, procedure,
+ *   invitationDate, priceTableFound, lots, unreadRows, bidCount }` —
+ *   `entryName` the .docx inside a .zip, null for a .docx; `procedure` the
+ *   type the notice states (`quotation`, `single_source`) or null — each
  *   lot `{ lotNumber, budget, bids: [{ name, key, net, vat, gross, rejected,
  *   reasons }], contract: { winner, winnerKey, number, signedOn, price } | null }`.
  */
@@ -453,15 +500,24 @@ export const parseContractNotice = (bytes) => {
   // and a notice is re-read from storage (paper.js#recordContract), so a
   // converter added later replays them without re-crawling gnumner. On the
   // first ten listing pages (2026-10-21, 60 notices): 30 .docx, 13 .doc,
-  // 8 .pdf, 7 .rar, 2 .zip. Which formats matter, on the paper tenders that
-  // were not read:
+  // 8 .pdf, 7 .rar, 2 .zip. Which formats matter, per kind of notice and per
+  // procedure (ticket 31): of the 18 unreadable contract notices stored on
+  // 2026-10-21, 11 are single-source — prices kept out of every comparison
+  // anyway, and never a missed tender — so read the competitive rows when
+  // choosing a converter:
   //
-  //   select substring(p.storage_key from '\.([a-z0-9]+)$') as ext, count(*)
+  //   select case when u.external_ref like 'contract:%' then 'contract'
+  //               when u.external_ref like 'amendment:%' then 'amendment'
+  //               else 'invitation' end as kind,
+  //          case when u.procedure_type = 'single_source' then 'single_source'
+  //               when u.procedure_type is null then 'unknown'
+  //               else 'competitive' end as procedure,
+  //          substring(p.storage_key from '\.([a-z0-9]+)$') as ext, count(*)
   //     from unmatched_results u
   //     join source_payloads p on p.source = u.source and p.hash = u.payload_hash
-  //    where u.source = 'gnumner' and u.external_ref like 'contract:%'
-  //      and u.reason = 'unsupported_format' and u.resolved_at is null
-  //    group by 1 order by 2 desc;
+  //                           and p.ref in (u.external_ref, 'detail:' || u.external_ref)
+  //    where u.source = 'gnumner' and u.reason = 'unsupported_format' and u.resolved_at is null
+  //    group by 1, 2, 3 order by 1, 2, 4 desc;
   //
   // A notice whose code Tendra holds only on e-auction or ARMEPS is never
   // counted here: resolution skips it before the format is asked (ticket 07's

@@ -48,4 +48,58 @@ export const advanceHighWater = async (key, value) => {
     );
 };
 
-export default { markSweepHealthy, lastSuccessfulSweep, readHighWater, advanceHighWater };
+/**
+ * The floor of a watermark: the oldest mark from which every notice up to the
+ * watermark has been read, with no gap. Together they are the window a
+ * listing's sweeps fully cover (ticket 31) — what lets "no notice of this
+ * code" mean "none was published" rather than "none was read".
+ *
+ * A cold start sets it to the oldest mark it read (`maxListingPages` deep). A
+ * chain that reaches the watermark leaves it, since it read everything in
+ * between. A chain stopped by the page ceiling before the watermark leaves a
+ * hole under what it read, so the floor rises to its oldest mark: coverage is
+ * kept as one unbroken stretch, and what lies below a hole is forgotten
+ * rather than vouched for. Written before the watermark advances, so a crash
+ * in between can only leave the window narrower than it is.
+ */
+export const floorKey = (watermarkKey) => `${watermarkKey}:floor`;
+
+export const setFloor = async (key, value) => {
+  if (!Number.isFinite(value) || value <= 0) return;
+  await redis.getRedis().set(key, String(value));
+};
+
+/** Only upwards, compare-and-set like `advanceHighWater`. */
+export const raiseFloor = async (key, value) => {
+  if (!Number.isFinite(value) || value <= 0) return;
+  await redis
+    .getRedis()
+    .eval(
+      'local c = redis.call("GET", KEYS[1]) if (not c) or (tonumber(ARGV[1]) > tonumber(c)) then redis.call("SET", KEYS[1], ARGV[1]) end return 1',
+      1,
+      key,
+      String(value)
+    );
+};
+
+/**
+ * `{ from, to }`, the floor and the watermark of one listing, or null when
+ * either is missing — a listing swept before floors were kept covers nothing
+ * Tendra can vouch for.
+ */
+export const readCoverage = async (watermarkKey) => {
+  const [high, floor] = await redis.getRedis().mget(watermarkKey, floorKey(watermarkKey));
+  if (!high || !floor) return null;
+  return { from: Number(floor), to: Number(high) };
+};
+
+export default {
+  markSweepHealthy,
+  lastSuccessfulSweep,
+  readHighWater,
+  advanceHighWater,
+  floorKey,
+  setFloor,
+  raiseFloor,
+  readCoverage,
+};

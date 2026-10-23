@@ -37,6 +37,19 @@ export default class SourcePayloadRepository {
       .select('source', 'ref', 'storage_key');
   }
 
+  /**
+   * Every stored payload of one source under a ref prefix, every version of
+   * each — a listing page is stored again whenever it changes, and an old
+   * page 1 holds notices no stored later page may have reached.
+   */
+  static async allByPrefix(source, prefix, trx = db) {
+    return trx(TABLE)
+      .where({ source })
+      .where('ref', 'like', `${prefix}%`)
+      .orderBy([{ column: 'fetched_at' }, { column: 'id' }])
+      .select('ref', 'storage_key', 'fetched_at');
+  }
+
   static async findLatestByRef(source, ref) {
     return await db(TABLE).where({ source, ref }).orderBy('fetched_at', 'desc').first();
   }

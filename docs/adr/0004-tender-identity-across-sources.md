@@ -125,6 +125,28 @@ Two reasons join `no_candidate` and `ambiguous` on unmatched results. A file the
 read is `unsupported_format` and creates nothing; a tender created with no readable code is
 `no_code`, because no result can ever be matched to it by rule 3.
 
+## Results of procedures that were never public (2026-10-23, ticket 31)
+
+**A second exception to "in live mode, result sources never create tenders".** gnumner's
+contract-concluded listing carries the results of every procedure, and most of them were never
+announced: a quotation sent straight to invited suppliers, a single-source purchase. In ticket 08's
+scan, one of about 780 notices belonged to a published quotation. Recording the rest as
+`no_candidate` threw away about 99% of paper price data and read them as missed tenders, which
+would bury the real misses in the operator alert.
+
+So a contract notice is its own tender, a **result-only tender**, when its procedure was **never
+public**. That is decided from facts, never guessed: it is a single-source procedure (the code's
+`ՄԱ` marker, or the notice citing article 23), or its invitation's day lies inside the **covered
+window** (every invitation listing's floor to its watermark, the stretch the sweeps have read
+without a gap) and no invitation of its code was ever listed. Anything else is unknown and stays
+`no_candidate` as before. Every unmatched result now records whether its procedure was public,
+so only `no_candidate` with a public procedure is a missed tender.
+
+A result-only tender is the same shape as a PPCM-history one: one `results` link, `awarded`,
+never biddable, never alerted. Discovery never receives it, because it is absent from every
+biddable list by construction. Single-source prices are kept out of benchmarks and competitor
+comparisons unless a caller asks for them: a price agreed with one supplier is not a market's.
+
 ## Considered options
 
 - **A tender is a procedure code, with runs inside it.** One card per code, but alerts, pursuits

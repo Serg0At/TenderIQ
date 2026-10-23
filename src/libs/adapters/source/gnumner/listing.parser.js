@@ -93,6 +93,28 @@ export const extractProcedureCode = (title) => {
   return null;
 };
 
+/**
+ * The procedure a code's method marker names, or null. The segment carrying
+ * `ՁԲ` ends in what is bought — ԱՊՁԲ goods, ԱՇՁԲ works, ԾՁԲ services — and
+ * what is left before it is the method: ԳՀԱՊՁԲ, ՄԱԾՁԲ, ԷԱՃԱՊՁԲ, ԲՄԱՊՁԲ. A
+ * buyer that dashes the two apart (ՇՄԱՀԿՍ-ԳՀ-ԱՊՁԲ-26/23,
+ * ԿՄԳԲՀԴ-ՄԱ-ԾՁԲ-2026/12) puts the method in the segment before.
+ *
+ * Only these four markers are read, and only as the whole remainder:
+ * ՀՄԱԾՁԲ (seen, its notice citing the quotation article) contains ՄԱ and is
+ * not a single-source code, and ԿՄՋՀ-ԾՁԲ-26/29 names no method at all — its
+ * segment before is the buyer. Both are null, never a guess (ticket 31).
+ */
+const METHODS = { ԳՀ: 'quotation', ՄԱ: 'single_source', ԷԱՃ: 'e_auction', ԲՄ: 'open' };
+
+export const procedureTypeOfCode = (code) => {
+  const segments = String(code ?? '').split(/[\s\-‐‑‒–—―]+/u);
+  const at = segments.findIndex((segment) => /ՁԲ/u.test(segment));
+  if (at < 0) return null;
+  const method = segments[at].replace(/(?:ԱՊ|ԱՇ|Ծ)?ՁԲ.*$/u, '') || segments[at - 1] || '';
+  return METHODS[method] ?? null;
+};
+
 const TMID_RE = /\/tmid\/([0-9a-f-]{36})/i;
 
 /**
@@ -213,4 +235,4 @@ export const parseListing = (html, { baseUrl, hosts }) => {
   };
 };
 
-export default { parseListing, classify, extractProcedureCode };
+export default { parseListing, classify, extractProcedureCode, procedureTypeOfCode };

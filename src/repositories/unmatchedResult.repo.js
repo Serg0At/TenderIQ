@@ -19,11 +19,27 @@ export default class UnmatchedResultRepository {
    *
    * `seenAt` is when the source was fetched, so a replay of an old payload
    * neither moves `last_seen_at` backwards nor overwrites a newer reason.
+   *
+   * `procedureType` is the procedure as far as the result says, and
+   * `wasPublic` whether it was announced publicly — true, false, or null for
+   * not known (ticket 31). A re-read decides `wasPublic` again, and the
+   * covered window only grows, so the newest answer stands.
+   *
    * `first_seen_at` and the resolution columns are never touched here:
    * resolving is `markResolved`'s job.
    */
   static async record(
-    { source, externalRef, procedureCode = null, reason, candidateTenderIds = [], payloadHash, seenAt = new Date() },
+    {
+      source,
+      externalRef,
+      procedureCode = null,
+      procedureType = null,
+      reason,
+      wasPublic = null,
+      candidateTenderIds = [],
+      payloadHash,
+      seenAt = new Date(),
+    },
     trx = db
   ) {
     const newer = (column) =>
@@ -36,7 +52,9 @@ export default class UnmatchedResultRepository {
         source,
         external_ref: String(externalRef),
         procedure_code: procedureCode,
+        procedure_type: procedureType,
         reason,
+        was_public: wasPublic,
         candidate_tender_ids: candidateTenderIds,
         payload_hash: payloadHash,
         first_seen_at: seenAt,
@@ -47,7 +65,9 @@ export default class UnmatchedResultRepository {
         // A re-read that cannot see the code does not forget it: a replayed
         // paper upload no listing notice travels with knows none.
         procedure_code: trx.raw('coalesce(?, ??)', [newer('procedure_code'), `${TABLE}.procedure_code`]),
+        procedure_type: trx.raw('coalesce(?, ??)', [newer('procedure_type'), `${TABLE}.procedure_type`]),
         reason: newer('reason'),
+        was_public: newer('was_public'),
         candidate_tender_ids: newer('candidate_tender_ids'),
         payload_hash: newer('payload_hash'),
         last_seen_at: trx.raw('greatest(??, excluded.last_seen_at)', [`${TABLE}.last_seen_at`]),

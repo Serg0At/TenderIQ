@@ -130,6 +130,7 @@ export default class CompetitorPriceService {
     cpvCode = null,
     buyerId = null,
     sinceMonths = INTELLIGENCE.RECENCY_MONTHS,
+    includeSingleSource = false,
   } = {}) {
     let widest = null;
 
@@ -142,6 +143,7 @@ export default class CompetitorPriceService {
         exact: tier.exact,
         buyerId: tier.useBuyer ? buyerId : null,
         sinceMonths,
+        includeSingleSource,
       });
 
       widest = { ...stats, basis: tier.basis };
@@ -177,8 +179,14 @@ export default class CompetitorPriceService {
    * `tender` is the row from `TenderRepository.findDetail` — passed in rather
    * than re-fetched so the controller resolves existence (and returns 404)
    * exactly once.
+   *
+   * A single-source tender (ticket 31) has a supplier and the price the buyer
+   * agreed with it, not competitors: it answers `single_source` with no lots,
+   * unless the caller asks for its ledger (`includeSingleSource`). Saying so
+   * is the honest answer; listing it would present one negotiated price as a
+   * lot nobody else contested.
    */
-  static async forTender(tender, { lot = null, includeRejected = true } = {}) {
+  static async forTender(tender, { lot = null, includeRejected = true, includeSingleSource = false } = {}) {
     const [ledger, awards, lotRows] = await Promise.all([
       bids.ledgerForTender(tender.id),
       bids.awardsForTender(tender.id),
@@ -193,7 +201,21 @@ export default class CompetitorPriceService {
     const expected = await CompetitorPriceService.expectedCompetition({
       cpvCode,
       buyerId: tender.buyer_id,
+      includeSingleSource,
     });
+
+    if (tender.procedure_type === 'single_source' && !includeSingleSource) {
+      return {
+        status: 'single_source',
+        reason:
+          'A single-source procedure: its price is what the buyer agreed with one supplier, not a competitive bid. ' +
+          'Ask with filter[includeSingleSource]=true to see it.',
+        tenderId: tender.id,
+        settled: tender.status === 'awarded',
+        expectedCompetition: expected,
+        lots: [],
+      };
+    }
 
     if (!ledger.length) {
       return {

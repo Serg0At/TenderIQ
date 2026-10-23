@@ -5,6 +5,15 @@ import { significantPrefix } from '../libs/cpv.js';
 const TABLE = 'price_benchmarks';
 
 /**
+ * A single-source price is what a buyer agreed with one supplier, not what a
+ * market bid (ticket 31), so a comparable is a competitive award unless the
+ * caller explicitly asks for single-source ones too. Materialised rows never
+ * hold them: only a live, explicit request can.
+ */
+const competitiveOnly = (query, alias = 't') =>
+  query.andWhereRaw(`${alias}.procedure_type is distinct from 'single_source'`);
+
+/**
  * Comparable awards and the materialised price statistics computed from them.
  *
  * Awards are per LOT, so the category of a comparable is the lot's CPV, falling
@@ -24,8 +33,9 @@ export default class BenchmarkRepository {
    * @param {boolean} opts.exact    true = this code only; false = its family
    * @param {string|null} opts.buyerId  restrict to one buying agency
    * @param {number} opts.sinceMonths   recency window
+   * @param {boolean} opts.includeSingleSource  count single-source awards too (explicit only)
    */
-  static async statsFor({ cpvCode, exact = true, buyerId = null, sinceMonths = 24 }, trx = db) {
+  static async statsFor({ cpvCode, exact = true, buyerId = null, sinceMonths = 24, includeSingleSource = false }, trx = db) {
     // Family match walks up the CPV hierarchy by stripping trailing zeros:
     // 33141211 -> '33141211%', 33140000 -> '3314%'. A profile for the parent
     // therefore catches its children, never the reverse.
@@ -54,6 +64,7 @@ export default class BenchmarkRepository {
           ]);
 
         if (buyerId) qb.andWhere('t.buyer_id', buyerId);
+        if (!includeSingleSource) competitiveOnly(qb);
         if (exact) qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) = ?', [cpvCode]);
         else qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) like ?', [`${prefix}%`]);
       })
@@ -133,7 +144,7 @@ export default class BenchmarkRepository {
    * the sample in a direction.
    */
   static async comparableAwards(
-    { cpvCode, exact = true, buyerId = null, sinceMonths = 24, limit = 10, excludeTenderId = null },
+    { cpvCode, exact = true, buyerId = null, sinceMonths = 24, limit = 10, excludeTenderId = null, includeSingleSource = false },
     trx = db
   ) {
     const prefix = exact ? null : significantPrefix(cpvCode);
@@ -191,6 +202,7 @@ export default class BenchmarkRepository {
 
     if (buyerId) inner.andWhere('t.buyer_id', buyerId);
     if (excludeTenderId) inner.andWhereNot('t.id', excludeTenderId);
+    if (!includeSingleSource) competitiveOnly(inner);
     if (exact) inner.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) = ?', [cpvCode]);
     else inner.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) like ?', [`${prefix}%`]);
 
@@ -249,6 +261,7 @@ export default class BenchmarkRepository {
       })
       .whereNotNull('a.amount')
       .whereRaw('coalesce(l.cpv_code, t.cpv_code) is not null')
+      .modify(competitiveOnly)
       .distinct(trx.raw('coalesce(l.cpv_code, t.cpv_code) as cpv'));
     return rows.map((r) => r.cpv);
   }
@@ -302,6 +315,7 @@ export default class BenchmarkRepository {
       .andWhereRaw(`t.published_at >= now() - (? || ' months')::interval`, [
         String(Number(sinceMonths)),
       ])
+      .modify(competitiveOnly)
       .groupByRaw('coalesce(l.cpv_code, t.cpv_code), t.buyer_id')
       .havingRaw('count(*) >= ?', [Number(minCount)])
       .select(

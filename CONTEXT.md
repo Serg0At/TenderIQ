@@ -142,7 +142,29 @@ Tendra holds no such tender, or holds more than one with that procedure code. Ke
 reason and counted, never guessed onto a tender and never thrown away. Two more reasons come from
 paper invitations: a file Tendra cannot read (`unsupported_format`, no tender created) and a
 tender created without a readable procedure code (`no_code`), which no result can be matched to.
+A result's row also says whether its procedure was public: only a public one Tendra lacks is a
+missed tender.
 _Avoid_: Orphan, Dropped row, Error
+
+**Never public**:
+A procedure whose invitation was never announced where Tendra reads: a single-source purchase, or
+a quotation sent straight to invited suppliers. Known only from facts — single source, or no
+invitation of its code inside the covered window — never guessed; anything else is unknown.
+Its result is not a missed tender.
+_Avoid_: Private tender, Hidden, Unannounced (alone), Missed
+
+**Covered window**:
+The stretch of publish times in which every notice on gnumner's invitation listings has been read,
+with no gap: from each listing's floor (the oldest notice a cold start read, raised past any hole
+a sweep left) to its watermark. Only inside it does "no invitation of this code" mean "none was
+published".
+_Avoid_: Coverage (alone), Watermark (it is one end), Sweep range
+
+**Result-only tender**:
+A tender that is only its results: created from a contract notice of a procedure that was never
+public, already awarded, with no invitation, deadline or CPV. Never biddable, never alerted. The
+same shape as a PPCM-history tender.
+_Avoid_: Ghost tender, Stub, Historical tender, Synthetic tender
 
 **Operator alert**:
 A message to the people running Tendra about the health of the system — a missed tender, a

@@ -239,9 +239,12 @@ export default class PublicBidRepository {
    * @param {boolean} opts.exact       true = this code only; false = its family
    * @param {string|null} opts.buyerId restrict to one buying agency
    * @param {number} opts.sinceMonths  recency window
+   * @param {boolean} opts.includeSingleSource  count single-source lots too
+   *   (explicit only): one supplier by design is not a market that drew one
+   *   bidder, and would read as a sole-bidder rate (ticket 31)
    */
   static async expectedCompetition(
-    { cpvCode = null, exact = true, buyerId = null, sinceMonths = 24 } = {},
+    { cpvCode = null, exact = true, buyerId = null, sinceMonths = 24, includeSingleSource = false } = {},
     trx = db
   ) {
     // Family match walks up the CPV hierarchy by stripping trailing zeros, the
@@ -266,6 +269,7 @@ export default class PublicBidRepository {
           .groupBy('b.tender_id', 'b.lot_number');
 
         if (buyerId) qb.andWhere('t.buyer_id', buyerId);
+        if (!includeSingleSource) qb.andWhereRaw(`t.procedure_type is distinct from 'single_source'`);
         if (cpvCode && exact) qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) = ?', [cpvCode]);
         if (cpvCode && !exact) {
           qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) like ?', [`${prefix}%`]);
