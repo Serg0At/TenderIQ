@@ -23,7 +23,7 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
-| `gnumner` | HTML scrape of the announcement, amendment and contract-concluded listings, and the files they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
+| `gnumner` | HTML scrape of the announcement, amendment, contract-concluded and failed-procedure listings, and the files they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` / `paper.failed` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
 | `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
 | `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
@@ -363,6 +363,41 @@ ARMEPS link on it is counted and not read (PPCM owns those results). Uploads bec
    only `maxListingPages` (five pages of `quotation` were about ten hours on 2026-10-19), so the
    window starts at the first sweep and competitive notices start qualifying a few weeks later,
    once contracts for invitations sent inside it are filed.
+
+### 4f. Failed-procedure listing — `paper.failed`
+
+«Չկայացած գնման ընթացակարգի մասին հայտարարություն» (`listingPaths` entry `kind: 'failed'`,
+ticket 09) is the ARMEPS and paper channels' cancellation source (ADR 0004). Same chain and
+watermark as the other listings; about ten notices a day, 6 a page, all uploads, e-auctions'
+among them. An ARMEPS link on it is counted and not read, as on the contract listing.
+Uploads become `paper.failed` jobs:
+
+1. Fetched and stored under ref `failed:{digest of the upload path}`, as a contract notice is.
+2. **Its content is read** (`failed.parser.js`, template 235-Ա Annex 13): the table's lot
+   numbers, which are **the lots that failed** — not the procedure's. The template's sentence
+   ("the procedure is declared failed") is left in place by buyers whose notice lists some lots,
+   so it is not read. A row with a blank lot cell is counted and not read. Only the Armenian
+   table is read: a `.zip` whose Armenian notice is a `.doc` beside a Russian `.docx` is
+   unreadable. `.doc`, `.pdf`, `.rar` and scans are `unsupported_format`, with the owner
+   comment, counted under the `failed` kind of the format-count query.
+3. The code is the title's, else the body's. Resolution (`resolveFailure`): rule 1; the code
+   looked up in every channel, and an e-auction's skipped before the format is asked (held only
+   on e-auction, or an `ԷԱՃ` code with no ARMEPS or paper tender); then the ARMEPS or paper
+   tender of the code **announced before the notice and past its deadline when the notice was
+   published, and of those the latest** — the notice states no invitation date, a failure is
+   declared after bids open, and a code is re-announced only after its run failed. Two at one
+   moment → `ambiguous`; none → `no_candidate` (a run still open, or with no deadline, is never
+   it); lots the notice names that a run lacks rule it out. `was_public` asks only whether the code was ever listed.
+   It never creates.
+4. `TenderRepository.recordFailure`, under the row lock: a `results` link with `observed_status
+   = 'cancelled'` and `failed_lots` the lots it named. **The tender becomes `cancelled`**
+   (`failureStatus`, through `deriveStatus`) **only when its notices, together, name every lot
+   it has** (`tender_lots` ∪ the ledger's lots); then `version + 1`, `TenderAmended`, and the
+   matcher skips it as `status_cancelled`. A partly failed tender keeps its status. A tender
+   with no known lots is never cancelled. An awarded one stays awarded. The other notices' lots
+   are read again under the lock, so two notices recorded at once cannot each miss the other.
+5. Not re-read when a tender of its code appears later: the tender it ends was announced
+   before it, so the invitation sweeps reach it first.
 
 **Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
 refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders

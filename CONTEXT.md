@@ -136,6 +136,14 @@ code and the reasons in prose. Recorded as an addendum of the tender it names, n
 dates.
 _Avoid_: Amendment (alone), Addendum (it is one kind), Change notice
 
+**Failure notice**:
+A buyer's announcement on gnumner that lots of a procedure failed («չկայացած»: no bids, none
+compliant, no contract signed), listing those lots. It cancels an ARMEPS or paper tender only
+once its failure notices, together, name every lot the tender has; until then the procedure is
+partly failed and its other lots go on.
+_Avoid_: Cancellation notice (a failure is not a cancellation until every lot has failed),
+Failed tender (alone)
+
 **Unmatched result**:
 A bidder or award row from a source that could not be attached to exactly one tender — because
 Tendra holds no such tender, or holds more than one with that procedure code. Kept with its

@@ -236,6 +236,7 @@ export const parseInvitation = (bytes) => {
   // every comparison, so it should not choose the converter:
   //
   //   select case when u.external_ref like 'contract:%' then 'contract'
+  //               when u.external_ref like 'failed:%' then 'failed'
   //               when u.external_ref like 'amendment:%' then 'amendment'
   //               else 'invitation' end as kind,
   //          case when u.procedure_type = 'single_source' then 'single_source'

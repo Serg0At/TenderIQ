@@ -95,6 +95,13 @@ export const JOB = {
    * (`reason: 'retry'`), which makes no request.
    */
   PAPER_CONTRACT: 'paper.contract',
+  /**
+   * One upload on gnumner's failed-procedure listing: the lots of an ARMEPS
+   * or paper tender that failed (ticket 09). Stored, matched to its tender on
+   * code and dates, and recorded as a link that cancels the tender once its
+   * notices name every lot (workers/paper.js).
+   */
+  PAPER_FAILED: 'paper.failed',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',

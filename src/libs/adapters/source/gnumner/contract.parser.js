@@ -1,5 +1,5 @@
 import { extractProcedureCode } from './listing.parser.js';
-import { cellText, wordDocuments } from './word.js';
+import { ARMENIAN, CYRILLIC, armenianPart, cellText, isBlank, wordDocuments } from './word.js';
 
 /**
  * Pure: the bytes of one upload on gnumner's «Կնքված պայմանագրի մասին
@@ -38,18 +38,6 @@ import { cellText, wordDocuments } from './word.js';
  * for lots «1.2»; a bidder listed twice in one lot, before and after
  * negotiation; a lot range «1-47» priced as one, which is not read.
  */
-
-const CYRILLIC = /[Ѐ-ӿ]/u;
-const ARMENIAN = /[Ա-և]/u;
-
-/** A cell with its Russian translation glued on: the Armenian part. */
-const armenianPart = (text) => {
-  const at = text.search(CYRILLIC);
-  return at > 0 && ARMENIAN.test(text.slice(0, at)) ? text.slice(0, at).trim() : text.trim();
-};
-
-/** An empty cell, or one a buyer filled with a dash or an ellipsis to say so. */
-const isBlank = (text) => /^[\s\-–—…․.]*$/u.test(text);
 
 /**
  * An AMD amount; null for a cell with no number in it (blank, a dash, or
@@ -507,6 +495,7 @@ export const parseContractNotice = (bytes) => {
   // choosing a converter:
   //
   //   select case when u.external_ref like 'contract:%' then 'contract'
+  //               when u.external_ref like 'failed:%' then 'failed'
   //               when u.external_ref like 'amendment:%' then 'amendment'
   //               else 'invitation' end as kind,
   //          case when u.procedure_type = 'single_source' then 'single_source'

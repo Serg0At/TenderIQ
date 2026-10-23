@@ -49,11 +49,17 @@ const sources = {
     // contract-concluded notices (ticket 08): the paper channel's results.
     // Every procedure type files there — ARMEPS, e-auction and single-source
     // ones too, all as uploads — about 50 a day, 6 a page.
+    //
+    // `kind: 'failed'` is «Չկայացած գնման ընթացակարգի մասին հայտարարություն»,
+    // the failed-procedure notices (ticket 09): the ARMEPS and paper
+    // channels' cancellation source. Uploads only, e-auctions' among them —
+    // about 10 a day (180 over 10-05 → 10-23), 6 a page.
     listingPaths: [
       { slug: 'open', path: '/hy/page/bac_mrcuyti_haytararutyun_ev_hraver/', procedureType: 'open' },
       { slug: 'quotation', path: '/hy/page/gnanshman_harcman_haytararutyun_ev_hraver/', procedureType: 'quotation' },
       { slug: 'amendment', path: '/hy/page/hraverum_katarvats_popokhutyunner/', kind: 'amendment' },
       { slug: 'contract', path: '/hy/page/knqvats_paymanagri_masin_haytararutyun/', kind: 'contract' },
+      { slug: 'failed', path: '/hy/page/chkayacats_gnman_yntacakargi_masin_haytararutyunner/', kind: 'failed' },
     ],
     /**
      * A paper tender's file never changes, so nothing re-reads it — and its

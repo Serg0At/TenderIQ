@@ -443,6 +443,61 @@ export const observeContract = (notice, { externalId, parsed }) => {
   };
 };
 
+/**
+ * The link and payload id of a failed-procedure notice: the upload's path, as
+ * for a contract notice, so the listing page it was stored with can give its
+ * title and URL back.
+ */
+export const failedNoticeId = (path) => `failed:${pathDigest(path)}`;
+
+/**
+ * A stored failed-procedure notice → a results observation (ticket 09):
+ * gnumner's «Չկայացած» is the ARMEPS and paper channels' cancellation source
+ * (ADR 0004).
+ *
+ * It names a code and the lots that failed, and nothing else that matches a
+ * tender: no channel — the listing carries e-auctions' too, which eauction
+ * states for itself — and no date of the invitation it ends. So its own
+ * publication is the date resolution asks about: the tender it ends was
+ * announced before it (`resolution.service.js#resolveFailure`).
+ *
+ * Its code is the title's, else the one its body states (as for an amendment
+ * notice, ticket 07). `lotNumbers` are the lots it lists as failed — not the
+ * tender's, which is why `status` is what it says of those lots and the
+ * tender's status is decided against the tender's own lots
+ * (`failureStatus`). An unreadable file is `unreadable`; its title's code
+ * still lets resolution skip an e-auction first.
+ */
+export const observeFailure = (notice, { externalId, parsed }) => {
+  const read = parsed.readable ? parsed.notice : null;
+  const procedureCode = notice.procedureCode ?? read?.procedureCode ?? null;
+  return {
+    source: SOURCE,
+    role: 'results',
+    failure: true,
+    channelUnstated: true,
+    externalId: String(externalId),
+    url: notice.url ?? null,
+    pointer: null,
+    procedureCode,
+    submissionChannel: null,
+    // Read off the code, only so an unmatched notice can be counted by procedure.
+    procedureType: procedureTypeOfCode(procedureCode),
+    buyerName: null,
+    publishedAt: new Date(notice.publishedAt),
+    deadlineAt: null,
+    lotNumbers: read ? read.lots : [],
+    // What it says of the lots it names, not of the tender. Status is derived
+    // from one observation at a time today; a derivation across a tender's
+    // links must read `failed_lots` beside this, or every partly failed
+    // tender reads as cancelled.
+    status: 'cancelled',
+    observedStatus: 'cancelled',
+    ...(read ? {} : { unreadable: { format: parsed.format } }),
+    warnings: read?.unplacedRows ? [`${read.unplacedRows} rows name no lot and were not read`] : [],
+  };
+};
+
 export default {
   SOURCE,
   pathDigest,
@@ -450,6 +505,8 @@ export default {
   paperNoticeRef,
   amendmentNoticeId,
   contractNoticeId,
+  failedNoticeId,
+  observeFailure,
   observeArmepsNotice,
   observePaperNotice,
   observeInvitation,

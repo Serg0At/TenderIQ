@@ -43,14 +43,18 @@ const listingKind = (slug) =>
 
 /**
  * The job an upload becomes, by its listing: an invitation (ticket 06), a
- * notice about an invitation (ticket 07), or a contract notice with the
- * tender's results (ticket 08).
+ * notice about an invitation (ticket 07), a contract notice with the
+ * tender's results (ticket 08), or a notice that its lots failed (ticket 09).
  */
 const UPLOAD_JOBS = {
   invitation: { name: JOB.PAPER_INVITATION, tag: 'paper' },
   amendment: { name: JOB.PAPER_AMENDMENT, tag: 'amendment' },
   contract: { name: JOB.PAPER_CONTRACT, tag: 'contract' },
+  failed: { name: JOB.PAPER_FAILED, tag: 'failed' },
 };
+
+/** The listings of what became of a tender — its contract or its failure — whose word is an upload. */
+const RESULT_LISTINGS = new Set(['contract', 'failed']);
 
 /** The listings whose uploads are invitations: what the covered window and the notice index are about (ticket 31). */
 export const invitationListings = () =>
@@ -147,11 +151,12 @@ export const gnumnerBoard = {
       return { tally: 'excluded', index };
     }
 
-    // A contract notice that links to armeps.am is an ARMEPS tender's result,
-    // and PPCM owns those (ADR 0004): counted, not read. None was seen — the
-    // listing's items are uploads — but the link alone would otherwise
-    // re-read the armeps.am page.
-    if (item.kind === 'armeps' && listingKind(slug) === 'contract') return { tally: 'armeps' };
+    // A contract or failure notice that links to armeps.am is not one: the
+    // word is the upload (PPCM owns ARMEPS awards, ADR 0004). Counted, not
+    // read. None was seen — 180 failure notices and every contract notice
+    // read were uploads — but the link alone would otherwise re-read the
+    // armeps.am page, which states no status.
+    if (item.kind === 'armeps' && RESULT_LISTINGS.has(listingKind(slug))) return { tally: 'armeps' };
 
     const ref = noticeRef(item);
     const hash = itemFingerprint(item);

@@ -4,21 +4,24 @@ import { getStorage, rawKey, tenderDocKey } from '../libs/storage/index.js';
 import { fetchInvitation } from '../libs/adapters/source/gnumner/client.js';
 import { fileFormat, noticeBodyCode, parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
 import { parseContractNotice } from '../libs/adapters/source/gnumner/contract.parser.js';
+import { parseFailedNotice } from '../libs/adapters/source/gnumner/failed.parser.js';
 import { invitationArchive, isOfficeFile, uploadedName } from '../libs/adapters/source/gnumner/invitation.files.js';
 import {
   amendmentNoticeId,
   contractNoticeDigest,
   contractNoticeId,
+  failedNoticeId,
   noticeIdOfContract,
   observeAmendment,
   observeContract,
+  observeFailure,
   pathDigest,
 } from '../libs/adapters/source/gnumner/observation.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
 import { noticeOfJob, storedNotice, withRunPublications } from '../services/paperNotice.service.js';
-import { deriveStatus, invitationSpan, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
+import { deriveStatus, failureStatus, invitationSpan, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
@@ -449,6 +452,136 @@ export const handlePaperContract = async (job, token) => {
 };
 
 /**
+ * A notice on gnumner's failed-procedure listing (ticket 09): fetched, stored
+ * under its notice id (`failed:{path digest}`), and recorded on its tender
+ * (`recordFailedNotice`). Named `paper.` like every gnumner upload's job, but
+ * it ends ARMEPS tenders as well as paper ones.
+ */
+export const handlePaperFailed = async (job, token) => {
+  if (!isNotice(job.data)) {
+    throw new UnrecoverableError('paper.failed needs the notice: an upload path, slug, title and publishedAt');
+  }
+  const { path, fileType = null } = job.data;
+  const { bytes, format, contentType } = await fetchUpload(job, token, path);
+  const hash = sha256(bytes);
+  const externalId = failedNoticeId(path);
+
+  if (!(await sourcePayloads.existsWithHash(SOURCE, externalId, hash))) {
+    const storage = await getStorage();
+    const key = rawKey({ source: SOURCE, ref: externalId, hash, ext: extensionOf(format, fileType) });
+    await storage.put(key, bytes, { contentType: contentType || 'application/octet-stream' });
+    await sourcePayloads.record({ source: SOURCE, ref: externalId, storageKey: key, hash });
+  }
+
+  const notice = { ...noticeOfJob(job.data), seenAt: new Date(job.timestamp) };
+  return recordFailedNotice({ externalId, notice, priority: job.opts?.priority ?? PRIORITY.LIVE });
+};
+
+/**
+ * One stored failed-procedure notice → its tender, through the resolution
+ * module: a `results` link that records `cancelled` and the lots it names,
+ * and `cancelled` on the tender once its notices name every lot it has
+ * (`failureStatus`); an unmatched result when its code matches no ARMEPS or
+ * paper tender announced before it, or two, or the file cannot be read;
+ * nothing when the code is an e-auction's. Reads only storage and the
+ * database, so running it again decides the same and writes nothing twice.
+ *
+ * Not re-read when a tender of its code appears later, as a contract notice
+ * is (`queueContractRetries`): the tender it ends was announced before it,
+ * so the invitation sweeps reach that tender first — except a tender older
+ * than a cold start's pages, which it then leaves `closed`.
+ */
+export const recordFailedNotice = async ({ externalId, notice, priority = PRIORITY.LIVE }) => {
+  const log = logger.child({ job: JOB.PAPER_FAILED, source: SOURCE, failed: externalId });
+  const stored = await sourcePayloads.findLatestByRef(SOURCE, externalId);
+  if (!stored) throw new UnrecoverableError(`[${SOURCE}] no stored failed-procedure notice ${externalId}`);
+  const storage = await getStorage();
+  const bytes = Buffer.from(await storage.get(stored.storage_key));
+
+  // The body is asked for its code only when the title names none; its lots always.
+  const observation = observeFailure(notice, { externalId, parsed: parseFailedNotice(bytes) });
+  for (const warning of observation.warnings) log.warn(warning);
+  // Was an invitation of the code ever listed: the notice states no
+  // invitation date, so the covered window is not asked.
+  const publicity = await listingNotices.publicityFacts({
+    source: SOURCE,
+    key: normalizeCode(observation.procedureCode),
+    from: null,
+    to: null,
+  });
+  const decision = resolve(observation, { ...(await tenders.findCandidates(lookupsFor(observation))), publicity });
+
+  if (decision.action === 'unmatched') {
+    await unmatchedResults.record({
+      source: SOURCE,
+      externalRef: externalId,
+      procedureCode: observation.procedureCode,
+      procedureType: observation.procedureType,
+      reason: decision.reason,
+      wasPublic: decision.wasPublic,
+      candidateTenderIds: decision.candidateIds,
+      payloadHash: stored.hash,
+      seenAt: stored.fetched_at,
+    });
+    log.warn(`failed-procedure notice unmatched (${decision.reason})`, {
+      code: observation.procedureCode,
+      candidates: decision.candidateIds,
+      wasPublic: decision.wasPublic,
+      ...(observation.unreadable ? { format: observation.unreadable.format } : {}),
+    });
+    return { unmatched: decision.reason, wasPublic: decision.wasPublic };
+  }
+  if (decision.action !== 'link') {
+    log.info(`failed-procedure notice for ${observation.procedureCode} skipped — ${decision.reason ?? decision.action}`);
+    return { skipped: decision.reason ?? decision.action };
+  }
+
+  const { tender } = decision;
+  const status = failureStatus(observation, tender, new Date());
+  const result = await tenders.recordFailure({
+    tenderId: decision.tenderId,
+    expectedStatus: tender.status,
+    expectedFailedLots: tender.failedLots,
+    status,
+    link: {
+      source: SOURCE,
+      externalId,
+      url: observation.url,
+      role: observation.role,
+      observedStatus: observation.observedStatus,
+      failedLots: observation.lotNumbers,
+      seenAt: notice.seenAt ?? stored.fetched_at,
+    },
+  });
+
+  // Only when the link is new, as in the normalizer.
+  if (decision.rule !== 'link') {
+    await unmatchedResults.markResolved({ source: SOURCE, externalRef: externalId, tenderId: decision.tenderId });
+  }
+  // A cancellation is an amendment like an award: the matcher hears of it,
+  // and its open rule decides whether anyone is told.
+  if (result.event) {
+    await alertsQueue.add(
+      JOB.MATCH_TENDER,
+      { tenderId: result.tenderId, event: result.event, version: result.version, changedFields: result.changedFields },
+      { jobId: matchJobId(result.tenderId, result.version), priority }
+    );
+  }
+
+  log.info(
+    `failed-procedure notice recorded: lots ${observation.lotNumbers.join(', ') || 'none placed'} of ` +
+      `${tender.lotNumbers.length ? [...tender.lotNumbers].sort((a, b) => a - b).join(', ') : 'unknown lots'}, tender ${status}`,
+    { tenderId: decision.tenderId, code: observation.procedureCode }
+  );
+  return {
+    tenderId: decision.tenderId,
+    status,
+    failedLots: observation.lotNumbers,
+    ...(result.event ? { version: result.version } : {}),
+  };
+};
+
+/**
  * The window gnumner's invitation listings are all read without a gap, as
  * `{ from, to }` in ms: the newest floor to the oldest watermark
  * (sweepState.js#floorKey). Null while any listing has no floor yet. Every
@@ -698,6 +831,8 @@ export default {
   recordAmendment,
   handlePaperContract,
   recordContract,
+  handlePaperFailed,
+  recordFailedNotice,
   queueContractRetries,
   paperDocumentsJob,
   paperRefresher,

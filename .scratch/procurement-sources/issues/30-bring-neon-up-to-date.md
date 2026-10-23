@@ -47,6 +47,11 @@ second time to confirm it is a no-op:
       `npm run notices:backfill`, which fills the table from gnumner listing pages already in
       storage. Neon has none today, so it reports 0, but run it anyway: a page stored by a
       sweep under the old code is otherwise a notice the publicity check never sees.
+- [ ] 11. `migrations/add_tender_source_failed_lots.js`: `tender_sources.failed_lots`, the lots
+      a gnumner failed-procedure notice named (ticket 09). It has nothing to fill. **Still on
+      disk**: delete it after this step has run on Neon (step 4 of CLAUDE.md's schema workflow).
+      Run it before the deploy: the new code reads and writes the column on every candidate
+      lookup, so ingestion fails without it.
 
 Environment:
 

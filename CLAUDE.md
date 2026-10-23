@@ -672,6 +672,21 @@ decision that has already been made.
   the template says the invitation was "sent or published", most quotations are sent to invited
   suppliers and never reach gnumner, and ~780 notices (10-07 → 10-21) held one code from the
   published quotation listing. Ticket 08 records the counts.
+- **A failure notice cancels an ARMEPS or paper tender only once every lot has failed** (ticket
+  09, `failed.parser.js`, template 235-Ա Annex 13, `paper.failed`, ADR 0004). The template's
+  table lists **the failed lots**, and its sentence says the whole procedure failed even when
+  the table lists 13 of 39 — so the sentence is not read. Each notice is a `results` link with
+  `observed_status = 'cancelled'` and `tender_sources.failed_lots`; the tender turns `cancelled`
+  (`resolution.service.js#failureStatus`, through `deriveStatus`) when its notices' lots,
+  together, cover `tender_lots` ∪ the ledger's lots. Partly failed → status untouched; no
+  lots known → never cancelled (a wrong cancel is terminal and blocks the award); `awarded`
+  never moves. `recordFailure` re-reads the other notices' lots under the row lock. The notice
+  states no invitation date, so it matches the ARMEPS/paper tender of its code **announced
+  before it and past its deadline when it was published, the latest** (a code is re-announced
+  only after its run failed, and a live re-announcement is never cancelled by its
+  predecessor's late notice); e-auction codes (held only on e-auction, or `ԷԱՃ` with no
+  ARMEPS/paper tender) are skipped before the format is asked; unreadable files are `unsupported_format`; it never
+  creates, and is not re-read when a tender of its code appears later.
 - **A result of a procedure that was never public is a result-only tender** (ticket 31, ADR 0004's
   second exception to "results never create"). `resolution.service.js#wasPublic` decides from
   facts only: an invitation of the code ever on the `open`/`quotation` listings

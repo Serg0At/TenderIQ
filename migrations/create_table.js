@@ -78,6 +78,9 @@ function up(pg) {
       table.string('role').notNullable();           // discovery | detail | results (CHECK in indexes())
       table.string('observed_status');              // what this source last said, verbatim — or `superseded`, sticky (ticket 29)
       table.string('points_to');                    // a discovery link: `{source}:{external id}` of the link it is a notice of (ticket 07)
+      // A gnumner failed-procedure notice's link: the lots it declared failed (ticket 09). NULL on
+      // every other link. The tender is cancelled only once its notices name every lot it has.
+      table.specificType('failed_lots', 'integer[]');
       table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
       table.timestamp('last_seen_at').notNullable().defaultTo(pg.fn.now());
       table.unique(['source', 'external_id'], { indexName: 'tender_sources_source_external_uq' });

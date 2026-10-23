@@ -77,6 +77,21 @@ export const documentText = ($) =>
 
 export const cellText = ($, cell) => runText($, cell).replace(/\s+/g, ' ').trim();
 
+export const CYRILLIC = /[Ѐ-ӿ]/u;
+export const ARMENIAN = /[Ա-և]/u;
+
+/**
+ * A cell with its Russian translation glued on («ԲԵԼՄԵՏ ՍՊԸБЕЛМЕТ ООО»): the
+ * Armenian part. A bilingual notice does this to every cell.
+ */
+export const armenianPart = (text) => {
+  const at = text.search(CYRILLIC);
+  return at > 0 && ARMENIAN.test(text.slice(0, at)) ? text.slice(0, at).trim() : text.trim();
+};
+
+/** An empty cell, or one a buyer filled with a dash or an ellipsis to say so. */
+export const isBlank = (text) => /^[\s\-–—…․.]*$/u.test(text);
+
 /**
  * The Word documents in an upload, each handed to `read($, entryName)`: the
  * upload itself when it is a .docx, or every .docx one level inside a .zip.
@@ -113,4 +128,4 @@ export const wordDocuments = (bytes, read) => {
   return { format: 'zip', documents };
 };
 
-export default { fileFormat, documentText, cellText, wordDocuments };
+export default { fileFormat, documentText, cellText, armenianPart, isBlank, wordDocuments };

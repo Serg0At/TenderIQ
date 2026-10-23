@@ -150,6 +150,29 @@ agreed with one supplier is not a market's. A total (a buyer's spend, a supplier
 counts them, split out. A single-source tender's own ledger is still shown, flagged as single
 source.
 
+## Failed procedures (2026-10-23, ticket 09)
+
+gnumner's «Չկայացած» listing is the ARMEPS and paper channels' cancellation source in the table
+above. Its notices are uploads (180 of 180 on its first thirty pages), from every channel, and
+the 235-Ա template lists **the lots that failed**, not the procedure: a buyer whose 13 of 39 lots
+failed lists those 13 under the template's sentence that the whole procedure did. So a notice is
+a link that records `cancelled` and the lots it names (`tender_sources.failed_lots`), and **the
+tender is cancelled only once its notices, together, name every lot it has**. A partly failed
+procedure is not a cancelled one: its other lots go on to a contract, and a cancellation is
+terminal, so a wrong one would stop that award from ever landing. A tender whose lots are not
+known is never cancelled by a notice; past its deadline it stays `closed`.
+
+The notice names a code and its own publication, and no date of the invitation it ends. A
+procedure is declared failed once its bids are opened, so it matches the ARMEPS or paper tender
+of its code **announced before it and past its deadline when it was published, and of those the
+latest**: a buyer re-announces a code only once its run has failed, so an earlier run had
+already ended, and a re-announcement still open is never cancelled by its predecessor's late
+notice. Two runs announced at the same moment are `ambiguous`; lots the notice names that a run
+lacks rule that run out. An e-auction's notice is skipped, because eauction states that failure
+itself: a code held only on e-auction, or one whose method marker is `ԷԱՃ` with no ARMEPS or paper
+tender of it. Otherwise every e-auction older than Tendra's history would read as a missed tender. A notice that cannot be read is `unsupported_format`, because which lots failed is
+the whole point. Like any result, it never creates a tender.
+
 ## Considered options
 
 - **A tender is a procedure code, with runs inside it.** One card per code, but alerts, pursuits

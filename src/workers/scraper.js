@@ -13,7 +13,14 @@ import { logger } from '../utils/logger.js';
 import { handleTenderDocuments } from './documents.js';
 import { gnumnerBoard } from './gnumner.js';
 import { handleArmepsDetail, handleArmepsDocuments, armepsRefresher } from './armeps.js';
-import { handlePaperInvitation, handlePaperDocuments, handlePaperAmendment, handlePaperContract, paperRefresher } from './paper.js';
+import {
+  handlePaperInvitation,
+  handlePaperDocuments,
+  handlePaperAmendment,
+  handlePaperContract,
+  handlePaperFailed,
+  paperRefresher,
+} from './paper.js';
 import { sweepBoard, readListingPage } from './listingChain.js';
 
 /**
@@ -282,6 +289,8 @@ export const processIngestFetch = async (job, token) => {
       return handlePaperAmendment(job, token);
     case JOB.PAPER_CONTRACT:
       return handlePaperContract(job, token);
+    case JOB.PAPER_FAILED:
+      return handlePaperFailed(job, token);
     case JOB.TENDER_DETAIL:
       return handleTenderDetail(job, token);
     case JOB.TENDER_DOCUMENTS:

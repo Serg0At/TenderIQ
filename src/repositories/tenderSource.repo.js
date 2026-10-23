@@ -35,8 +35,14 @@ export default class TenderSourceRepository {
    * today. So `last_seen_at` only ever moves forward, and an observation
    * older than the stored one updates nothing else either — an old page's
    * status must not overwrite a newer one.
+   *
+   * `failedLots` is what a failed-procedure notice's link carries (ticket 09):
+   * the lots it declared failed. NULL on every other link.
    */
-  static async upsert({ tenderId, source, externalId, url = null, role, observedStatus = null, pointsTo = null, seenAt = new Date() }, trx = db) {
+  static async upsert(
+    { tenderId, source, externalId, url = null, role, observedStatus = null, pointsTo = null, failedLots = null, seenAt = new Date() },
+    trx = db
+  ) {
     const newer = (column) =>
       trx.raw('case when excluded.last_seen_at >= ?? then excluded.?? else ?? end', [
         `${TABLE}.last_seen_at`, column, `${TABLE}.${column}`,
@@ -51,6 +57,7 @@ export default class TenderSourceRepository {
         role,
         observed_status: observedStatus,
         points_to: pointsTo,
+        failed_lots: failedLots,
         first_seen_at: seenAt,
         last_seen_at: seenAt,
       })
@@ -61,6 +68,7 @@ export default class TenderSourceRepository {
         // move; a blank (a row from before the column) is filled.
         points_to: trx.raw('coalesce(??, excluded.points_to)', [`${TABLE}.points_to`]),
         role: newer('role'),
+        failed_lots: newer('failed_lots'),
         // Sticky: a replaced run does not come back, whatever page is read.
         observed_status: trx.raw(
           'case when ?? = ? or excluded.observed_status = ? then ? else ? end',
@@ -140,6 +148,20 @@ export default class TenderSourceRepository {
       .where({ source, points_to: pointsTo })
       .orderBy([{ column: 'first_seen_at' }, { column: 'id' }])
       .select('external_id', 'url', 'role');
+  }
+
+  /**
+   * The lots the failed-procedure notices linked to a tender declared failed,
+   * other than the one link `except` (ticket 09), ascending: what a notice
+   * being recorded adds its own lots to.
+   */
+  static async failedLotsOf(tenderId, { except }, trx = db) {
+    const rows = await trx(TABLE)
+      .where({ tender_id: tenderId })
+      .whereNotNull('failed_lots')
+      .whereNot((q) => q.where({ source: except.source, external_id: String(except.externalId) }))
+      .select(trx.raw('distinct unnest(failed_lots) as lot'));
+    return rows.map((row) => Number(row.lot)).sort((a, b) => a - b);
   }
 
   /** One tender's links, oldest first: the creating source leads. */

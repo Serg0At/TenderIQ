@@ -746,6 +746,14 @@ export default class TenderRepository {
           `array(select lot_number from tender_lots where tender_id = t.id
                  union
                  select lot_number from public_tender_bids where tender_id = t.id) as lot_numbers`
+        ),
+        // The lots its failed-procedure notices named, other than the
+        // observation's own link (ticket 09): what a notice adds its own to.
+        trx.raw(
+          `array(select distinct unnest(failed_lots) from tender_sources
+                  where tender_id = t.id and failed_lots is not null
+                    and not (source = ? and external_id = ?) order by 1) as failed_lots`,
+          [link.source, String(link.externalId)]
         )
       );
     const byLink = async (ref) =>
@@ -787,6 +795,7 @@ export default class TenderRepository {
       publishedAt: row.published_at,
       deadlineAt: row.deadline_at,
       lotNumbers: row.lot_numbers ?? [],
+      failedLots: (row.failed_lots ?? []).map(Number),
     });
     const linked = await byLink(link);
     const pointed = await byLink(pointer);
@@ -1249,6 +1258,39 @@ export default class TenderRepository {
       const version = existing.version + 1;
       await trx(TABLE).where({ id: tenderId }).update({ status, version });
       return { event: 'TenderAmended', tenderId, version, changedFields: ['status'], ...ledger };
+    });
+  }
+
+  /**
+   * A failed-procedure notice's word on its tender (ticket 09): its link, with
+   * the lots it declared failed, and the status they move the tender to — one
+   * transaction under the row lock.
+   *
+   * `status` was derived from `expectedStatus` and from the lots the tender's
+   * other notices had named, `expectedFailedLots`, both read when the notice
+   * was resolved. Either having moved since throws, and the retry derives
+   * again: two notices naming lots 1 and 2 of a two-lot tender, recorded at
+   * once, would otherwise each find the other absent and neither cancel it.
+   * A status that moves is an amendment like any other, as in
+   * `recordResults`; a notice recorded again moves nothing.
+   */
+  static async recordFailure({ tenderId, expectedStatus, expectedFailedLots, status, link }) {
+    return db.transaction(async (trx) => {
+      const existing = await trx(TABLE).where({ id: tenderId }).forUpdate().first();
+      if (!existing) throw new Error(`[tenders] resolved tender ${tenderId} no longer exists — re-resolve`);
+      if (existing.status !== expectedStatus) {
+        throw new Error(`[tenders] tender ${tenderId} is ${existing.status}, not ${expectedStatus} as resolved — re-resolve`);
+      }
+      const others = await tenderSources.failedLotsOf(tenderId, { except: link }, trx);
+      if (others.join() !== [...expectedFailedLots].sort((a, b) => a - b).join()) {
+        throw new Error(`[tenders] tender ${tenderId} has had failed lots recorded since it was resolved — re-resolve`);
+      }
+
+      await tenderSources.upsert({ ...link, tenderId }, trx);
+      if (status === existing.status) return { event: null, tenderId, version: existing.version };
+      const version = existing.version + 1;
+      await trx(TABLE).where({ id: tenderId }).update({ status, version });
+      return { event: 'TenderAmended', tenderId, version, changedFields: ['status'] };
     });
   }
 }

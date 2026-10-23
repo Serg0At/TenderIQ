@@ -21,6 +21,7 @@
  *     unreadable: { format } | undefined,       // a file its parser could not read (a paper .rar)
  *     amendment: boolean | undefined,           // a notice amending a tender it does not name (gnumner)
  *     channelUnstated: boolean | undefined,     // a result whose source names no channel (a gnumner contract notice)
+ *     failure: boolean | undefined,             // a notice that lots of a tender it does not name failed (gnumner, ticket 09)
  *     createsWhenNeverPublic: boolean | undefined } // a result that is its own tender when none was ever public (ticket 31)
  *
  * A candidate is a stored tender:
@@ -29,6 +30,7 @@
  *     replacedRuns,                             // it holds a superseded run: publishedAt is its newest
  *     runPublishedAt,                           // optional: every file's publication, for a paper re-post
  *     resultOnly,                               // only results created it: no invitation, no page (ticket 31)
+ *     failedLots,                               // the lots its other failed-procedure notices named (ticket 09)
  *     linkSuperseded }                          // linked candidates only: that link is a dead run
  *
  * **An e-auction amendment** is a new tid whose page names the runs it
@@ -398,6 +400,68 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
   return unmatched('no_candidate');
 };
 
+/** The submission channels gnumner's failed-procedure notices speak for (ADR 0004); eauction states its own. */
+const FAILURE_CHANNELS = new Set(['armeps', 'paper']);
+
+/**
+ * A failed-procedure notice (ticket 09): rule 1, then its code, matched in
+ * the ARMEPS and paper channels on dates alone. An e-auction's notice is
+ * skip, before the format is asked — eauction states that failure itself:
+ * one whose code Tendra holds only on e-auction, and one whose code's method
+ * marker says e-auction (`ԷԱՃ`) when Tendra holds no ARMEPS or paper tender of
+ * it, or every e-auction older than Tendra's history would read as a missed
+ * tender. A code it holds nowhere else is `no_candidate`.
+ *
+ * The notice states no date of the invitation it ends, only its own
+ * publication. A procedure is declared failed once its bids are opened, so
+ * the tender it ends was announced before it and its deadline had passed
+ * when it was published; of those, the latest — a buyer re-announces a code
+ * only once its run has failed, so an earlier run had already ended. A run
+ * still open when the notice was published is never it: a re-announcement
+ * cancelled by its predecessor's late notice is a live tender lost, while a
+ * notice left unmatched is counted. A run with no deadline proves nothing and
+ * is never it either. Two runs announced at the same moment are `ambiguous`,
+ * never a pick. Lots the notice names that a run does not have rule that run
+ * out, as for rule 3.
+ *
+ * Whether its procedure was public is asked of its code alone — "was an
+ * invitation of it ever listed" — never of the covered window, which is
+ * about an invitation's date this notice does not carry. It never creates.
+ */
+const resolveFailure = (observation, { linked = [], byCode = [], publicity = {} }) => {
+  const byLink = unique(linked);
+  if (byLink.length === 1) return link(byLink[0], 'link');
+  if (byLink.length > 1) return unmatched('ambiguous', byLink);
+
+  const key = normalizeCode(observation.procedureCode);
+  const coded = key ? byCode.filter((tender) => normalizeCode(tender.referenceCode) === key) : [];
+  const own = coded.filter((tender) => FAILURE_CHANNELS.has(tender.submissionChannel));
+  if (!own.length && (coded.length || observation.procedureType === 'e_auction')) return OTHER_CHANNEL;
+
+  // No window: only `codeSeen` and the single-source marker can answer.
+  const isPublic = wasPublic(observation, { codeSeen: publicity.codeSeen });
+  if (observation.unreadable) return unmatched('unsupported_format', [], isPublic);
+  if (!key) return unmatched('no_code', [], isPublic);
+
+  const published = time(observation.publishedAt);
+  const ended = own.filter((tender) => {
+    const at = time(tender.publishedAt);
+    const deadline = time(tender.deadlineAt);
+    return (
+      published !== null &&
+      at !== null &&
+      at <= published &&
+      deadline !== null &&
+      deadline <= published &&
+      (tender.resultOnly || lotsFit(observation.lotNumbers, tender.lotNumbers))
+    );
+  });
+  if (!ended.length) return unmatched('no_candidate', [], isPublic);
+  const latest = Math.max(...ended.map((tender) => time(tender.publishedAt)));
+  const current = unique(ended.filter((tender) => time(tender.publishedAt) === latest));
+  return current.length === 1 ? link(current[0], 'code') : unmatched('ambiguous', current);
+};
+
 /**
  * One observation → link to a tender, create a new one, or unmatched with a
  * reason. ADR 0004's order, and the first decisive rule wins:
@@ -449,6 +513,9 @@ const resolveAmendment = (observation, { linked = [], byCode = [] }) => {
  * never counts as an unreadable paper result. Otherwise it is rule 3 within
  * its own channel, like any result.
  *
+ * A failed-procedure notice names a code, the lots that failed and its own
+ * publication (`failure`, ticket 09): `resolveFailure`. It never creates.
+ *
  * A page from a superseded run — one that says so, or whose link its
  * replacement already marked — is `superseded` when linked, and `skip` when
  * not: nothing is created for a dead run, and its replacement records it
@@ -473,6 +540,7 @@ export const resolve = (
   { linked = [], pointed = [], predecessorTenders = [], byCode = [], codeRuns = [], publicity = {} } = {}
 ) => {
   if (observation.amendment) return resolveAmendment(observation, { linked, byCode });
+  if (observation.failure) return resolveFailure(observation, { linked, byCode, publicity });
   if (observation.channelUnstated && !linked.length && heldElsewhere(observation, byCode)) return OTHER_CHANNEL;
   const resultPublic = () => (observation.role === 'results' ? wasPublic(observation, publicity) : null);
   if (observation.unreadable) return unmatched('unsupported_format', [], resultPublic());
@@ -605,6 +673,33 @@ export const deriveStatus = ({ submissionChannel, links = [], current = null, de
   return STEP[next] < STEP[current] ? current : next;
 };
 
+/**
+ * A tender's status once a failed-procedure notice is linked to it (ticket
+ * 09): `cancelled`, through `deriveStatus` and its owners table, when the
+ * lots its notices name — this one's and those already linked
+ * (`tender.failedLots`) — are every lot the tender has. Otherwise the status
+ * it has: a partly failed procedure is not a cancelled one, and its other
+ * lots go on to a contract or a failure of their own. A tender whose lots are
+ * not known is never cancelled by a notice, since nothing proves the notice
+ * named them all — a missed cancellation leaves a tender past its deadline
+ * `closed`, a wrong one stops its award from ever landing. Never moves a
+ * tender back from `awarded`: `deriveStatus` keeps a terminal status.
+ */
+export const failureStatus = (observation, tender, now) => {
+  const failed = new Set([...(tender.failedLots ?? []), ...observation.lotNumbers].map(Number));
+  const lots = tender.lotNumbers ?? [];
+  if (!lots.length || !lots.every((lot) => failed.has(Number(lot)))) return tender.status;
+  return deriveStatus(
+    {
+      submissionChannel: tender.submissionChannel,
+      links: [{ source: observation.source, status: observation.status }],
+      current: tender.status,
+      deadlineAt: tender.deadlineAt,
+    },
+    now
+  );
+};
+
 export default {
   normalizeCode,
   normalizeBuyer,
@@ -613,6 +708,7 @@ export default {
   wasPublic,
   resolve,
   deriveStatus,
+  failureStatus,
   STATUS_OWNERS,
   JOINS_ON_CODE,
 };
