@@ -25,7 +25,7 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
 | `gnumner` | HTML scrape of the announcement, amendment, contract-concluded and failed-procedure listings, and the files they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` / `paper.failed` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
 | `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
-| `ppcm` | PPCM's organized-procedures report (JSON behind armeps.am/ppcm), by procedure code — **no listing**, results only | `13 */2 * * *` refresh of ARMEPS tenders past their deadline and not yet awarded or cancelled | ARMEPS `awards` and `public_tender_bids` (`source = 'ppcm'`), supplier `parties` with their ՀՎՀՀ, a `ppcm` results link, `awarded` |
+| `ppcm` | PPCM's organized-procedures report (JSON behind armeps.am/ppcm), by procedure code — **no listing**, results only | `13 */2 * * *` refresh of ARMEPS tenders past their deadline, not cancelled, with a lot that has neither an award nor a recorded failure | ARMEPS `awards` and `public_tender_bids` (`source = 'ppcm'`), supplier `parties` with their ՀՎՀՀ, a `ppcm` results link, `awarded` |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
 
 Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit`, `concurrency`,
@@ -519,8 +519,11 @@ procedures), one row per bidder per lot — bidder, ՀՎՀՀ, net offer, the win
 and dates. Its id, the code parameter's id and the 36 column names are in
 `sources.config.js#ppcm.organizedProcedures`; a row is a bare array in that order.
 
-1. **Refresh** (`refresh-ppcm`, every 2 hours): ARMEPS tenders past their deadline, neither
-   awarded nor cancelled, deadline within 90 days (`tenders.findAwaitingResults`), oldest first.
+1. **Refresh** (`refresh-ppcm`, every 2 hours): ARMEPS tenders past their deadline, deadline
+   within 90 days, not cancelled, and with a lot — its lots or its ledger's — that has neither an
+   award nor a failure a notice recorded (`tenders.findAwaitingResults`), oldest first. `awarded`
+   arrives with the first lot's contract, and a buyer files the others weeks later, so an
+   awarded tender is asked about until every lot is settled.
    PPCM gives nothing whose age says when a tender was last asked about, so each code is claimed
    in Redis (`ppcm:asked:{code}`, `pollIntervalHours` = 24; a failed ask waits out the claim) as the batch (60) is picked: the batch
    rotates through the whole window. Jobs carry `PRIORITY.RESULTS`, behind live discovery.
@@ -555,7 +558,9 @@ and dates. Its id, the code parameter's id and the 36 column names are in
    `tenders.recordResults` (link, bids, awards, status under the row lock), `awarded` through
    `deriveStatus` when a winner is named, the match job, a benchmark recompute. Bidders become
    `ppcm:bo:{ՀՎՀՀ}` parties carrying `tax_id`. A tender PPCM has not reported is untouched, and
-   `bids.reconcile` leaves a bid on it `not_found` and retryable.
+   `bids.reconcile` leaves a bid on it `not_found` and retryable. The award's `amount` is the
+   contract (spend); a discount from the budget compares the winning offer instead
+   (`tender.repo.js#awardOfferSql`), and leaves out and counts a lot whose contract is not it.
 
 `reason: 'replay'` re-records the latest stored answer with no request.
 

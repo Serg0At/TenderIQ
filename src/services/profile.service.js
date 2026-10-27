@@ -112,6 +112,10 @@ export default class ProfileService {
         // two is the useful signal: a competitor whose winning discount is far
         // below its typical one is winning on something other than price.
         avgWinningDiscountPct: num(wins?.avg_winning_discount_pct),
+        // Won lots with a budget left out of that figure because their
+        // contract is not the winning offer (a PPCM framework or partial
+        // contract): no gross is guessed for them, and they are not hidden.
+        winningDiscountExcludedLots: int(wins?.winning_discount_excluded),
       },
 
       // A total: every contract this company holds, single source included.
@@ -190,6 +194,9 @@ export default class ProfileService {
         // budget this buyer typically settles — the number a supplier uses to
         // judge how aggressively to price — and how many companies win it.
         avgDiscountPct: num(spend?.avg_discount_pct),
+        // Budgeted lots left out of the discount because their contract is not
+        // the winning offer — counted in `totalSpend`, never guessed a gross.
+        discountExcludedLots: int(spend?.discount_excluded),
         distinctWinners: int(spend?.distinct_winners),
         currency: 'AMD',
         split: split({ totalSpend }, { totalSpend: num(spend?.spend_single_source) ?? 0 }, ['totalSpend']),

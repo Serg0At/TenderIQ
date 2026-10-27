@@ -1,7 +1,7 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
-import { competitiveOnlySql } from './tender.repo.js';
+import { awardOfferSql, competitiveOnlySql } from './tender.repo.js';
 
 const TABLE = 'price_benchmarks';
 
@@ -46,6 +46,9 @@ export default class BenchmarkRepository {
           'a.amount',
           'a.net_amount',
           'a.estimated_value',
+          // The winner's offer with VAT, for the discount: NULL where the
+          // award's contract is not that offer (tender.repo.js#awardOfferSql).
+          trx.raw(`${awardOfferSql('a')} as offer`),
           // Carried so the aggregate below can count how many distinct
           // procurements the sample actually represents.
           't.id as tender_id',
@@ -98,12 +101,17 @@ export default class BenchmarkRepository {
         // decimals implies an accuracy the sample cannot support, and the
         // column was `real` (float4), so the trailing digits were float noise
         // rather than data — 6.8833737 for what is simply 6.88.
+        //
+        // Against the winner's offer, never the contract: a lot whose contract
+        // is not its offer (a PPCM framework or partial contract) is left out
+        // and counted, rather than given a gross nobody stated.
         trx.raw(
           `round(
-             avg((estimated_value - amount) / nullif(estimated_value, 0) * 100)
-               filter (where estimated_value > 0)::numeric
+             avg((estimated_value - offer) / nullif(estimated_value, 0) * 100)
+               filter (where estimated_value > 0 and offer is not null)::numeric
            , 2) as avg_discount_pct`
-        )
+        ),
+        trx.raw('count(*) filter (where estimated_value > 0 and offer is null)::int as discount_excluded')
       )
       .from('comparable')
       .first();
@@ -115,6 +123,7 @@ export default class BenchmarkRepository {
       medianPrice: rows?.median_price === null ? null : Number(rows?.median_price),
       maxPrice: rows?.max_price === null ? null : Number(rows?.max_price),
       avgDiscountPct: rows?.avg_discount_pct === null ? null : Number(rows?.avg_discount_pct),
+      discountExcludedLots: Number(rows?.discount_excluded ?? 0),
     };
   }
 
@@ -239,6 +248,7 @@ export default class BenchmarkRepository {
       median_price: stats.medianPrice,
       max_price: stats.maxPrice,
       avg_discount_pct: stats.avgDiscountPct,
+      discount_excluded: stats.discountExcludedLots ?? 0,
       computed_at: new Date(),
     };
 

@@ -1,6 +1,6 @@
 import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
-import { competitiveOnlySql } from './tender.repo.js';
+import { awardOfferSql, competitiveOnlySql } from './tender.repo.js';
 
 const TABLE = 'public_tender_bids';
 
@@ -172,6 +172,9 @@ export default class PublicBidRepository {
         'p.region as supplier_region',
         'a.amount',
         'a.net_amount',
+        // The winning offer with VAT, what a discount compares; NULL where the
+        // contract (`amount`) is not that offer (tender.repo.js#awardOfferSql).
+        trx.raw(`${awardOfferSql('a')} as offer_price`),
         'a.estimated_value',
         'a.currency',
         'a.awarded_at',

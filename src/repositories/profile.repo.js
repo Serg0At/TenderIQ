@@ -1,6 +1,6 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
-import { competitiveOnlySql } from './tender.repo.js';
+import { awardOfferSql, competitiveOnlySql } from './tender.repo.js';
 
 const BUYER_TABLE = 'buyer_profiles';
 const SUPPLIER_TABLE = 'supplier_profiles';
@@ -68,6 +68,9 @@ const competitive = (qb, scope = {}) => {
 /** Inside an aggregate over `tenders as t`: this row is single source, the total's other half. */
 const SINGLE_SOURCE = `not (${competitiveOnlySql('t')})`;
 
+/** The winner's offer with VAT, for a discount from the budget (tender.repo.js#awardOfferSql). */
+const OFFER = awardOfferSql('a');
+
 /** A competition figure computed beside totals in one query: its row filter. */
 const competitionFilter = (scope) => (scope.includeSingleSource ? 'true' : competitiveOnlySql('t'));
 
@@ -126,10 +129,16 @@ export default class ProfileRepository {
         .select(
           trx.raw('count(*)::int as lots_won'),
           trx.raw('count(distinct a.tender_id)::int as tenders_won'),
+          // Against the winner's offer, never a contract that is not it
+          // (`awardOfferSql`): such a lot is left out, and counted.
           trx.raw(
-            `round(avg((a.estimated_value - a.amount) / nullif(a.estimated_value, 0) * 100)
-               filter (where a.estimated_value > 0)::numeric, 2)
+            `round(avg((a.estimated_value - ${OFFER}) / nullif(a.estimated_value, 0) * 100)
+               filter (where a.estimated_value > 0 and ${OFFER} is not null)::numeric, 2)
              as avg_winning_discount_pct`
+          ),
+          trx.raw(
+            `count(*) filter (where a.estimated_value > 0 and ${OFFER} is null)::int
+             as winning_discount_excluded`
           )
         )
         .first(),
@@ -268,10 +277,16 @@ export default class ProfileRepository {
           trx.raw(
             `count(distinct a.supplier_id) filter (where ${competitionFilter(scope)})::int as distinct_winners`
           ),
+          // Spend above is the contract; the discount is the winner's offer
+          // (`awardOfferSql`), and a lot whose contract is not it is counted out.
           trx.raw(
-            `round(avg((a.estimated_value - a.amount) / nullif(a.estimated_value, 0) * 100)
-               filter (where a.estimated_value > 0 and ${competitionFilter(scope)})::numeric, 2)
+            `round(avg((a.estimated_value - ${OFFER}) / nullif(a.estimated_value, 0) * 100)
+               filter (where a.estimated_value > 0 and ${OFFER} is not null and ${competitionFilter(scope)})::numeric, 2)
              as avg_discount_pct`
+          ),
+          trx.raw(
+            `count(*) filter (where a.estimated_value > 0 and ${OFFER} is null and ${competitionFilter(scope)})::int
+             as discount_excluded`
           )
         )
         .first(),

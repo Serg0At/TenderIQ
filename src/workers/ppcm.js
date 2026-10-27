@@ -19,7 +19,8 @@ import { logger } from '../utils/logger.js';
  * PPCM: the bidders, prices and winner of every ARMEPS tender (ticket 10).
  *
  * A tender is asked about by its procedure code, once it is past its deadline
- * and until it is awarded or cancelled (`ppcmRefresher`). The answer is
+ * and until every lot of it is awarded or failed, or it is cancelled
+ * (`ppcmRefresher`, `tenders.findAwaitingResults`). The answer is
  * stored whole, as received; each procedure in it is resolved like any result
  * — our code, the ARMEPS channel, the announcement and opening dates — and
  * written through `ResultsService`, the path a gnumner contract notice takes

@@ -4169,6 +4169,7 @@ No request body
       "medianPrice": 9850000,
       "maxPrice": 24100000,
       "avgDiscountPct": 6.88,
+      "discountExcludedLots": 0,
       "computedAt": "2026-09-04T03:15:00.000Z",
       "basis": "materialized"
     }
@@ -4205,7 +4206,11 @@ the threshold alone.
 
 `minPrice`, `medianPrice` and `maxPrice` are winning prices **without VAT** — the auction value,
 so VAT payers and non-payers sit on one scale. `avgDiscountPct` compares the VAT-inclusive
-winning price with the VAT-inclusive budget.
+winning **offer** with the VAT-inclusive budget — never a contract that is not the offer. A
+PPCM (ARMEPS) award's price is its contract, which on a framework or partial-funds contract is
+far from what was bid, and PPCM states no bidder's VAT; such an award is left out of the
+discount and counted in `discountExcludedLots` (awards with a budget only). `null` on a
+benchmark stored before the count was kept.
 
 **Errors:**
 
@@ -4265,6 +4270,7 @@ Settled tender:
       "totalAwarded": 11450000,
       "totalBudget": 12750000,
       "totalDiscountPct": 10.2,
+      "discountExcludedLots": 0,
       "distinctBidders": 5,
       "avgBiddersPerLot": 2.7,
       "soleBidderLots": 1
@@ -4297,6 +4303,7 @@ Settled tender:
           "region": "Երևան",
           "price": 3810000,
           "netPrice": 3175000,
+          "offerPrice": 3810000,
           "discountPct": 10.4,
           "awardedAt": "2026-07-18T00:00:00.000Z"
         },
@@ -4370,7 +4377,15 @@ Tender not yet settled (no public bid ledger):
 - `initialOfferUnreliable: true` marks an opening offer that exceeds the published budget,
   which the source sometimes emits; the value is then nulled rather than reported.
 - `totalDiscountPct` is computed from the totals, not as a mean of per-lot percentages — a mean
-  of ratios would weight a 50,000 AMD lot the same as a 50,000,000 one.
+  of ratios would weight a 50,000 AMD lot the same as a 50,000,000 one. Each budget is paired
+  with its own lot's winning offer: a lot with no budget, or whose contract is not the offer,
+  leaves both sides of the ratio. `totalAwarded` is still every award's `price` (spend).
+- **Offer vs contract.** `winner.price` is what the buyer pays. On an ARMEPS tender it is PPCM's
+  contract price, which on a framework or partial-funds contract is not what was bid, and PPCM
+  states no bidder's VAT. `winner.offerPrice` is the winning offer with VAT — equal to `price`
+  everywhere else — and `null` when the contract is not the offer; `discountPct` is then `null`
+  too rather than computed from the contract, and the lot is counted in the summary's
+  `discountExcludedLots` (lots with a budget only). A missing price is never a 100% discount.
 - `distinctBidders` is smaller than the sum of per-lot counts, because the same company usually
   bids on every lot.
 
@@ -4708,7 +4723,8 @@ No request body
     },
     "pricing": {
       "avgDiscountPct": 7.2,
-      "avgWinningDiscountPct": 11.8
+      "avgWinningDiscountPct": 11.8,
+      "winningDiscountExcludedLots": 0
     },
     "contracts": {
       "lots": 71,
@@ -4760,6 +4776,9 @@ total counts it with a competitive / single-source split (ticket 31).
   column is disqualification rather than being outpriced — a materially different competitor.
 - `pricing.avgDiscountPct` vs `avgWinningDiscountPct` is the useful gap: a competitor whose
   winning discount is far below its typical one is winning on something other than price.
+- `avgWinningDiscountPct` compares each won lot's winning **offer** with its budget, never a
+  contract that is not the offer (a PPCM framework or partial-funds contract); such won lots
+  with a budget are left out and counted in `winningDiscountExcludedLots`.
 - `categories.status` is `ok` or `no_data`; the `coverageNote` ships because CPV exists on only
   about a third of the corpus, and a silently short list would read as "they don't do that".
 
@@ -4823,6 +4842,7 @@ No request body
       "totalBudget": 5310000000,
       "totalEstimated": 5402000000,
       "avgDiscountPct": 8.1,
+      "discountExcludedLots": 0,
       "distinctWinners": 46,
       "currency": "AMD",
       "split": {
@@ -4866,6 +4886,10 @@ total counts it with a competitive / single-source split (ticket 31).
   contracts are all single-source shows its spend, under `split.singleSource`.
 - **Competition, competitive procurement only:** `spend.avgDiscountPct`,
   `spend.distinctWinners` and `competition`.
+- `spend.totalSpend` sums what the buyer pays — on ARMEPS tenders, PPCM's contract prices.
+  `spend.avgDiscountPct` compares the winning **offer** with the budget instead, so a lot whose
+  contract is not the offer (a framework or partial-funds contract) is left out of it and
+  counted in `spend.discountExcludedLots` (competitive lots with a budget only).
 
 `topSuppliers` is named that, **not "favored"** (even though the stored column is
 `favored_supplier_ids`), and carries counted evidence only — award count, value, share. Repeat

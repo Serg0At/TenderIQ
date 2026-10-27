@@ -126,6 +126,9 @@ export default class BenchmarkService {
         maxPrice: stored.max_price === null ? null : Number(stored.max_price),
         // Number() strips the numeric type's trailing zeros: '6.88' not '6.8800'.
         avgDiscountPct: stored.avg_discount_pct === null ? null : Number(stored.avg_discount_pct),
+        // Lots with a budget the discount left out: their contract is not the
+        // winning offer. Null on a row computed before the count was kept.
+        discountExcludedLots: stored.discount_excluded ?? null,
         computedAt: stored.computed_at,
         basis: 'materialized',
       };

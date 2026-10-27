@@ -135,8 +135,10 @@ const sources = {
     // second one of its own pointed at the same host.
     rateLimitSource: 'armeps',
     /**
-     * Which ARMEPS tenders are asked about: past their deadline, not yet
-     * awarded or cancelled, deadline within the window. A buyer files its
+     * Which ARMEPS tenders are asked about: past their deadline, not
+     * cancelled, and with a lot that has neither an award nor a recorded
+     * failure (one awarded lot does not settle the rest), deadline within
+     * the window. A buyer files its
      * results late or never (research.md: lag of weeks, and buyers that do
      * not file), so the window is long and each tender is asked at most once
      * per `pollIntervalHours`. Every 2 hours, a batch each: ~720 asks a day

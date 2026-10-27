@@ -52,6 +52,12 @@ second time to confirm it is a no-op:
       disk**: delete it after this step has run on Neon (step 4 of CLAUDE.md's schema workflow).
       Run it before the deploy: the new code reads and writes the column on every candidate
       lookup, so ingestion fails without it.
+- [ ] 12. `migrations/add_benchmark_discount_excluded.js`: `price_benchmarks.discount_excluded`,
+      the awards a stored benchmark's discount left out because their contract is not the
+      winning offer (ticket 10 follow-up). Nothing to fill: NULL reads "computed before the count
+      was kept", and the nightly recompute writes it. **Still on disk**: delete it after this
+      step has run on Neon (step 4 of CLAUDE.md's schema workflow). Run it before the deploy:
+      the benchmark upsert writes the column, so a recompute fails without it.
 
 Environment:
 

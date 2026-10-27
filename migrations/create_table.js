@@ -504,6 +504,10 @@ function up(pg) {
       // decimal, not float: a percentage stored as float4 reads back with
       // seven digits of single-precision noise (6.8833737 for 6.88).
       table.decimal('avg_discount_pct', 6, 2);
+      // Awards with a budget that avg_discount_pct left out because their contract is not the
+      // winning offer (a PPCM framework or partial contract): counted, never given a guessed gross.
+      // NULL on a row computed before the count was kept. Mirrored in add_benchmark_discount_excluded.js.
+      table.integer('discount_excluded');
       table.timestamp('computed_at').notNullable();
       // Deliberately not unique: a NULL never collides in a Postgres unique
       // index, so a unique constraint would silently permit duplicate global

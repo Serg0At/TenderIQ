@@ -196,6 +196,10 @@ const namedContracts = (rows) => {
  * /3 at 2 040 000, which is 04225682's 1 700 000 on lots 15 and 16. The
  * contract whose price is the winner's offer on this lot is this lot's; when
  * not exactly one is, the lot is not read rather than guessed.
+ *
+ * Its SQL twin is tender.repo.js#awardOfferSql, which asks the same of a
+ * stored award to decide whether its contract may stand for the winner's
+ * offer in a discount — change one, change both.
  */
 const pricedAsOffer = (contractPrice, net) =>
   contractPrice !== null &&

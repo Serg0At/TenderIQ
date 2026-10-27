@@ -726,16 +726,24 @@ decision that has already been made.
   runs both channels is two parties — 25 of the first 31 ARMEPS buyers; merging is open.
 - **PPCM is an ARMEPS tender's results** (ticket 10, `workers/ppcm.js`, `ppcm.results`). Its
   organized-procedures report is asked by procedure code (`refresh-ppcm`, every 2 h, each code
-  at most daily, claimed in Redis) for ARMEPS tenders past their deadline and not yet awarded
-  or cancelled, within 90 days — buyers file weeks late or never, so a tender PPCM has not
+  at most daily, claimed in Redis) for ARMEPS tenders past their deadline, within 90 days, not
+  cancelled, and **with a lot that has neither an award nor a recorded failure** — buyers file
+  weeks late or never, and one lot's contract weeks before another's, so `awarded` (which comes
+  with the first) does not stop the asking (decided 2026-10-27). A tender PPCM has not
   reported simply stays `closed` and a bid on it `not_found`. It spends armeps.am's rate budget
   (same host) at `PRIORITY.RESULTS`, behind live discovery. The answer is stored whole; each
   procedure in it (a code is re-announced, so procedures are told apart by announcement) goes
   through rule 3 — code, ARMEPS channel, announcement = publication day, opening = deadline day
   — and `ResultsService.record`, the path gnumner contract notices take. Decided while
   building: `participant_total_price` is **net** and no gross is invented for a bid;
-  `contract_price` is the award's **gross** — what the buyer pays, which on ~1 lot in 7 is a
-  framework or partial-funds contract well below the offer; `bid_rejected` is **not read**, it is
+  `contract_price` is the award's **gross** — what the buyer pays, and spend sums it — which on
+  ~1 lot in 7 is a framework or partial-funds contract well below the offer. **A discount from
+  the budget compares the winner's offer, never the contract** (decided 2026-10-27):
+  `tender.repo.js#awardOfferSql` is the award's `amount` except on a PPCM award whose contract
+  is not the winning net or net + 20%, where it is NULL — every discount figure (benchmark,
+  buyer and supplier profiles, competitor prices) leaves that lot out and counts it
+  (`discountExcludedLots`), and no gross is guessed. Its JS twin is
+  `ppcm/observation.js#pricedAsOffer`; change both; `bid_rejected` is **not read**, it is
   `true` on winning rows; the report joins every contract of a procedure to a lot its winner bid
   on, so a lot naming several contracts keeps only the one priced at its winner's own offer
   (net or + 20%); with none it is not read at all, since its bids without an award would

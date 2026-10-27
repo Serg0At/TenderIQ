@@ -322,6 +322,23 @@ const coversAnySql = (alias = 't') =>
 export const competitiveOnlySql = (alias = 't') => `${alias}.procedure_type is distinct from 'single_source'`;
 
 /**
+ * The winner's offer WITH VAT, as SQL over an `awards` alias: what a discount
+ * from the budget compares, never the contract. An e-auction award and a
+ * gnumner one are the winning bid's gross (`amount`). A PPCM award's `amount`
+ * is the contract price — what the buyer pays, and still the gross for spend —
+ * which on a framework or partial-funds contract is far from the offer, and
+ * PPCM states no bidder's VAT to rebuild it from. So it is the offer only when
+ * the contract is the winning net or net + 20% (within 2 AMD), and NULL
+ * otherwise: a discount figure leaves that lot out and counts it rather than
+ * guess a gross (ticket 10 follow-up). The same test picks a lot's contract
+ * in ppcm/observation.js#pricedAsOffer — change one, change both.
+ */
+export const awardOfferSql = (alias = 'a') =>
+  `(case when ${alias}.source is distinct from 'ppcm' then ${alias}.amount
+         when abs(${alias}.amount - ${alias}.net_amount) <= 2
+           or abs(${alias}.amount - ${alias}.net_amount * 1.2) <= 2 then ${alias}.amount end)`;
+
+/**
  * A tender's lot numbers: its lots, and the lots its ledger names. One
  * definition, for resolution's "do the lots fit" and for "has every lot
  * failed" (ticket 09).
@@ -1030,25 +1047,40 @@ export default class TenderRepository {
 
   /**
    * Tenders of one submission channel whose results are still owed: past the
-   * deadline, neither awarded nor cancelled, the deadline inside the window,
-   * with a code to ask for them by. The PPCM refresh's worklist (ticket 10):
-   * the oldest deadline first, the likeliest to have been filed. `limit` is a
-   * ceiling on the scan, not the batch — the caller skips the ones asked about
-   * recently.
+   * deadline, inside the window, with a code to ask for them by, and not yet
+   * settled. The PPCM refresh's worklist (ticket 10): the oldest deadline
+   * first, the likeliest to have been filed. `limit` is a ceiling on the scan,
+   * not the batch — the caller skips the ones asked about recently.
+   *
+   * Settled is per lot, not per tender (ticket 10 follow-up): a buyer files
+   * one lot's contract weeks before another's, and `awarded` arrives with the
+   * first. So an awarded tender is still owed while any lot it has
+   * (`lotNumbersSql`: its lots and the lots its ledger names) has neither an
+   * award nor a failure a notice recorded (`tender_sources.failed_lots`). A
+   * cancelled tender is settled; one that is neither is owed as before.
    */
   static async findAwaitingResults({ submissionChannel, windowDays, limit }, trx = db) {
     const now = new Date();
     const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
-    return trx(TABLE)
-      .where({ submission_channel: submissionChannel, is_latest: true })
-      .whereNotIn('status', TERMINAL_STATUSES)
-      .whereNotNull('reference_code')
-      .andWhere('deadline_at', '<', now)
-      .andWhere('deadline_at', '>', floor)
-      .orderBy([{ column: 'deadline_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+    return trx(`${TABLE} as t`)
+      .where({ 't.submission_channel': submissionChannel, 't.is_latest': true })
+      .whereNot('t.status', 'cancelled')
+      .andWhere((q) =>
+        q.whereNot('t.status', 'awarded').orWhereRaw(
+          `exists (select 1 from unnest(${lotNumbersSql('t.id')}) as l(lot_number)
+                    where not exists (select 1 from awards a
+                                       where a.tender_id = t.id and a.lot_number = l.lot_number)
+                      and not exists (select 1 from tender_sources s
+                                       where s.tender_id = t.id and l.lot_number = any(s.failed_lots)))`
+        )
+      )
+      .whereNotNull('t.reference_code')
+      .andWhere('t.deadline_at', '<', now)
+      .andWhere('t.deadline_at', '>', floor)
+      .orderBy([{ column: 't.deadline_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
       .limit(limit)
-      .select('id', 'reference_code', 'status', 'deadline_at');
+      .select('t.id', 't.reference_code', 't.status', 't.deadline_at');
   }
 
   /**

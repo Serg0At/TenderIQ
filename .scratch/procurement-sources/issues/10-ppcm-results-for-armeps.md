@@ -176,8 +176,7 @@ in *Live checks pending*: the first open ARMEPS tender in `tendra` that PPCM rep
   code are asked about once, and each procedure in the answer resolves to its own.
 - **A failed ask waits out its claim** (24 h): the claim is taken when the batch is picked.
   Results are not time-critical, and releasing it on failure would re-ask a broken code every run.
-- **A partly awarded tender stops being asked**: `awarded` is terminal, so lots PPCM reports later
-  are not fetched. The same is true of e-auction today.
+- ~~**A partly awarded tender stops being asked**~~ — reversed 2026-10-27, see *Follow-up*.
 - **Paper's `recordContract` and PPCM share `ResultsService.record`**: status through the owners
   table, `recordResults`, the unmatched row resolved, the match job, the benchmark job.
 - **No migration.** `refresh-ppcm` needs `npm run scheduler` after the deploy (added to ticket 30).
@@ -196,4 +195,88 @@ Left, on purpose: the throttle `catch` repeats the six existing copies (extracti
 workers outside this ticket); the module-level session (one page load per process, documented
 in the client); the poll claim not released on failure (above); `singleSourceDisagrees` also
 governs gnumner contract notices — asked for, and the 31 stored notices decide as before;
-partly awarded tenders stop being asked, and reconcile across channels (tickets 11 and 32).
+reconcile across channels (tickets 11 and 32). (Partly awarded tenders stopping being asked was
+left here too, and reversed by the follow-up.)
+
+## Follow-up (2026-10-27, by decision)
+
+1. **An ARMEPS tender is asked about while any lot is unsettled.** `findAwaitingResults` keeps a
+   tender on the PPCM worklist — same 90-day window, same once-a-day claim — while any of its
+   lots (`tender_lots` ∪ the ledger's) has neither an award nor a failure a notice recorded
+   (`tender_sources.failed_lots`); only `cancelled` settles it outright. `awarded` comes with the
+   first lot's contract and no longer stops the later ones arriving.
+2. **A discount compares the winner's offer, never the contract.** `awards.amount` stays the
+   contract for spend. `tender.repo.js#awardOfferSql` is the winning offer with VAT: `amount`,
+   except on a PPCM award whose contract is not the winning net or net + 20% (± 2 AMD), where it
+   is NULL. Every award-based discount — benchmark, buyer profile, supplier winning discount,
+   competitor prices (per lot and the tender summary) — reads it, leaves the NULL lots out and
+   counts them (`discountExcludedLots`; `winningDiscountExcludedLots` on a supplier), counting
+   only lots that have a budget. Competitor prices' winner carries `offerPrice`. The stored
+   benchmark keeps the count in `price_benchmarks.discount_excluded` —
+   `migrations/add_benchmark_discount_excluded.js`, **ticket 30 step 12**, run on local
+   `tendra` (twice; the second a no-op) and mirrored in `create_table.js`.
+
+### Verification (local `tendra`, live PPCM, stand-ins removed afterwards)
+
+Two throwaway stand-ins as before (`standin10open`, `standin10frame`, buyer included), real
+PPCM procedures, every trace removed after — domain checksums back to their values before, the
+stand-in buyer's benchmark row deleted before its party (its `SET NULL` would have left a global
+row), claims and queued jobs cleared. Their deadlines are outside 90 days, so the worklist was
+read with a wider window; the window itself is unchanged.
+
+**(1) The 38-lot pattern (ԱՄԱՀ-ԲՄԽԾՁԲ-26/09), in two stages:**
+
+| step | tender | lots with an award | on the worklist |
+|---|---|---|---|
+| created, nothing asked | `closed` v1 | 0 / — | yes |
+| stage 1: PPCM's real answer with lots > 20 stripped of winner and contract (bids filed, contracts not yet), replayed | `awarded` v2 | 18 / 38 | **yes** (the old rule dropped it here) |
+| stage 2: the real ask | `awarded` v2, no new version | 36 / 38 (18 above lot 20 arrived) | yes — lots 4 and 18 have bids and no winner |
+| a failure notice recorded for lots 4 and 18 | `awarded` | 36 / 38 | no |
+
+The real ARMEPS worklist (90 days) held 26 tenders throughout — the ones that closed on 10-26/27;
+26/30, whose one lot is awarded, is not on it.
+
+**(2) Discount from budget.** PPCM states no budget on 26/09 (0 on every row), so its 36 awards
+got synthetic budgets of 110% of their contract. ՀՀԿԳՄՍՆԲՄԱՇՁԲ-24/10-1-Հ6 is a real framework
+contract with a real budget: offer 393 269 180 net, contract and budget both 74 997 767.
+
+| lot | budget | contract (`price`) | winning net | old discount | new |
+|---|---|---|---|---|---|
+| 24/10-1-Հ6 lot 1 | 74 997 767 | 74 997 767 | 393 269 180 | **0.0%** | `null`, counted |
+| 26/09 lot 28 | 3 298 460 | 2 998 600 | 2 500 000 | 9.1% | `null`, counted |
+| 26/09 lot 31 | 1 978 020 | 1 798 200 | 1 500 000 | 9.1% | `null`, counted |
+| 26/09 lot 15 (priced as offer) | 2 244 000 | 2 040 000 | 1 700 000 | 9.1% | 9.1% |
+
+- Competitor prices, 26/09: `totalAwarded` 47 438 800 (all 36 contracts), `totalDiscountPct`
+  9.1 over the 34 comparable lots, `discountExcludedLots` 2; the framework tender:
+  `totalDiscountPct` null, `discountExcludedLots` 1, `totalAwarded` 74 997 767.
+- Buyer profile (the stand-in buyer): `totalSpend` 122 436 567 — all 37 contracts —
+  `avgDiscountPct` 9.09 over 34 lots, `discountExcludedLots` 3.
+- Supplier 06001677 (the framework's winner): `avgWinningDiscountPct` null,
+  `winningDiscountExcludedLots` 1.
+- Benchmark (CPV 71241200, the stand-in buyer's tier): sample 37, prices unchanged by the rule,
+  `avgDiscountPct` 9.09, `discountExcludedLots` 3 — computed, stored by `recompute`, and read
+  back from `price_benchmarks` by `forCategory`.
+
+**Found on the way, fixed:** `competitorPrice.service.js#discountPct` read a missing price as a
+**100% discount** (`Number(null)` is 0) — so did `gapPct` read it as −100%. It showed on the
+excluded lots first; it would also have hit every PPCM bid (no gross) under a budget.
+
+**Nothing else moved:** `awardOfferSql` equals `amount` on all 5 580 e-auction and 3 gnumner
+awards, so every benchmark and profile discount outside PPCM is unchanged by construction. The
+competitor-price **summary** did change on 3 e-auction tenders, deliberately: it divided every
+awarded lot's total by only the budgeted lots' budgets, and now pairs each budget with its own
+lot's offer — `y7ux3z8h6tcls4wugg1ry8vm` −790.5% → 24.0% (16 lots awarded, 2 budgeted),
+`iy8rcymk2j1fh8gmvf2r7vyn` 7.4% → 39.1% (26, 18), `fy4qtkmm2b83pr65vsxb07i7` 5.5% → 5.9% (40, 39).
+The pure observation checks (20) pass unchanged.
+
+### Open — needs a decision
+
+**Bids on a lot whose contract is still to come reconcile as `lost`.** Stage 1 is exactly that
+shape: an `awarded` tender with lots that carry PPCM bids and no winner yet. `bids.reconcile`
+reads an awarded tender, finds the organization's bid on such a lot with no award, and records
+`lost` — final, even if that organization wins the lot when its contract arrives. Ticket 10's
+evidence (winnerless lots ≥ 1 month old, all flagged) made these look like failed lots; the
+follow-up's premise is that later contracts do arrive. Options: write a PPCM lot's bids only
+once it has an award or a recorded failure, or let `decide()` treat a lot with no award and no
+failure as unresolved. Not changed here: the ticket said "no change to its rules".
