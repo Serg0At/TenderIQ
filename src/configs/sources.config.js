@@ -150,6 +150,15 @@ const sources = {
     maxRefreshBatch: 60,
     pollIntervalHours: 24,
     /**
+     * Awarded e-auctions are asked about too, for their bidders' ՀՎՀՀ alone
+     * (ticket 11), in whatever room a batch has after the ARMEPS asks, while
+     * a bidder of the tender still has none — same window. About half are
+     * ever in PPCM (12 of 24 on 2026-10-18), so most are asked to the end of
+     * the window: every 3 days, not daily, keeps ~700 tenders near 230 asks a
+     * day instead of filling the batch.
+     */
+    taxIdPollHours: 72,
+    /**
      * «Կազմակերպված գնման ընթացակարգեր», one row per bidder per lot. Read
      * off `POST /ppcm/public/reports/list` on 2026-10-23. A row is a bare
      * array in `columns` order — the report's `outputFormats` — so a column

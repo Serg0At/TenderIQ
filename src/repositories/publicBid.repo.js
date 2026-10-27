@@ -109,6 +109,20 @@ export default class PublicBidRepository {
   }
 
   /**
+   * One source's bids on one tender, each with its bidder's ՀՎՀՀ — what a PPCM
+   * row is joined to by lot and exact net offer, so the bidder gains the ՀՎՀՀ
+   * PPCM states (ticket 11). Every bid, rejected ones included: PPCM lists
+   * them too, and its own rejected flag is not read.
+   */
+  static async netOffersForTender(tenderId, source, trx = db) {
+    return trx(`${TABLE} as b`)
+      .join('parties as p', 'p.id', 'b.supplier_id')
+      .where({ 'b.tender_id': tenderId, 'b.source': source })
+      .orderBy([{ column: 'b.lot_number' }, { column: 'b.supplier_id' }])
+      .select('b.lot_number', 'b.final_offer_net', 'b.supplier_id', 'p.tax_id');
+  }
+
+  /**
    * The award for each lot of one tender, with the lot's category and the
    * winning supplier named.
    *

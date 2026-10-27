@@ -3,6 +3,7 @@ import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
 import { fetchProcedureRows } from '../libs/adapters/source/ppcm/client.js';
 import { observeProcedures, parseStored, storedPayload } from '../libs/adapters/source/ppcm/observation.js';
+import BidderTaxIdService from '../services/bidderTaxId.service.js';
 import ResultsService from '../services/results.service.js';
 import { lookupsFor, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
@@ -27,6 +28,10 @@ import { logger } from '../utils/logger.js';
  * for a paper tender. A procedure PPCM has not reported yet is simply absent
  * from the answer: nothing is written, the tender stays unresolved, and a bid
  * on it stays `not_found` and retryable.
+ *
+ * An e-auction is asked about too, once awarded and while a bidder of its
+ * ledger has no ՀՎՀՀ (`tenders.findAwaitingTaxIds`), and gains only that
+ * (ticket 11, `recordTaxIds`).
  */
 const SOURCE = 'ppcm';
 
@@ -44,15 +49,49 @@ const askedCode = (code) => String(code ?? '').trim();
 const resultsRef = (code) => `results:${askedCode(code)}`;
 
 /**
- * One procedure of an answer → its tender's results, or an unmatched result.
- *
- * An e-auction's procedure is left alone: for e-auctions PPCM adds only the
- * bidder's ՀՎՀՀ (ADR 0004, ticket 11) and never a price, rank or status —
- * eauction's own ledger is the authority there.
+ * Where an answer is stored: under a digest of its code, not the code. The
+ * key URL-encodes its ref, an Armenian letter is six characters there, and
+ * `source_payloads.storage_key` holds 255 — «ՀՀ ԱԱԾ-ՏՆՏՎ-ԷԱՃԱՊՁԲ-26/31-
+ * ԱՎՏՈՄԵՔԵՆԱ4» did not fit (ticket 11). Still one key per code and content,
+ * so a retried write is an overwrite; `ref` keeps the code readable.
  */
+const resultsKeyRef = (code) => `results-${sha256(askedCode(code)).slice(0, 32)}`;
+
+/**
+ * An e-auction's procedure → its bidders' ՀՎՀՀ, and nothing else (ADR 0004,
+ * ticket 11): no link, no bid, no award, no status — eauction's own ledger is
+ * the authority on all of those. The tender is resolution's, exactly as for
+ * ARMEPS (rule 3: code, the eauction channel, announcement and opening days);
+ * anything but one tender attaches nothing and is said here. An e-auction
+ * PPCM has no tender for is ticket 12's missed-tender sweep to record, not
+ * this ask's.
+ */
+const recordTaxIds = async ({ observation, log }) => {
+  const procedure = observation.externalId;
+  const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
+  if (decision.action !== 'link') {
+    const reason = decision.reason ?? decision.action;
+    log.info(`e-auction procedure ${procedure} not attached — ${reason}`, { candidates: decision.candidateIds });
+    return { procedure, channel: 'eauction', skipped: reason };
+  }
+
+  const result = await BidderTaxIdService.attach({ observation, tenderId: decision.tenderId });
+  for (const { taxId, partyIds } of result.shared) {
+    log.warn(`ՀՎՀՀ ${taxId} is held by ${partyIds.length} parties — reported, not merged`, { partyIds });
+  }
+  const missed = Object.entries(result.unmatched).filter(([, n]) => n > 0);
+  log.info(
+    `e-auction procedure ${procedure}: ${result.attached} parties gained a ՀՎՀՀ, ${result.already} already held it` +
+      (missed.length ? `, not attached: ${missed.map(([why, n]) => `${n} ${why}`).join(', ')}` : ''),
+    { tenderId: decision.tenderId }
+  );
+  return { procedure, channel: 'eauction', tenderId: decision.tenderId, ...result };
+};
+
+/** One procedure of an answer → its tender's results, or an unmatched result. */
 const recordProcedure = async ({ observation, stored, seenAt, priority, log }) => {
   for (const warning of observation.warnings) log.warn(`${observation.externalId}: ${warning}`);
-  if (observation.submissionChannel === 'eauction') return { procedure: observation.externalId, skipped: 'eauction' };
+  if (observation.submissionChannel === 'eauction') return recordTaxIds({ observation, log });
 
   const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
 
@@ -132,7 +171,9 @@ const recordAnswer = async ({ text, stored, seenAt, priority, log }) => {
  * when it was first seen — unless the tender asked about still holds no PPCM
  * link, when the answer is resolved again from memory. A procedure left
  * unmatched because its tender did not fit yet (not stored, its dates since
- * corrected) is then attached without waiting for PPCM's rows to change. The
+ * corrected) is then attached without waiting for PPCM's rows to change. An
+ * e-auction never holds a PPCM link, so its answer is always matched again —
+ * which writes nothing unless a bidder's ՀՎՀՀ is still blank. The
  * payload row is written last, after every procedure in it is, so an ask that
  * fails part-way leaves no record and the next one reads the same answer again
  * instead of calling it unchanged.
@@ -180,7 +221,7 @@ export const handlePpcmResults = async (job, token) => {
     return { unchanged: true, resolvedAgain: true, rows: fetched.rows.length, ...outcome };
   }
 
-  const key = rawKey({ source: SOURCE, ref, hash, ext: 'json' });
+  const key = rawKey({ source: SOURCE, ref: resultsKeyRef(code), hash, ext: 'json' });
   await storage.put(key, text, { contentType: 'application/json; charset=utf-8' });
   const seenAt = new Date();
   const outcome = await recordAnswer({ text, stored: { hash }, seenAt, priority, log });
@@ -199,7 +240,10 @@ const SCAN_LIMIT = 5000;
 /**
  * The PPCM refresh, for scraper.js#handleRefreshSweep: ARMEPS tenders past
  * their deadline whose results are still owed, each code asked about at most
- * once per `pollIntervalHours`.
+ * once per `pollIntervalHours`, and then — in whatever room the batch has
+ * left — awarded e-auctions with a bidder still lacking a ՀՎՀՀ, each at most
+ * once per `taxIdPollHours` (ticket 11). Results come first: a ՀՎՀՀ is never
+ * time-critical, and an e-auction backlog must not hold back an ARMEPS award.
  *
  * PPCM gives a tender no page whose age would say how long ago it was asked
  * about — before it reports one, Tendra holds nothing of it — so each ask is
@@ -209,20 +253,24 @@ const SCAN_LIMIT = 5000;
  * may not hold the code's `/`.
  */
 export const ppcmRefresher = {
-  find: async ({ refreshWindowDays, maxRefreshBatch, pollIntervalHours }) => {
-    const owed = await tenders.findAwaitingResults({
-      submissionChannel: 'armeps',
-      windowDays: refreshWindowDays,
-      limit: SCAN_LIMIT,
-    });
+  find: async ({ refreshWindowDays, maxRefreshBatch, pollIntervalHours, taxIdPollHours }) => {
     const picked = [];
     const codes = new Set();
-    for (const tender of owed) {
-      if (picked.length === maxRefreshBatch) break;
-      const code = askedCode(tender.reference_code);
-      if (!code || codes.has(code)) continue;
-      codes.add(code);
-      if (await claimPoll(`ppcm:asked:${code}`, pollIntervalHours * 60 * 60)) picked.push(tender);
+    const pick = async (owed, hours) => {
+      for (const tender of owed) {
+        if (picked.length === maxRefreshBatch) return;
+        const code = askedCode(tender.reference_code);
+        if (!code || codes.has(code)) continue;
+        codes.add(code);
+        if (await claimPoll(`ppcm:asked:${code}`, hours * 60 * 60)) picked.push(tender);
+      }
+    };
+    await pick(
+      await tenders.findAwaitingResults({ submissionChannel: 'armeps', windowDays: refreshWindowDays, limit: SCAN_LIMIT }),
+      pollIntervalHours
+    );
+    if (picked.length < maxRefreshBatch) {
+      await pick(await tenders.findAwaitingTaxIds({ windowDays: refreshWindowDays, limit: SCAN_LIMIT }), taxIdPollHours);
     }
     return picked;
   },

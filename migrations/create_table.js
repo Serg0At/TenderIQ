@@ -14,6 +14,8 @@ function up(pg) {
       table.string('tax_id');
       table.string('role').notNullable(); // buyer | supplier | both
       table.string('region');
+      // Not unique: two parties holding one ՀՎՀՀ are reported, not refused (ticket 11).
+      table.index(['tax_id'], 'parties_tax_id_idx');
     })
 
     // tenders — One row per procurement notice — the OCDS-aligned core that every downstream

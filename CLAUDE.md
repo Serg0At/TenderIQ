@@ -373,7 +373,9 @@ POST   /invitations/:id/{accept,decline}
   use it for the claim is an open decision, and until it is made the rule below stands. Buyers get
   theirs from the invitation ZIP (`invitation.parser.js` → `tender.repo.js:applyInvitationFacts`).
   e-auction and paper supplier parties come from ledgers that carry names, ranks and prices and no
-  tax number, so the same company is still several parties until ticket 11 matches by ՀՎՀՀ.
+  tax number. Since ticket 11 an e-auction bidder gains its ՀՎՀՀ from PPCM where tender, lot and
+  exact net match one ledger row, and party resolution is ՀՎՀՀ-first, so a PPCM bidder already
+  seen on e-auction is the same party; paper bidders remain separate parties (ticket 32).
   So `organizations.supplier_party_id` stays a deliberate human claim from a search, and expecting the
   TIN to automate it is the obvious wrong guess. Storing it is still right: the 2027 OCDS platform
   identifies parties by `identifier.id`, which for Armenia is the ՀՎՀՀ.
@@ -748,8 +750,20 @@ decision that has already been made.
   on, so a lot naming several contracts keeps only the one priced at its winner's own offer
   (net or + 20%); with none it is not read at all, since its bids without an award would
   reconcile as every bidder's defeat. An unchanged answer is resolved again while the tender
-  asked about holds no PPCM link, and codes are asked exactly as spelled (the filter is exact). Bidders are `ppcm:bo:{ՀՎՀՀ}` parties carrying `tax_id`; matching
-  parties *by* ՀՎՀՀ across sources is ticket 11, and PPCM writes nothing for e-auctions here.
+  asked about holds no PPCM link, and codes are asked exactly as spelled (the filter is exact). Bidders are `ppcm:bo:{ՀՎՀՀ}` parties carrying `tax_id` — unless a
+  party already holds that ՀՎՀՀ: **party resolution is ՀՎՀՀ-first, per-source id second**
+  (`party.repo.js#upsert`, ticket 11), and two parties holding one ՀՎՀՀ fall back to the
+  per-source id; a shared ՀՎՀՀ is reported when an attach creates it, never merged. Only a
+  holder of the same role or `both` counts — a bidder is never folded into a buyer row by ՀՎՀՀ
+  (ticket 19 decides that; a branch can carry its parent's: two buyers hold 01506928).
+- **For an e-auction PPCM writes only the bidders' ՀՎՀՀ** (ticket 11,
+  `services/bidderTaxId.service.js`): never a link, bid, award, status, rank or rejection.
+  Awarded e-auctions with a bidder lacking one fill the room the ARMEPS asks leave in a batch,
+  each code every `taxIdPollHours`. A ՀՎՀՀ attaches only when the tender (rule 3), the lot and
+  the **exact** net offer match one ledger bid and one PPCM bidder; anything else is counted.
+  **PPCM writes an e-auction's times as Yerevan wall clock in UTC** — 4 h ahead of
+  eauction.armeps.am, while its ARMEPS times are true — and `ppcm/observation.js` moves them
+  back, or 5% of e-auctions (announced after 20:00) fail rule 3's day comparison.
 - **Rule 3 refuses a single-source disagreement**: a result and a tender that both state a
   procedure type and disagree on whether it was single source are not one procedure, so a
   single-source price never lands on a competitive tender (and into competition figures), nor

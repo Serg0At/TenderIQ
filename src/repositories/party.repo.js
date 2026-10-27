@@ -43,23 +43,39 @@ export const supplierSourceId = (source, sourceId) => `${source}:bo:${sourceId}`
 
 export default class PartyRepository {
   /**
-   * Insert or widen a party, keyed on `source_id`.
+   * Insert or widen a party: by ՀՎՀՀ first, by `source_id` second (ticket 11).
+   *
+   * The ՀՎՀՀ is the only structural identifier a company has across sources,
+   * so a bidder that states one reuses the party already holding it — the
+   * e-auction party a PPCM ledger row gave it, say — instead of becoming a
+   * second party for the same company. Only when exactly one party holds it:
+   * two holders are a duplicate to report (BidderTaxIdService), not to
+   * choose between, and fall back to the per-source id like a bidder with no
+   * ՀՎՀՀ. Only a party of the same role, or `both`: a supplier is never
+   * folded into a buyer row by its ՀՎՀՀ here — whether a buyer and a bidder
+   * holding one ՀՎՀՀ are one party is ticket 19's decision, and a branch can
+   * carry its parent's (two buyers hold 01506928). Until then the pair is two
+   * rows, reported like any other.
    *
    * `role` widens to 'both' rather than overwriting: an organisation that buys
    * in one tender and supplies in another must not flip-flop on every ingest.
-   * Because the widening decision needs the stored row, this reads first and
-   * relies on the unique constraint to arbitrate the concurrent-insert race.
+   * The name is the party's own source's: a party reached by its ՀՎՀՀ from
+   * another source keeps it, or two sources' spellings would trade places on
+   * every ingest. Because the widening decision needs the stored row, this
+   * reads first and relies on the unique constraint to arbitrate the
+   * concurrent-insert race.
    */
   static async upsert({ sourceId, name, role, taxId = null, region = null }, trx = db) {
     const cleanName = normalizeName(name);
     if (!sourceId || !cleanName) return null;
 
-    const existing = await trx(TABLE).where({ source_id: sourceId }).first();
+    const holders = taxId ? await trx(TABLE).where({ tax_id: taxId }).whereIn('role', [role, 'both']).limit(2) : [];
+    const existing = holders.length === 1 ? holders[0] : await trx(TABLE).where({ source_id: sourceId }).first();
 
     if (existing) {
       const patch = {};
       if (existing.role !== role && existing.role !== 'both') patch.role = 'both';
-      if (cleanName !== existing.name) patch.name = cleanName;
+      if (existing.source_id === sourceId && cleanName !== existing.name) patch.name = cleanName;
       if (taxId && !existing.tax_id) patch.tax_id = taxId;
       if (region && !existing.region) patch.region = region;
       if (Object.keys(patch).length) await trx(TABLE).where({ id: existing.id }).update(patch);
@@ -86,8 +102,8 @@ export default class PartyRepository {
 
   /**
    * `taxId` is the bidder's ՀՎՀՀ where its source states one (PPCM, ticket
-   * 10). Like every `upsert` field it only fills a blank. The party is still
-   * keyed by its per-source id: matching by ՀՎՀՀ across sources is ticket 11.
+   * 10), and it decides the party before the per-source id does (`upsert`).
+   * Like every `upsert` field it only fills a blank.
    */
   static async upsertSupplier({ source, sourceId, name, taxId = null }, trx = db) {
     if (!sourceId || !normalizeName(name)) return null;
@@ -139,6 +155,12 @@ export default class PartyRepository {
       rekeyed.push(buyer.id);
     }
     return { checked: buyers.length, rekeyed: rekeyed.length, collisions };
+  }
+
+  /** Every party holding one ՀՎՀՀ — one, normally; more is a duplicate to report. */
+  static async holdersOfTaxId(taxId, trx = db) {
+    if (!taxId) return [];
+    return trx(TABLE).where({ tax_id: taxId }).orderBy('id').select('id', 'source_id', 'name', 'role');
   }
 
   static async findBySourceId(sourceId, trx = db) {

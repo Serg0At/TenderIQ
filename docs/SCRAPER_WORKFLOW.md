@@ -527,6 +527,9 @@ and dates. Its id, the code parameter's id and the 36 column names are in
    PPCM gives nothing whose age says when a tender was last asked about, so each code is claimed
    in Redis (`ppcm:asked:{code}`, `pollIntervalHours` = 24; a failed ask waits out the claim) as the batch (60) is picked: the batch
    rotates through the whole window. Jobs carry `PRIORITY.RESULTS`, behind live discovery.
+   Whatever room the batch has left goes to **e-auctions** for their bidders' ՀՎՀՀ (ticket 11):
+   not cancelled, holding an award, with an eauction-ledger bidder whose party has none
+   (`tenders.findAwaitingTaxIds`), same window, each code at most every `taxIdPollHours` (72).
 2. **Ask** (`libs/adapters/source/ppcm/client.js`): the reports page is loaded once for a
    `JSESSIONID`, then `POST /ppcm/public/reports/get-report` with
    `{ reportId, values: [{ paramId, value: "<plain string>" }], page: { index, size }, order: null }`
@@ -537,7 +540,8 @@ and dates. Its id, the code parameter's id and the 36 column names are in
    page load. The code filter is exact and case-sensitive. Rate limit first: PPCM spends
    armeps.am's budget (`rateLimitSource: 'armeps'`), one host, one allowance.
 3. **Store** the pages as received, inside the query (`results:{code}`, `.json`, the code
-   exactly as asked — another spelling is another query). An identical answer writes nothing,
+   exactly as asked — another spelling is another query; the object key carries a digest of the
+   code, since a URL-encoded Armenian code overflows `storage_key`). An identical answer writes nothing,
    unless the tender asked about still holds no PPCM link: then it is resolved again, so a
    procedure that did not fit before (dates since corrected) attaches without waiting for PPCM's
    rows to change. The payload row is written after the procedures are, so a run that fails
@@ -545,7 +549,9 @@ and dates. Its id, the code parameter's id and the 36 column names are in
 4. **Observe** (`ppcm/observation.js`, pure): every row must be of the code asked for, or the
    filter stopped applying and the job fails. Rows are grouped into procedures by announcement
    (a code is re-announced; the id is `{code}@{announced}`), each a `results` observation in the
-   ARMEPS channel — an e-auction form is left to eauction's ledger (ticket 11). Per lot: each
+   ARMEPS channel — an e-auction form is the `eauction` channel, its times moved back 4 hours
+   (PPCM writes an e-auction's Yerevan wall clock as UTC; its ARMEPS times are true). Every
+   observation also lists its raw bidders — lot, ՀՎՀՀ, net — before any contract is placed. Per lot: each
    bidder's `participant_total_price` is its **net** offer (no gross is invented); the award is
    the named winner at `contract_price` (**gross**, what the buyer pays) with its own offer as
    net. `bid_rejected` is not read — it is `true` on winning rows. A lot the report joins to
@@ -562,7 +568,24 @@ and dates. Its id, the code parameter's id and the 36 column names are in
    contract (spend); a discount from the budget compares the winning offer instead
    (`tender.repo.js#awardOfferSql`), and leaves out and counts a lot whose contract is not it.
 
+7. **An e-auction gains only its bidders' ՀՎՀՀ** (`services/bidderTaxId.service.js`, ADR 0004):
+   resolved by rule 3 in the `eauction` channel, then each PPCM bidder is joined to the eauction
+   ledger by lot and **exact** net offer (in cents), and its party's blank `tax_id` is filled —
+   only when that (lot, net) is one bidder on PPCM's side and one bid on ours, and the party is
+   not matched to two ՀՎՀՀ. Everything else is counted (`no_tax_id`, `ambiguous`, `no_bid`,
+   `several_bids`, `conflicting`, `holds_other`) and attaches nothing. No link, bid, award,
+   status, rank or rejection is written. A ՀՎՀՀ two parties then hold is logged and returned in
+   `shared`, never merged. An e-auction PPCM has no tender for is ticket
+   12's to record.
+
 `reason: 'replay'` re-records the latest stored answer with no request.
+
+Party resolution (`party.repo.js#upsert`) is **by ՀՎՀՀ first, per-source id second**: a bidder
+stating a ՀՎՀՀ exactly one party holds reuses that party — an ARMEPS bidder an e-auction ledger
+already identified is the same row, keeping its own source's name. Two holders fall back to the
+per-source id and are reported, not chosen between. Only a holder of the same role (or `both`)
+counts: a supplier is never folded into a buyer row by ՀՎՀՀ — that is ticket 19's decision, and
+a branch can carry its parent's ՀՎՀՀ.
 
 ---
 

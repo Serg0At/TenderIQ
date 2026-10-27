@@ -49,6 +49,18 @@ export const parseStored = (text, { columns }) => {
 
 const time = (ms) => (Number.isFinite(ms) ? new Date(ms) : null);
 
+/**
+ * PPCM states an e-auction's announcement and opening as Yerevan wall-clock
+ * time written as if it were UTC: 4 hours later than eauction.armeps.am's own
+ * page says, on every e-auction compared (ticket 11), while its ARMEPS times
+ * equal armeps.am's to the minute. Read as given, an e-auction announced after
+ * 20:00 Yerevan falls on the next day and rule 3's dates disagree — 34 of 673
+ * awarded e-auctions. Armenia has kept UTC+4 all year since 2012, so the
+ * offset is exact.
+ */
+const EAUCTION_CLOCK_SKEW_MS = 4 * 60 * 60 * 1000;
+const eauctionTime = (ms) => (Number.isFinite(ms) ? new Date(ms - EAUCTION_CLOCK_SKEW_MS) : null);
+
 /** Amounts arrive as floats (`1.0308E7`, `74166.7`); a cent is the stored precision. */
 const amount = (value) => (Number.isFinite(value) ? Math.round(value * 100) / 100 : null);
 
@@ -186,6 +198,28 @@ const namedContracts = (rows) => {
 };
 
 /**
+ * Every bidder of one procedure as PPCM lists it — lot, ՀՎՀՀ, name and net
+ * offer, once per distinct row — read straight off the rows, before any
+ * contract is placed. What an e-auction's bidders gain their ՀՎՀՀ from
+ * (ticket 11): a lot `ledgerLot` leaves unread because its contracts cannot
+ * be told apart still names its bidders and their offers correctly, and the
+ * ՀՎՀՀ join needs only those.
+ */
+const biddersOf = (rows) => {
+  const seen = new Map();
+  for (const row of rows) {
+    const lotNumber = Number(row.lot_number);
+    const name = text(row.participant_name);
+    const net = amount(row.participant_total_price);
+    if (!Number.isInteger(lotNumber) || lotNumber < 1 || !name || net === null) continue;
+    const taxId = text(row.participant_taxpayer);
+    const key = `${lotNumber}|${taxId ?? name}|${net}`;
+    if (!seen.has(key)) seen.set(key, { lotNumber, taxId, name, net });
+  }
+  return [...seen.values()];
+};
+
+/**
  * Is a contract's price the winner's own offer on this lot — net for a
  * non-VAT payer, net plus 20% for a payer — within the 1.50 AMD of rounding
  * research.md saw?
@@ -220,9 +254,9 @@ export const procedureId = (code, announcedAt) =>
  * The rows of one code → one observation per procedure, the procedures told
  * apart by their announcement. Each is a `results` observation in the ARMEPS
  * submission channel — PPCM states no channel; it is ARMEPS's results source,
- * and an e-auction's form says so (`eauction`, which the caller leaves to
- * eauction's own ledger) — matched by resolution on its code and the
- * announcement and opening dates (rule 3).
+ * and an e-auction's form says so (`eauction`, from which the caller takes
+ * only the bidders' ՀՎՀՀ, ticket 11) — matched by resolution on its code and
+ * the announcement and opening dates (rule 3).
  *
  * Every row must be of the code asked for, exactly: the filter is exact and
  * case-sensitive, so another code means it stopped applying, and the rows
@@ -241,6 +275,8 @@ export const observeProcedures = ({ reportId, code, rows }) => {
 
   const runs = new Map();
   for (const row of rows) {
+    // PPCM's own clock, uncorrected even for an e-auction: an id only has to
+    // name the procedure the same way on every read.
     const id = procedureId(code, time(row.announcement_date));
     if (!runs.has(id)) runs.set(id, []);
     runs.get(id).push(row);
@@ -265,7 +301,8 @@ export const observeProcedures = ({ reportId, code, rows }) => {
 
     const first = run[0];
     const procedureType = procedureTypeOf(first.p_form);
-    const opening = run.map((row) => time(row.t_opening_date)).find(Boolean) ?? null;
+    const timeOf = procedureType === 'e_auction' ? eauctionTime : time;
+    const opening = run.map((row) => timeOf(row.t_opening_date)).find(Boolean) ?? null;
     return {
       source: SOURCE,
       role: 'results',
@@ -277,7 +314,7 @@ export const observeProcedures = ({ reportId, code, rows }) => {
       procedureType,
       form: text(first.p_form),
       buyerName: text(first.authority_name),
-      publishedAt: time(first.announcement_date),
+      publishedAt: timeOf(first.announcement_date),
       deadlineAt: opening,
       lotNumbers: ledger.map((lot) => lot.lotNumber),
       // A winner named on any lot is an award; none named leaves the status
@@ -285,6 +322,7 @@ export const observeProcedures = ({ reportId, code, rows }) => {
       status: ledger.some((lot) => lot.award) ? 'awarded' : null,
       observedStatus: null,
       ledger,
+      bidders: biddersOf(run),
       warnings,
     };
   });

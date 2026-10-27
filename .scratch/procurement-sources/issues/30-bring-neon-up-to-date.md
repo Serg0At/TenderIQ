@@ -58,6 +58,10 @@ second time to confirm it is a no-op:
       was kept", and the nightly recompute writes it. **Still on disk**: delete it after this
       step has run on Neon (step 4 of CLAUDE.md's schema workflow). Run it before the deploy:
       the benchmark upsert writes the column, so a recompute fails without it.
+- [ ] 13. `migrations/add_parties_tax_id_index.js`: `parties_tax_id_idx`, the lookup behind
+      ՀՎՀՀ-first party resolution (ticket 11). Deliberately not unique. Nothing to fill.
+      **Still on disk**: delete it after this step has run on Neon (step 4 of CLAUDE.md's schema
+      workflow). Before or after the deploy — the code works without it, only slower.
 
 Environment:
 

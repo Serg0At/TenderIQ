@@ -1084,6 +1084,37 @@ export default class TenderRepository {
   }
 
   /**
+   * E-auction tenders whose bidders PPCM may still give a ՀՎՀՀ (ticket 11):
+   * not cancelled, holding an award — PPCM lists a procedure once its results
+   * are filed, and an awarded e-auction is `closed` until its contract is
+   * signed — with a bidder in the eauction ledger whose party has no ՀՎՀՀ,
+   * deadline within the window. Once every bidder has one, the tender drops
+   * off.
+   */
+  static async findAwaitingTaxIds({ windowDays, limit }, trx = db) {
+    const now = new Date();
+    const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+
+    return trx(`${TABLE} as t`)
+      .where({ 't.submission_channel': 'eauction', 't.is_latest': true })
+      .whereNot('t.status', 'cancelled')
+      .whereExists((q) => q.select(trx.raw('1')).from('awards as a').whereRaw('a.tender_id = t.id'))
+      .whereExists((q) =>
+        q.select(trx.raw('1'))
+          .from('public_tender_bids as b')
+          .join('parties as p', 'p.id', 'b.supplier_id')
+          .whereRaw("b.tender_id = t.id and b.source = 'eauction'")
+          .whereNull('p.tax_id')
+      )
+      .whereNotNull('t.reference_code')
+      .andWhere('t.deadline_at', '<', now)
+      .andWhere('t.deadline_at', '>', floor)
+      .orderBy([{ column: 't.deadline_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .limit(limit)
+      .select('t.id', 't.reference_code', 't.status', 't.deadline_at');
+  }
+
+  /**
    * Paper tenders whose deadline has passed while they still say open — the
    * paper refresh, which re-normalizes them from storage so they close. A
    * paper invitation never changes, so nothing else would ever re-read it,
