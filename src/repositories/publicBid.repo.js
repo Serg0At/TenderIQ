@@ -135,6 +135,7 @@ export default class PublicBidRepository {
   static async supplierEntriesForTender(tenderId, supplierPartyId, trx = db) {
     if (!supplierPartyId) return [];
     return trx(`${TABLE} as b`)
+      .join('tenders as t', 't.id', 'b.tender_id')
       .leftJoin('awards as a', function joinAward() {
         this.on('a.tender_id', '=', 'b.tender_id')
           .andOn('a.lot_number', '=', 'b.lot_number')
@@ -152,7 +153,23 @@ export default class PublicBidRepository {
         'a.supplier_id as award_supplier_id',
         'a.amount as award_amount',
         'a.net_amount as award_net_amount',
-        trx.raw('coalesce(a.supplier_id = b.supplier_id, false) as is_winner')
+        trx.raw('coalesce(a.supplier_id = b.supplier_id, false) as is_winner'),
+        /**
+         * The lot's failure is on record, so no award is coming: the tender
+         * was cancelled, a failure notice named the lot
+         * (`tender_sources.failed_lots`), or its source rejected every bid on
+         * it — e-auction's own accept/reject column, which is the authority
+         * there; PPCM's bids are never stored rejected, so it cannot fire on
+         * them. Without it, a lot with no award is a result still to come.
+         */
+        trx.raw(
+          `(t.status = 'cancelled'
+            or exists (select 1 from tender_sources s
+                        where s.tender_id = b.tender_id and b.lot_number = any(s.failed_lots))
+            or not exists (select 1 from public_tender_bids o
+                            where o.tender_id = b.tender_id and o.lot_number = b.lot_number
+                              and o.source = b.source and o.status = 'accepted')) as lot_failed`
+        )
       )
       .orderBy('b.lot_number');
   }

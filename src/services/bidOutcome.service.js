@@ -20,7 +20,15 @@ import { logger } from '../utils/logger.js';
  *      the bid was never actually submitted or the ledger is not published yet.
  *      Recording a defeat that may not have happened would poison the win rate
  *      the customer is paying for.
- *   3. **The winning price is copied, not joined.** `public_tender_bids` is
+ *   3. **A lot is decided by its award, and only by it.** Won when the
+ *      organisation's party holds the lot's award; lost when another party
+ *      does, or when the lot's failure is on record (`lot_failed`: the tender
+ *      cancelled, a failure notice naming the lot, or the source rejecting
+ *      every bid on it). A lot with bids and neither is a result still to
+ *      come — an ARMEPS lot whose PPCM bids are published before its contract
+ *      (ticket 10) — and stays unresolved, retried like `not_found`. Recording
+ *      `lost` there would be final, and wrong for whoever wins the lot later.
+ *   4. **The winning price is copied, not joined.** `public_tender_bids` is
  *      replaced wholesale on every re-normalize, so a stored "we lost by 4%"
  *      must not move because a parser improved two months later.
  */
@@ -56,13 +64,20 @@ export default class BidOutcomeService {
     // and the stored gap compares the two.
     if (won) return { outcome: 'won', winningPrice: money(won.award_net_amount ?? won.final_offer_net) };
 
+    // A lot nobody holds the award of, whose failure is not on record either,
+    // has not been decided: no outcome yet (`null`), and the next sweep asks
+    // again. An award with no known supplier is held by nobody we can name.
+    const held = (e) => e.award_supplier_id !== null && e.award_supplier_id !== undefined;
+    if (scoped.some((e) => !held(e) && !e.lot_failed)) return { outcome: null, winningPrice: null };
+
     /**
-     * We bid and did not win. The winning price is the award amount on the lot
-     * we actually competed for — read off our own ledger rows, which carry the
-     * award join, so a multi-lot tender reports the lot we lost rather than
-     * whichever lot happened to be cheapest.
+     * Every lot we bid on went to another party or failed. The winning price is
+     * the award amount on the lot we actually competed for — read off our own
+     * ledger rows, which carry the award join, so a multi-lot tender reports
+     * the lot we lost rather than whichever lot happened to be cheapest. A
+     * failed lot has none.
      */
-    const withAward = scoped.find((e) => e.award_net_amount !== null && e.award_net_amount !== undefined);
+    const withAward = scoped.find(held);
     return { outcome: 'lost', winningPrice: money(withAward?.award_net_amount ?? null) };
   }
 
@@ -93,6 +108,7 @@ export default class BidOutcomeService {
 
     let resolved = 0;
     let notFound = 0;
+    let undecided = 0;
     let unclaimed = 0;
 
     for (const bid of pending) {
@@ -122,6 +138,11 @@ export default class BidOutcomeService {
         notFound += 1;
         continue;
       }
+      // In the ledger, but on a lot whose award has not landed: the same wait.
+      if (outcome === null) {
+        undecided += 1;
+        continue;
+      }
 
       await bids.recordOutcome(bid.id, { outcome, winningPrice });
       resolved += 1;
@@ -129,10 +150,11 @@ export default class BidOutcomeService {
 
     logger.info(
       `[bids] reconcile: ${pending.length} checked, ${resolved} resolved, ` +
-        `${notFound} awaiting ledger, ${unclaimed} without a claimed supplier party`
+        `${notFound} awaiting ledger, ${undecided} awaiting a lot's award, ` +
+        `${unclaimed} without a claimed supplier party`
     );
 
-    return { checked: pending.length, resolved, notFound, unclaimed };
+    return { checked: pending.length, resolved, notFound, undecided, unclaimed };
   }
 
   /**
@@ -150,6 +172,9 @@ export default class BidOutcomeService {
     if (!entries.length) return null;
 
     const { outcome, winningPrice } = BidOutcomeService.decide(entries, bid.lot_number);
+    // A lot still to be decided, or not this bid's lot: the reconcile job
+    // answers once it is.
+    if (outcome === null || outcome === 'not_found') return null;
     return bids.recordOutcome(bid.id, { outcome, winningPrice });
   }
 }

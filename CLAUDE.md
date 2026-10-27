@@ -994,6 +994,17 @@ decision that has already been made.
   not list them: either it was never submitted, or the ledger is not published yet. Recording
   `lost` there would fabricate a defeat. It stays unresolved on a non-cancelled tender so the
   next sweep retries.
+- **A bid is decided per lot, by the lot's award** (decided 2026-10-27, every source):
+  `won` only if the org's party holds the lot's award, `lost` only if another party does — or
+  the lot's failure is on record (`publicBid.repo.js#supplierEntriesForTender` `lot_failed`: the
+  tender cancelled, a failure notice naming the lot in `tender_sources.failed_lots`, or the
+  source rejecting every bid on it), which keeps the old handling, `lost` with no winning price.
+  A lot with bids and neither is a result still to come — PPCM publishes an ARMEPS lot's bids
+  before its contract, and they are stored as soon as published — so `decide` returns no outcome
+  and the sweep retries, like `not_found`; `resolveOne` (on submit) writes nothing then either.
+  A bid naming no lot is `won` if any of its lots is won, otherwise undecided while any is open.
+  The rejected-every-bid reading of "failed" is what keeps e-auction as it was: all 751 of its
+  lots without an award on a live tender are exactly that, and would otherwise never resolve.
 - **A win comes from `awards`, never from `rank = 1`** — the same rule the ingestion layer
   learned the hard way. The source ranks rejected submissions too.
 - **Every offer has two prices, and each question uses one.** The ledger publishes the value

@@ -1685,7 +1685,11 @@ organization enters in the auction and what it is ranked on — and `winningPric
 the same basis. `gapVsWinner` is computed, not stored:
 `(price - winningPrice) / winningPrice`, and `null` unless both are known and the winner's
 price is positive. `outcome` is `won`, `lost`, `not_found` or `null` — `not_found` means the
-public ledger does not list this organization, which is a real outcome and not an error.
+public ledger does not list this organization, which is a real outcome and not an error. It is
+decided per lot: `won` only when the organization's claimed party holds the lot's award, `lost`
+when another party holds it or the lot's failure is on record. `null` covers a lot the ledger
+lists the organization on but whose award has not landed — an ARMEPS lot's bids are published
+before its contract — and the next half-hourly sweep asks again.
 
 **Errors:**
 

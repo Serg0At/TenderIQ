@@ -161,10 +161,9 @@ in *Live checks pending*: the first open ARMEPS tender in `tendra` that PPCM rep
   re-announced (ԵՔ-ԲՄԽԾՁԲ-26/3 has 11 rows across runs), and the report has no id of its own.
 - **The filter is exact and case-sensitive**, so a row of another code means it stopped applying
   and the job fails rather than writing someone else's rows.
-- **Lots with bids and no winner are written** (bids only, tender stays `closed`). Every such lot
-  seen was ≥ 1 month past opening with every bid flagged, i.e. a failed lot, and PPCM shows
-  nothing at opening. Should a buyer ever file bids before choosing a winner, `bids.reconcile`
-  would read `lost` there — the existing rule, unchanged as the ticket asks; worth watching.
+- **Lots with bids and no winner are written** (bids only, tender stays `closed`), as soon as
+  PPCM publishes them. `bids.reconcile` leaves a bid on such a lot undecided until it has an
+  award or a recorded failure (decided 2026-10-27, below).
 - **Rule 3 refuses a single-source disagreement** (CLAUDE.md *Single source*): a result and a
   tender that both state a type and disagree on single source are not one procedure. PPCM's
   single-source forms are «Մեկ անձ» and «Հրատապ մեկ անձ»; its negotiated forms map to
@@ -270,13 +269,39 @@ lot's offer — `y7ux3z8h6tcls4wugg1ry8vm` −790.5% → 24.0% (16 lots awarded,
 `iy8rcymk2j1fh8gmvf2r7vyn` 7.4% → 39.1% (26, 18), `fy4qtkmm2b83pr65vsxb07i7` 5.5% → 5.9% (40, 39).
 The pure observation checks (20) pass unchanged.
 
-### Open — needs a decision
+### ~~Open~~ — decided 2026-10-27: `bids.reconcile` decides per lot
 
-**Bids on a lot whose contract is still to come reconcile as `lost`.** Stage 1 is exactly that
-shape: an `awarded` tender with lots that carry PPCM bids and no winner yet. `bids.reconcile`
-reads an awarded tender, finds the organization's bid on such a lot with no award, and records
-`lost` — final, even if that organization wins the lot when its contract arrives. Ticket 10's
-evidence (winnerless lots ≥ 1 month old, all flagged) made these look like failed lots; the
-follow-up's premise is that later contracts do arrive. Options: write a PPCM lot's bids only
-once it has an award or a recorded failure, or let `decide()` treat a lot with no award and no
-failure as unresolved. Not changed here: the ticket said "no change to its rules".
+The open question — a bid on a lot whose PPCM bids are published before its contract reconciled
+as `lost`, final, even for whoever later won the lot — was decided as a fix to reconcile itself — "no change to its rules" meant
+not changing it in passing, not keeping a wrong rule — for every source, e-auction included.
+PPCM bids are still stored as soon as PPCM publishes them.
+
+- **Per lot:** `won` only if the organization's party holds the lot's award; `lost` only if
+  another party does. A lot with neither an award nor a recorded failure is undecided:
+  `decide` returns no outcome, the sweep counts it `undecided` and retries, like `not_found`.
+  `resolveOne` (run on submit) writes nothing then — nor for `not_found`, which it used to
+  record permanently on a tender still to settle.
+- **A failed lot keeps today's handling** (`lost`, no winning price). Recorded failure
+  (`supplierEntriesForTender#lot_failed`): the tender `cancelled`; a failure notice naming the lot
+  (`tender_sources.failed_lots`); or the source rejecting every bid on the lot. **The third is my
+  reading of "recorded failure"** and the one to check: e-auction's accept/reject column is its
+  own authority, and all 751 e-auction lots without an award on a tender that is not cancelled
+  (302 awarded, 449 closed) are exactly that — read strictly, every one would stay unresolved
+  forever. PPCM's bids are never stored `rejected`, so it cannot fire on an ARMEPS lot.
+- **No lot named:** `won` if any lot is won; otherwise undecided while any lot is open, `lost` once
+  every one went to another party or failed.
+
+**Checked** (the 26/09 stand-in in two stages, as in *Follow-up*; throwaway organizations, each
+claiming one bidder and holding one submitted bid; then everything removed — domain checksums
+back to their values before):
+
+| pursuit | stage 1: lot 21 has PPCM bids, no contract | stage 2: contracts in | failure for lots 4, 18 | old rule at stage 1 |
+|---|---|---|---|---|
+| A — 00813453, lot 21 | undecided | **won**, 583 000 | | `lost` |
+| B — 04225682, lot 21 | undecided | **lost**, 583 000 | | `lost` |
+| C — 57348351, no lot (bid lots 1, 4, 18, …) | undecided | undecided (lots 4, 18 open) | **lost**, 541 000 | `lost` |
+| EW — e-auction lot winner (real tender) | won | | | won |
+| EL — e-auction loser, same lot | lost, 6 400 000 | | | lost |
+| ER — e-auction lot, every bid rejected | lost, no price | | | lost |
+
+A is the case the old rule got wrong: `lost`, final, on the lot it then won.
