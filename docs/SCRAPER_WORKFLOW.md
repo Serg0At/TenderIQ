@@ -25,11 +25,12 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
 | `gnumner` | HTML scrape of the announcement, amendment, contract-concluded and failed-procedure listings, and the files they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` / `paper.failed` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
 | `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
-| `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
+| `ppcm` | PPCM's organized-procedures report (JSON behind armeps.am/ppcm), by procedure code — **no listing**, results only | `13 */2 * * *` refresh of ARMEPS tenders past their deadline and not yet awarded or cancelled | ARMEPS `awards` and `public_tender_bids` (`source = 'ppcm'`), supplier `parties` with their ՀՎՀՀ, a `ppcm` results link, `awarded` |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
 
 Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit`, `concurrency`,
-`maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`.
+`maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`; for `ppcm`,
+`rateLimitSource` (whose budget it spends), `pollIntervalHours` and the report's ids and columns.
 
 There is deliberately no `lookbackHours` on `eauction`: the eauction listing table has no publish-date
 column, so depth is driven by the tid high-water mark instead (stage 3).
@@ -509,26 +510,54 @@ and replayed without re-fetching.
 Downstream consumers — matcher, notifier, intelligence recompute — are separate workers
 subscribed to those events, and are out of scope for this document.
 
-### 7. PPCM import — parked, not built
+### 7. ARMEPS results — `ppcm.results`
 
-The steps previously described here (download the daily CSV/Excel export, hash the file, stream
-rows) described a source that does not exist in that form. Verified 2026-08-16:
+PPCM ("Procurement Plan & Contracts Management", `armeps.am/ppcm`) is an AngularJS app whose
+public JSON endpoints carry the ARMEPS channel's results (ticket 10, ADR 0004: PPCM owns
+`awarded` for ARMEPS). One report is read: «Կազմակերպված գնման ընթացակարգեր» (organized
+procedures), one row per bidder per lot — bidder, ՀՎՀՀ, net offer, the winner, contract price
+and dates. Its id, the code parameter's id and the 36 column names are in
+`sources.config.js#ppcm.organizedProcedures`; a row is a bare array in that order.
 
-- PPCM is **"Procurement Plan & Contracts Management"**, served at `armeps.am/ppcm` — **not**
-  `gnumner.minfin.am`, which is what `sources.config.js` claimed.
-- It is an **AngularJS SPA** (`#/report/<uuid>`). `/ppcm/public/contracts` and
-  `/ppcm/public/bid-report` both return the app shell as `text/html`, so ingesting it requires
-  reverse-engineering its XHR API or driving a headless browser.
-- The reference spec never enumerates a single PPCM column; it records the question as open
-  (`research/Open Questions.md` Q4, *"Exactly what award data is public and when?"*).
+1. **Refresh** (`refresh-ppcm`, every 2 hours): ARMEPS tenders past their deadline, neither
+   awarded nor cancelled, deadline within 90 days (`tenders.findAwaitingResults`), oldest first.
+   PPCM gives nothing whose age says when a tender was last asked about, so each code is claimed
+   in Redis (`ppcm:asked:{code}`, `pollIntervalHours` = 24; a failed ask waits out the claim) as the batch (60) is picked: the batch
+   rotates through the whole window. Jobs carry `PRIORITY.RESULTS`, behind live discovery.
+2. **Ask** (`libs/adapters/source/ppcm/client.js`): the reports page is loaded once for a
+   `JSESSIONID`, then `POST /ppcm/public/reports/get-report` with
+   `{ reportId, values: [{ paramId, value: "<plain string>" }], page: { index, size }, order: null }`
+   — an array `value` is a 400, any other `page` silently caps at 15 rows. Pages of 100 until a
+   short one, at most 20. A refused answer (non-zero `status`, or not JSON) renews the session and
+   asks once more — an HTTP error status counts as refused too; a fresh session refused again,
+   dropped so the retry opens another, is a failure for the job's retry, never another
+   page load. The code filter is exact and case-sensitive. Rate limit first: PPCM spends
+   armeps.am's budget (`rateLimitSource: 'armeps'`), one host, one allowance.
+3. **Store** the pages as received, inside the query (`results:{code}`, `.json`, the code
+   exactly as asked — another spelling is another query). An identical answer writes nothing,
+   unless the tender asked about still holds no PPCM link: then it is resolved again, so a
+   procedure that did not fit before (dates since corrected) attaches without waiting for PPCM's
+   rows to change. The payload row is written after the procedures are, so a run that fails
+   part-way is read again next time.
+4. **Observe** (`ppcm/observation.js`, pure): every row must be of the code asked for, or the
+   filter stopped applying and the job fails. Rows are grouped into procedures by announcement
+   (a code is re-announced; the id is `{code}@{announced}`), each a `results` observation in the
+   ARMEPS channel — an e-auction form is left to eauction's ledger (ticket 11). Per lot: each
+   bidder's `participant_total_price` is its **net** offer (no gross is invented); the award is
+   the named winner at `contract_price` (**gross**, what the buyer pays) with its own offer as
+   net. `bid_rejected` is not read — it is `true` on winning rows. A lot the report joins to
+   several contracts keeps the one priced at its winner's own offer, net or + 20% VAT; with none,
+   the lot is not read at all — bids without an award would reconcile as the winner's defeat.
+5. **Resolve** (rule 3): our code, the ARMEPS channel, announcement = `published_at` day, opening
+   = `deadline_at` day, lots that fit, and no disagreement on single source. A miss or two
+   candidates is an unmatched result; PPCM never creates a tender.
+6. **Write** through `ResultsService.record` — the path a gnumner contract notice takes:
+   `tenders.recordResults` (link, bids, awards, status under the row lock), `awarded` through
+   `deriveStatus` when a winner is named, the match job, a benchmark recompute. Bidders become
+   `ppcm:bo:{ՀՎՀՀ}` parties carrying `tax_id`. A tender PPCM has not reported is untouched, and
+   `bids.reconcile` leaves a bid on it `not_found` and retryable.
 
-**Award history no longer depends on it.** Stage 4 parses the `Գնառաջարկներ` ledger off every
-finished tender's detail page — per lot: every bidder, rank, budget price, initial and final offer,
-VAT, accepted/rejected — which is finer-grained than a tender-level export. That writes `awards`,
-`public_tender_bids` and supplier `parties` directly.
-
-PPCM's one unique contribution is **signed contract values**, which can diverge from the auction's
-final offer after renegotiation. That feeds post-award (phase 6); `contracts` stays empty until then.
+`reason: 'replay'` re-records the latest stored answer with no request.
 
 ---
 

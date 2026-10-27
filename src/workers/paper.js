@@ -22,13 +22,14 @@ import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
 import { noticeOfJob, storedNotice, withRunPublications } from '../services/paperNotice.service.js';
 import FailureService from '../services/failure.service.js';
+import ResultsService from '../services/results.service.js';
 import { deriveStatus, invitationSpan, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
 import listingNotices from '../repositories/listingNotice.repo.js';
-import { alertsQueue, ingestFetchQueue, ingestNormalizeQueue, maintenanceQueue } from '../queues/index.js';
+import { alertsQueue, ingestFetchQueue, ingestNormalizeQueue } from '../queues/index.js';
 import { JOB, PRIORITY, matchJobId } from '../queues/names.js';
 import { isFinalAttempt } from '../utils/attempts.js';
 import { sha256 } from '../utils/hash.js';
@@ -660,20 +661,11 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
   }
 
   // The notice's own word, through the owners table: gnumner's contract
-  // notice is the paper channel's award source (ADR 0004).
-  const status = deriveStatus(
-    {
-      submissionChannel: observation.submissionChannel,
-      links: [{ source: SOURCE, status: observation.status }],
-      current: decision.tender.status,
-      deadlineAt: decision.tender.deadlineAt,
-    },
-    new Date()
-  );
-  const result = await tenders.recordResults({
-    tenderId: decision.tenderId,
-    expectedStatus: decision.tender.status,
-    status,
+  // notice is the paper channel's award source (ADR 0004). The benchmark job
+  // is keyed on the file, so the same notice read again recomputes nothing new.
+  const result = await ResultsService.record({
+    observation,
+    decision,
     link: {
       source: SOURCE,
       externalId,
@@ -682,34 +674,10 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
       observedStatus: null,
       seenAt: notice.seenAt ?? stored.fetched_at,
     },
-    lots: observation.ledger,
+    benchmarkKey: `${resultNoticeDigest(externalId)}-${stored.hash.slice(0, 12)}`,
+    priority,
   });
-
-  // Only when the link is new, as in the normalizer.
-  if (decision.rule !== 'link') {
-    await unmatchedResults.markResolved({ source: SOURCE, externalRef: externalId, tenderId: decision.tenderId });
-  }
-
-  // The status move is an amendment like an e-auction settling: the matcher
-  // hears of it, and its open rule (deadline ahead) decides whether anyone
-  // is told.
-  if (result.event) {
-    await alertsQueue.add(
-      JOB.MATCH_TENDER,
-      { tenderId: result.tenderId, event: result.event, version: result.version, changedFields: result.changedFields },
-      { jobId: matchJobId(result.tenderId, result.version), priority }
-    );
-  }
-  // Awards landed, so "what similar tenders were won at" moved. Keyed on the
-  // file, so the same notice read again recomputes nothing new. A
-  // result-only tender has no CPV for a benchmark to be keyed by.
-  if (result.awards > 0 && !decision.tender.resultOnly) {
-    await maintenanceQueue.add(
-      JOB.RECOMPUTE_BENCHMARKS,
-      { tenderId: result.tenderId },
-      { jobId: `benchmarks-${result.tenderId}-${resultNoticeDigest(externalId)}-${stored.hash.slice(0, 12)}`, priority }
-    );
-  }
+  const { status } = result;
 
   log.info(`contract notice recorded: ${result.bids} bids, ${result.awards} awards, tender ${status}`, { tenderId: decision.tenderId });
   return { tenderId: decision.tenderId, status, bids: result.bids, awards: result.awards, ...(result.event ? { version: result.version } : {}) };

@@ -26,7 +26,7 @@
  *
  * A candidate is a stored tender:
  *
- *   { id, status, referenceCode, submissionChannel, buyerName, publishedAt, deadlineAt, lotNumbers,
+ *   { id, status, referenceCode, submissionChannel, procedureType, buyerName, publishedAt, deadlineAt, lotNumbers,
  *     replacedRuns,                             // it holds a superseded run: publishedAt is its newest
  *     runPublishedAt,                           // optional: every file's publication, for a paper re-post
  *     resultOnly,                               // only results created it: no invitation, no page (ticket 31)
@@ -191,11 +191,22 @@ const lotsFit = (observed = [], stored = []) => {
 };
 
 /**
+ * Both sides state a procedure type and disagree on whether it was single
+ * source. Then they are not one procedure: a single-source price written on a
+ * competitive tender would enter every figure that measures competition
+ * (CLAUDE.md, *Single source*), and a competitive ledger on a single-source
+ * tender would leave them. A side that states no type has no opinion.
+ */
+const singleSourceDisagrees = (observation, tender) =>
+  Boolean(observation.procedureType && tender.procedureType) &&
+  (observation.procedureType === 'single_source') !== (tender.procedureType === 'single_source');
+
+/**
  * Rule 3: same normalized code, same submission channel, dates that agree and
- * lots that do not contradict. Re-announced runs share a code and differ in
- * dates, which is what tells them apart. A result with no comparable date
- * matches nothing (`no_candidate`); two runs on the same day both survive
- * (`ambiguous`).
+ * lots and procedure that do not contradict. Re-announced runs share a code
+ * and differ in dates, which is what tells them apart. A result with no
+ * comparable date matches nothing (`no_candidate`); two runs on the same day
+ * both survive (`ambiguous`).
  */
 const codeMatches = (observation, candidates) => {
   const key = normalizeCode(observation.procedureCode);
@@ -206,7 +217,8 @@ const codeMatches = (observation, candidates) => {
       datesAgree(observation, tender) &&
       // A result-only tender's lots are only those its notices have named so
       // far, not the procedure's: a second notice for another lot is still its.
-      (tender.resultOnly || lotsFit(observation.lotNumbers, tender.lotNumbers))
+      (tender.resultOnly || lotsFit(observation.lotNumbers, tender.lotNumbers)) &&
+      !singleSourceDisagrees(observation, tender)
   );
 };
 

@@ -93,7 +93,19 @@ export const readCoverage = async (watermarkKey) => {
   return { from: Number(floor), to: Number(high) };
 };
 
+/**
+ * Claim one item of a refresh for `ttlSeconds`: true when nobody asked about
+ * it within that time, and it is now marked asked. For a refresh with no
+ * stored page whose age says how stale an item is — PPCM's, which asks after
+ * tenders it may not hold a single row for. `SET NX`, so two overlapping runs
+ * never both claim one item. A flushed Redis only means an item is asked
+ * about again sooner.
+ */
+export const claimPoll = async (key, ttlSeconds) =>
+  (await redis.getRedis().set(key, '1', 'EX', ttlSeconds, 'NX')) === 'OK';
+
 export default {
+  claimPoll,
   markSweepHealthy,
   lastSuccessfulSweep,
   readHighWater,

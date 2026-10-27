@@ -67,7 +67,8 @@ Environment:
 After the deploy:
 
 - [ ] `npm run scheduler`, so the new repeatable jobs (gnumner sweeps, ARMEPS refresh,
-      `refresh-gnumner` paper close-out) are registered.
+      `refresh-gnumner` paper close-out, `refresh-ppcm` ARMEPS results — ticket 10, no
+      migration) are registered.
 - [ ] Every gnumner invitation listing has a floor beside its watermark
       (`sweep:published:gnumner:{open,quotation}:floor`, ticket 31). Its first sweep is a cold
       start and writes it. A watermark with no floor (a sweep under older code) leaves the

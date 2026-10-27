@@ -1,0 +1,289 @@
+import { sha256 } from '../../../../utils/hash.js';
+import { reportsPageUrl } from './client.js';
+
+/**
+ * A stored PPCM organized-procedures report → results observations for the
+ * resolution module (services/resolution.service.js), one per procedure, each
+ * carrying its ledger in the shape `tenders.recordResults` writes. The
+ * counterpart of armeps/observation.js for the ARMEPS channel's results
+ * (ADR 0004: PPCM owns `awarded` there).
+ *
+ * No network, no database and no clock: a replay from storage decides what
+ * the first read decided.
+ */
+export const SOURCE = 'ppcm';
+
+/**
+ * The stored payload: the report pages exactly as received, inside the query
+ * that produced them, so a replay knows the code and every page of it. Built
+ * by string so each body is kept byte for byte, and two identical answers
+ * hash the same and write nothing.
+ */
+export const storedPayload = ({ reportId, code, bodies }) =>
+  `{"reportId":${JSON.stringify(reportId)},"code":${JSON.stringify(code)},"responses":[${bodies.join(',')}]}`;
+
+/**
+ * A stored payload → `{ reportId, code, rows }`, each row an object keyed by
+ * `columns`. A row of any other length is refused: the report's columns moved,
+ * and reading it by position would put a price in the wrong field.
+ */
+export const parseStored = (text, { columns }) => {
+  const doc = JSON.parse(text);
+  const rows = [];
+  for (const response of doc.responses ?? []) {
+    if (response?.status !== 0 || !Array.isArray(response.data)) {
+      throw new Error(`[${SOURCE}] a stored page that PPCM did not serve (status ${response?.status})`);
+    }
+    for (const values of response.data) {
+      if (!Array.isArray(values) || values.length !== columns.length) {
+        throw new Error(
+          `[${SOURCE}] a row of ${Array.isArray(values) ? values.length : typeof values} columns, the config names ` +
+            `${columns.length} — the report's outputFormats changed (sources.config.js#ppcm.organizedProcedures)`
+        );
+      }
+      rows.push(Object.fromEntries(columns.map((column, i) => [column, values[i]])));
+    }
+  }
+  return { reportId: doc.reportId, code: doc.code, rows };
+};
+
+const time = (ms) => (Number.isFinite(ms) ? new Date(ms) : null);
+
+/** Amounts arrive as floats (`1.0308E7`, `74166.7`); a cent is the stored precision. */
+const amount = (value) => (Number.isFinite(value) ? Math.round(value * 100) / 100 : null);
+
+const text = (value) => {
+  const clean = String(value ?? '').trim().replace(/\s+/g, ' ');
+  return clean || null;
+};
+
+/**
+ * The procedure form, as PPCM names it (`p_form`), → a procedure type. The
+ * forms are `POST /ppcm/public/reports/get-form-list`'s, read 2026-10-23. The
+ * negotiated procedures are single source, as armeps.am's are
+ * (cft.parser.js). A form not listed — simplified, framework, two-stage,
+ * competitive dialogue, exchange, grant — is null. The type is counted with
+ * an unmatched result, and a single-source procedure never attaches to a
+ * competitive tender, nor the reverse (resolution.service.js, rule 3).
+ */
+const FORMS = [
+  [/աճուրդ/iu, 'e_auction'], // «Էլեկտրոնային աճուրդ»
+  [/գնանշման/iu, 'quotation'], // «Գնանշման հարցում»
+  [/մեկ\s+անձ|բանակց/iu, 'single_source'], // «Մեկ անձ», «Հրատապ մեկ անձ», «Բանակց. ընթացակարգ …»
+  [/բաց\s+(մրցույթ|ընթացակարգ)/iu, 'open'], // «Բաց մրցույթ», «Հրատապ բաց մրցույթ», «Բաց ընթացակարգ»
+];
+
+export const procedureTypeOf = (form) => FORMS.find(([pattern]) => pattern.test(form ?? ''))?.[1] ?? null;
+
+/**
+ * A bidder's per-source id: its ՀՎՀՀ, which PPCM states for every bidder, and
+ * the name only for one that has none (a foreign bidder) — a renamed company
+ * becomes a second party, far better than two companies becoming one.
+ */
+const bidderKey = ({ taxId, name }) => taxId ?? `name:${sha256(String(name).toLowerCase()).slice(0, 16)}`;
+
+/**
+ * One lot's rows → its ledger lot: every bidder at its net offer, and the
+ * award the report names.
+ *
+ * - `participant_total_price` is the offer **without VAT** (95 of 95 equal
+ *   to the e-auction ledger's net, research.md), so it is the net price and
+ *   nothing is invented for the gross: PPCM states no bidder's VAT.
+ * - `contract_price` is the **gross** award — what the buyer pays, per lot
+ *   (28 of 29 equal to the e-auction award, the 29th by 1.50 AMD) — and the
+ *   winner's net is its own offer. A lot joined to several contracts keeps
+ *   only the one priced at its winner's offer (`pricedAsOffer`), or is not
+ *   read at all.
+ * - `bid_rejected` is not read. It is mostly null for e-auctions and wrong
+ *   where set (28 of 95), and on ARMEPS rows it is `true` on the winning
+ *   bid itself (ԱՄԱՀ-ԲՄԽԾՁԲ-26/09: all 15 rows, both winners included).
+ *   Read as a rejection it would drop every winner from every price range;
+ *   the award is named explicitly instead, so a win never rests on it.
+ * - `est_total_price` is 0 on almost every row; a budget of 0 is no budget.
+ */
+const ledgerLot = (lotNumber, rows, warnings) => {
+  const bids = new Map();
+  for (const row of rows) {
+    const name = text(row.participant_name);
+    const net = amount(row.participant_total_price);
+    if (!name || net === null) {
+      warnings.push(`lot ${lotNumber}: a row with no bidder or no price was not read`);
+      continue;
+    }
+    const taxId = text(row.participant_taxpayer);
+    const key = bidderKey({ taxId, name });
+    const held = bids.get(key);
+    // The same offer once per contract the report joins to the lot (below)
+    // is one bid; two different offers from one bidder are worth a word.
+    if (held) {
+      if (net !== held.finalValue) warnings.push(`lot ${lotNumber}: ${name} listed at ${held.finalValue} and ${net} — the lower kept`);
+      if (net >= held.finalValue) continue;
+    }
+    bids.set(key, {
+      supplierSourceId: key,
+      supplierName: name,
+      supplierTaxId: taxId,
+      rank: null,
+      initialPrice: null,
+      initialValue: null,
+      finalPrice: null,
+      finalValue: net,
+      finalVatPercent: null,
+      participantStatus: null,
+      applicationUrl: null,
+    });
+  }
+
+  const contracts = namedContracts(rows).map((row) => {
+    const winner = { taxId: text(row.taxpayer_id), name: text(row.winner_name) };
+    const winning =
+      [...bids.values()].find((bid) => winner.taxId && bid.supplierTaxId === winner.taxId) ??
+      [...bids.values()].find((bid) => winner.name && bid.supplierName === winner.name) ??
+      null;
+    return { row, winner, winning };
+  });
+  let contract = contracts.length === 1 ? contracts[0] : null;
+  if (contracts.length > 1) {
+    const own = contracts.filter(({ row, winning }) => pricedAsOffer(amount(row.contract_price), winning?.finalValue));
+    contract = own.length === 1 ? own[0] : null;
+    warnings.push(
+      `lot ${lotNumber}: ${contracts.length} contracts named (${contracts.map(({ row }) => row.contract_id).join(', ')}) — ` +
+        (contract ? `${contract.row.contract_id} kept, the one priced at its winner's own offer` : 'none priced at its winner\'s own offer, lot not read')
+    );
+    // A lot that has a winner nobody can place is not written at all: its
+    // bids without an award would read as every bidder's defeat
+    // (`bids.reconcile`), the winner's included. Unwritten, a bid on it stays
+    // `not_found` and is asked about again.
+    if (!contract) return { lotNumber, estimatedValue: null, bids: [], award: null };
+  }
+
+  let award = null;
+  if (contract) {
+    const { row, winner, winning } = contract;
+    award = {
+      supplierSourceId: winning?.supplierSourceId ?? bidderKey({ taxId: winner.taxId, name: winner.name ?? '' }),
+      supplierName: winning?.supplierName ?? winner.name ?? winner.taxId,
+      supplierTaxId: winner.taxId,
+      amount: amount(row.contract_price),
+      netAmount: winning?.finalValue ?? null,
+      awardedAt: time(row.contract_sign_date) ?? time(row.award_date),
+    };
+  }
+
+  const budget = amount(rows[0].est_total_price);
+  return { lotNumber, estimatedValue: budget > 0 ? budget : null, bids: [...bids.values()], award };
+};
+
+/** A lot's rows that name a winner, one per contract (winner and contract id). */
+const namedContracts = (rows) => {
+  const seen = new Map();
+  for (const row of rows) {
+    if (!text(row.winner_name) && !text(row.taxpayer_id)) continue;
+    const key = `${text(row.taxpayer_id) ?? text(row.winner_name)}|${text(row.contract_id)}`;
+    if (!seen.has(key)) seen.set(key, row);
+  }
+  return [...seen.values()];
+};
+
+/**
+ * Is a contract's price the winner's own offer on this lot — net for a
+ * non-VAT payer, net plus 20% for a payer — within the 1.50 AMD of rounding
+ * research.md saw?
+ *
+ * The report joins every contract of a procedure whose winner bid on a lot to
+ * that lot: on ԱՄԱՀ-ԲՄԽԾՁԲ-26/09, lot 1 lists each bidder twice, once against
+ * contract /1 at 649 200 — 00813453's own 541 000 × 1.2 — and once against
+ * /3 at 2 040 000, which is 04225682's 1 700 000 on lots 15 and 16. The
+ * contract whose price is the winner's offer on this lot is this lot's; when
+ * not exactly one is, the lot is not read rather than guessed.
+ */
+const pricedAsOffer = (contractPrice, net) =>
+  contractPrice !== null &&
+  Number.isFinite(net) &&
+  (Math.abs(contractPrice - net) <= 2 || Math.abs(contractPrice - net * 1.2) <= 2);
+
+/**
+ * The id of one procedure's results on PPCM: its code and the moment it was
+ * announced. The report has no id of its own, and a code alone is not a
+ * procedure — a buyer re-announces under the same code (research.md:
+ * ԵՔ-ԲՄԽԾՁԲ-26/3 has 11 rows across runs) — while the announcement never
+ * moves.
+ */
+export const procedureId = (code, announcedAt) =>
+  `${text(code)}@${announcedAt ? announcedAt.toISOString() : 'undated'}`;
+
+/**
+ * The rows of one code → one observation per procedure, the procedures told
+ * apart by their announcement. Each is a `results` observation in the ARMEPS
+ * submission channel — PPCM states no channel; it is ARMEPS's results source,
+ * and an e-auction's form says so (`eauction`, which the caller leaves to
+ * eauction's own ledger) — matched by resolution on its code and the
+ * announcement and opening dates (rule 3).
+ *
+ * Every row must be of the code asked for, exactly: the filter is exact and
+ * case-sensitive, so another code means it stopped applying, and the rows
+ * are someone else's. The code is the one PPCM was asked for, as spelled —
+ * no normalizing, since another spelling is another query.
+ */
+export const observeProcedures = ({ reportId, code, rows }) => {
+  const key = text(code);
+  const foreign = rows.filter((row) => text(row.tender_reference) !== key);
+  if (foreign.length) {
+    throw new Error(
+      `[${SOURCE}] ${code}: ${foreign.length} of ${rows.length} rows are of another code ` +
+        `(${JSON.stringify(foreign[0].tender_reference)}) — the code filter did not apply`
+    );
+  }
+
+  const runs = new Map();
+  for (const row of rows) {
+    const id = procedureId(code, time(row.announcement_date));
+    if (!runs.has(id)) runs.set(id, []);
+    runs.get(id).push(row);
+  }
+
+  return [...runs.entries()].map(([externalId, run]) => {
+    const warnings = [];
+    const byLot = new Map();
+    for (const row of run) {
+      const lot = Number(row.lot_number);
+      if (!Number.isInteger(lot) || lot < 1) {
+        warnings.push(`a row with no lot number (${JSON.stringify(row.lot_number)}) was not read`);
+        continue;
+      }
+      if (!byLot.has(lot)) byLot.set(lot, []);
+      byLot.get(lot).push(row);
+    }
+    const ledger = [...byLot.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([lot, lotRows]) => ledgerLot(lot, lotRows, warnings))
+      .filter((lot) => lot.bids.length || lot.award);
+
+    const first = run[0];
+    const procedureType = procedureTypeOf(first.p_form);
+    const opening = run.map((row) => time(row.t_opening_date)).find(Boolean) ?? null;
+    return {
+      source: SOURCE,
+      role: 'results',
+      externalId,
+      url: `${reportsPageUrl()}#/report/${reportId}`,
+      pointer: null,
+      procedureCode: text(first.tender_reference),
+      submissionChannel: procedureType === 'e_auction' ? 'eauction' : 'armeps',
+      procedureType,
+      form: text(first.p_form),
+      buyerName: text(first.authority_name),
+      publishedAt: time(first.announcement_date),
+      deadlineAt: opening,
+      lotNumbers: ledger.map((lot) => lot.lotNumber),
+      // A winner named on any lot is an award; none named leaves the status
+      // to the deadline (`deriveStatus`) and the tender to the next ask.
+      status: ledger.some((lot) => lot.award) ? 'awarded' : null,
+      observedStatus: null,
+      ledger,
+      warnings,
+    };
+  });
+};
+
+export default { SOURCE, storedPayload, parseStored, procedureTypeOf, procedureId, observeProcedures };

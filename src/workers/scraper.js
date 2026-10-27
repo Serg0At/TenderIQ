@@ -21,6 +21,7 @@ import {
   handlePaperFailed,
   paperRefresher,
 } from './paper.js';
+import { handlePpcmResults, ppcmRefresher } from './ppcm.js';
 import { sweepBoard, readListingPage } from './listingChain.js';
 
 /**
@@ -198,13 +199,15 @@ const eauctionRefresher = {
 /**
  * Per source: which tenders the refresh re-reads, and the job that does it.
  * The questions differ — e-auction asks "what has resolved?" after the
- * auction, armeps.am "what has moved?" before the deadline, and paper "what
- * has closed?", since its file never changes — and the rest is shared.
+ * auction, armeps.am "what has moved?" before the deadline, paper "what
+ * has closed?", since its file never changes, and PPCM "who won?" once an
+ * ARMEPS deadline has passed — and the rest is shared.
  */
 const REFRESHERS = {
   eauction: eauctionRefresher,
   armeps: armepsRefresher,
   gnumner: paperRefresher,
+  ppcm: ppcmRefresher,
 };
 
 /**
@@ -291,6 +294,8 @@ export const processIngestFetch = async (job, token) => {
       return handlePaperContract(job, token);
     case JOB.PAPER_FAILED:
       return handlePaperFailed(job, token);
+    case JOB.PPCM_RESULTS:
+      return handlePpcmResults(job, token);
     case JOB.TENDER_DETAIL:
       return handleTenderDetail(job, token);
     case JOB.TENDER_DOCUMENTS:

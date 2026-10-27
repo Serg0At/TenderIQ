@@ -84,10 +84,15 @@ export default class PartyRepository {
     );
   }
 
-  static async upsertSupplier({ source, sourceId, name }, trx = db) {
+  /**
+   * `taxId` is the bidder's ՀՎՀՀ where its source states one (PPCM, ticket
+   * 10). Like every `upsert` field it only fills a blank. The party is still
+   * keyed by its per-source id: matching by ՀՎՀՀ across sources is ticket 11.
+   */
+  static async upsertSupplier({ source, sourceId, name, taxId = null }, trx = db) {
     if (!sourceId || !normalizeName(name)) return null;
     return PartyRepository.upsert(
-      { sourceId: supplierSourceId(source, sourceId), name, role: 'supplier' },
+      { sourceId: supplierSourceId(source, sourceId), name, role: 'supplier', taxId },
       trx
     );
   }

@@ -369,11 +369,11 @@ POST   /invitations/:id/{accept,decline}
   `UPDATE organization_id`: children carry composite `(parent_id, organization_id)` keys, and
   `vault_documents` have objects in a bucket.
 - **The ՀՎՀՀ does NOT link an org to its supplier party today.** PPCM publishes every bidder's ՀՎՀՀ
-  (ADR 0004), which reopens this once it is ingested — whether to use it is an open decision, and
-  until it is made the rule below stands. `parties.tax_id` is populated
-  **only for buyers** — `invitation.parser.js` scrapes it out of the invitation ZIP, which is the
-  procuring agency's number, and `tender.repo.js:applyInvitationFacts` writes it to `tender.buyer_id`.
-  Supplier parties come from the bid ledger, which carries names, ranks and prices and no tax number.
+  (ADR 0004), and since ticket 10 an ARMEPS bidder's `ppcm:bo:{ՀՎՀՀ}` party carries it — whether to
+  use it for the claim is an open decision, and until it is made the rule below stands. Buyers get
+  theirs from the invitation ZIP (`invitation.parser.js` → `tender.repo.js:applyInvitationFacts`).
+  e-auction and paper supplier parties come from ledgers that carry names, ranks and prices and no
+  tax number, so the same company is still several parties until ticket 11 matches by ՀՎՀՀ.
   So `organizations.supplier_party_id` stays a deliberate human claim from a search, and expecting the
   TIN to automate it is the obvious wrong guess. Storing it is still right: the 2027 OCDS platform
   identifies parties by `identifier.id`, which for Armenia is the ՀՎՀՀ.
@@ -724,13 +724,29 @@ decision that has already been made.
   for armeps it re-reads every *open* tender, because a deadline moves there without the
   gnumner notice changing. Buyers are keyed per source (`armeps:buyer:…`), so a buyer that
   runs both channels is two parties — 25 of the first 31 ARMEPS buyers; merging is open.
-- **PPCM is coming back.** It was removed because it is an AngularJS SPA rather than the CSV feed
-  the reference spec assumes — but behind the SPA are public JSON endpoints, and its per-bidder
-  report covers every procedure type. Verified 2026-10-18 against the e-auction ledger: 95 of 95
-  bidder prices equal `final_offer_net`, but its `bid_rejected` flag is unreliable and about half
-  of awarded tenders are missing (buyers file late, or never). It supplies results for ARMEPS
-  tenders and only the bidder's ՀՎՀՀ for e-auctions. `awards` and `public_tender_bids` already
-  have the `source` column it writes through.
+- **PPCM is an ARMEPS tender's results** (ticket 10, `workers/ppcm.js`, `ppcm.results`). Its
+  organized-procedures report is asked by procedure code (`refresh-ppcm`, every 2 h, each code
+  at most daily, claimed in Redis) for ARMEPS tenders past their deadline and not yet awarded
+  or cancelled, within 90 days — buyers file weeks late or never, so a tender PPCM has not
+  reported simply stays `closed` and a bid on it `not_found`. It spends armeps.am's rate budget
+  (same host) at `PRIORITY.RESULTS`, behind live discovery. The answer is stored whole; each
+  procedure in it (a code is re-announced, so procedures are told apart by announcement) goes
+  through rule 3 — code, ARMEPS channel, announcement = publication day, opening = deadline day
+  — and `ResultsService.record`, the path gnumner contract notices take. Decided while
+  building: `participant_total_price` is **net** and no gross is invented for a bid;
+  `contract_price` is the award's **gross** — what the buyer pays, which on ~1 lot in 7 is a
+  framework or partial-funds contract well below the offer; `bid_rejected` is **not read**, it is
+  `true` on winning rows; the report joins every contract of a procedure to a lot its winner bid
+  on, so a lot naming several contracts keeps only the one priced at its winner's own offer
+  (net or + 20%); with none it is not read at all, since its bids without an award would
+  reconcile as every bidder's defeat. An unchanged answer is resolved again while the tender
+  asked about holds no PPCM link, and codes are asked exactly as spelled (the filter is exact). Bidders are `ppcm:bo:{ՀՎՀՀ}` parties carrying `tax_id`; matching
+  parties *by* ՀՎՀՀ across sources is ticket 11, and PPCM writes nothing for e-auctions here.
+- **Rule 3 refuses a single-source disagreement**: a result and a tender that both state a
+  procedure type and disagree on whether it was single source are not one procedure, so a
+  single-source price never lands on a competitive tender (and into competition figures), nor
+  the reverse. PPCM names single source «Մեկ անձ» / «Հրատապ մեկ անձ»; its negotiated forms
+  map to `single_source` too, as armeps.am's do.
 - **Empty on purpose:** `contracts` (post-award, phase 6) and, for e-auctions, `cpv_code` /
   `cpv_codes` / `parties.tax_id` (all live only inside the invitation ZIP — see the document stage).
 - **A new document set is an amendment** (ticket 18, `services/addendum.service.js`). An

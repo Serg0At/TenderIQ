@@ -102,6 +102,14 @@ export const JOB = {
    * notices name every lot (workers/paper.js).
    */
   PAPER_FAILED: 'paper.failed',
+  /**
+   * One ARMEPS tender's results, asked of PPCM by its procedure code (ticket
+   * 10): the report's rows stored, resolved per procedure, and written as the
+   * tender's bids and awards (workers/ppcm.js). Queued by the PPCM refresh;
+   * `reason: 'replay'` re-reads the stored answer with no request. Rides
+   * ingest.fetch: armeps.am's host and budget.
+   */
+  PPCM_RESULTS: 'ppcm.results',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',
@@ -189,6 +197,13 @@ export const JOB = {
  */
 export const PRIORITY = {
   LIVE: 1,
+  /**
+   * Results asked of a source that shares a host with live discovery (PPCM
+   * on armeps.am): behind every discovery fetch on the one rate budget, since
+   * a result a few hours late costs nothing and a tender found late costs
+   * the customer the bid; ahead of history.
+   */
+  RESULTS: 5,
   BACKFILL: 10,
 };
 

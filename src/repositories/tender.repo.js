@@ -166,7 +166,7 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt,
   for (const lot of lots) {
     for (const bid of lot.bids) {
       const supplierId = await parties.upsertSupplier(
-        { source, sourceId: bid.supplierSourceId, name: bid.supplierName },
+        { source, sourceId: bid.supplierSourceId, name: bid.supplierName, taxId: bid.supplierTaxId },
         trx
       );
 
@@ -232,7 +232,7 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt,
 
     if (lot.award) {
       const supplierId = await parties.upsertSupplier(
-        { source, sourceId: lot.award.supplierSourceId, name: lot.award.supplierName },
+        { source, sourceId: lot.award.supplierSourceId, name: lot.award.supplierName, taxId: lot.award.supplierTaxId },
         trx
       );
       if (supplierId) {
@@ -741,7 +741,7 @@ export default class TenderRepository {
   static async findCandidates({ link, pointer, predecessors = [], code, codeRuns }, trx = db) {
     const candidates = (query) =>
       query.select(
-        't.id', 't.status', 't.reference_code', 't.submission_channel', 't.published_at', 't.deadline_at',
+        't.id', 't.status', 't.reference_code', 't.submission_channel', 't.procedure_type', 't.published_at', 't.deadline_at',
         trx.raw('(select name from parties where id = t.buyer_id) as buyer_name'),
         trx.raw(
           'exists(select 1 from tender_sources where tender_id = t.id and observed_status = ?) as replaced_runs',
@@ -787,6 +787,7 @@ export default class TenderRepository {
       status: row.status,
       referenceCode: row.reference_code,
       submissionChannel: row.submission_channel,
+      procedureType: row.procedure_type,
       buyerName: row.buyer_name,
       replacedRuns: row.replaced_runs,
       resultOnly: row.result_only,
@@ -1025,6 +1026,29 @@ export default class TenderRepository {
       .orderBy([{ column: 's.last_seen_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
       .limit(limit)
       .select('t.id', 's.external_id', 't.status', 't.deadline_at', 's.last_seen_at');
+  }
+
+  /**
+   * Tenders of one submission channel whose results are still owed: past the
+   * deadline, neither awarded nor cancelled, the deadline inside the window,
+   * with a code to ask for them by. The PPCM refresh's worklist (ticket 10):
+   * the oldest deadline first, the likeliest to have been filed. `limit` is a
+   * ceiling on the scan, not the batch — the caller skips the ones asked about
+   * recently.
+   */
+  static async findAwaitingResults({ submissionChannel, windowDays, limit }, trx = db) {
+    const now = new Date();
+    const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+
+    return trx(TABLE)
+      .where({ submission_channel: submissionChannel, is_latest: true })
+      .whereNotIn('status', TERMINAL_STATUSES)
+      .whereNotNull('reference_code')
+      .andWhere('deadline_at', '<', now)
+      .andWhere('deadline_at', '>', floor)
+      .orderBy([{ column: 'deadline_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+      .limit(limit)
+      .select('id', 'reference_code', 'status', 'deadline_at');
   }
 
   /**

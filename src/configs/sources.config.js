@@ -104,7 +104,8 @@ const sources = {
     displayName: 'armeps.am (ARMEPS tender pages)',
     baseUrl: process.env.SOURCE_ARMEPS_BASE || 'https://armeps.am',
     // Same budget as gnumner: a government site we have no relationship with.
-    // PPCM (ticket 10) is served from this host and will share the key.
+    // PPCM is served from this host and draws on this budget too
+    // (`ppcm.rateLimitSource`): one host, one allowance.
     rateLimit: { requests: 10, perMs: 60000 },
     /**
      * The refresh re-reads every unsettled ARMEPS tender, not only those past
@@ -119,6 +120,58 @@ const sources = {
     maxRefreshBatch: 200,
     downloadDocuments: true,
     backfillDocuments: true,
+  },
+  /**
+   * PPCM (armeps.am/ppcm), the public reports behind which every ARMEPS
+   * tender's bidders, prices and winner are published (ticket 10, ADR 0004:
+   * the ARMEPS channel's award source). Results only: it creates no tender
+   * and has no listing; a tender is asked about by its procedure code.
+   */
+  ppcm: {
+    enabled: true,
+    displayName: 'PPCM (ARMEPS results)',
+    baseUrl: process.env.SOURCE_PPCM_BASE || 'https://armeps.am',
+    // Served by armeps.am, so it spends armeps.am's budget rather than a
+    // second one of its own pointed at the same host.
+    rateLimitSource: 'armeps',
+    /**
+     * Which ARMEPS tenders are asked about: past their deadline, not yet
+     * awarded or cancelled, deadline within the window. A buyer files its
+     * results late or never (research.md: lag of weeks, and buyers that do
+     * not file), so the window is long and each tender is asked at most once
+     * per `pollIntervalHours`. Every 2 hours, a batch each: ~720 asks a day
+     * at most, one request each — results are not time-critical, so
+     * politeness wins over freshness.
+     */
+    refreshCron: process.env.SOURCE_PPCM_REFRESH_CRON || '13 */2 * * *',
+    refreshWindowDays: 90,
+    maxRefreshBatch: 60,
+    pollIntervalHours: 24,
+    /**
+     * «Կազմակերպված գնման ընթացակարգեր», one row per bidder per lot. Read
+     * off `POST /ppcm/public/reports/list` on 2026-10-23. A row is a bare
+     * array in `columns` order — the report's `outputFormats` — so a column
+     * added or moved there must be added or moved here; the parser refuses a
+     * row of another length.
+     */
+    organizedProcedures: {
+      reportId: '22654759-87e3-4c54-9095-ffe7517123c4',
+      // `tender_reference`, an exact and case-sensitive match on the code.
+      codeParamId: '2241bc3a-61eb-4986-b249-2ef5e2b38a33',
+      // Any `page` other than `{ index, size }` silently caps at 15 rows.
+      pageSize: 100,
+      // A code's rows past this many pages is not one tender's ledger.
+      maxPages: 20,
+      columns: [
+        'authority_name', 'cpv_title', 'cpv_code', 'p_form', 'announcement_date', 'm_unit', 'quantity',
+        'est_total_price', 'est_unit_price', 'tender_savings', 'tender_reference', 't_opening_date',
+        'num_of_participants', 'participant_name', 'participant_taxpayer', 'bid_rejected',
+        'participant_total_price', 'participant_unit_price', 'bidder_country', 'winner_name', 'taxpayer_id',
+        'award_date', 'standstill_start', 'standstill_end', 'winner_notice_date', 'winner_contract_submit_date',
+        'contract_sign_date', 'contract_id', 'contract_price', 'brief_description_per_tender',
+        'brief_description_per_contract', 'authority_type', 'procurement_type', 'lot_name', 'lot_number', 'year',
+      ],
+    },
   },
 };
 
