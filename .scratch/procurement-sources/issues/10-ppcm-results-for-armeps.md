@@ -283,8 +283,8 @@ PPCM bids are still stored as soon as PPCM publishes them.
   record permanently on a tender still to settle.
 - **A failed lot keeps today's handling** (`lost`, no winning price). Recorded failure
   (`supplierEntriesForTender#lot_failed`): the tender `cancelled`; a failure notice naming the lot
-  (`tender_sources.failed_lots`); or the source rejecting every bid on the lot. **The third is my
-  reading of "recorded failure"** and the one to check: e-auction's accept/reject column is its
+  (`tender_sources.failed_lots`); or the source rejecting every bid on the lot. **The third was my
+  reading of "recorded failure", approved by the owner 2026-10-27:** e-auction's accept/reject column is its
   own authority, and all 751 e-auction lots without an award on a tender that is not cancelled
   (302 awarded, 449 closed) are exactly that — read strictly, every one would stay unresolved
   forever. PPCM's bids are never stored `rejected`, so it cannot fire on an ARMEPS lot.
