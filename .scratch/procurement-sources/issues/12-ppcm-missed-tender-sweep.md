@@ -182,6 +182,10 @@ Left, on purpose:
   its document archive queued. On Neon it will do the same. The 569 queued here were removed
   because the archive backfill is yours to start; the next sweep queues them again from the
   stored answers, with no bid-report request. Shorten `missedSweep.windowDays`, or let it run.
+- **What the first run's archives would cost to store** (measured 2026-10-28, see *Measurement*
+  below): about **1.6 GB** for ~560 repaired tenders (90% range 1.3–1.8 GB), or 2.5 GB if they
+  were sized like an average stored ARMEPS tender rather than mostly quotations. The range is
+  a floor on the tail, not a bound.
 - **The future operator alert will see 563 "misses" on its first day.** They are real (public,
   absent), and repairs resolve them within hours of the pages being fetched. A first-run
   exemption, or alerting only on misses older than a day, is that feature's call.
@@ -192,3 +196,51 @@ Left, on purpose:
 - **Load:** about 455 report requests a day, plus one bid-report ask per unmatched competitive
   code a day, on armeps.am's budget at `PRIORITY.RESULTS`. That budget is the uncommitted 22/min
   in `sources.config.js`, left alone.
+
+## Measurement: ARMEPS archive sizes, before scheduling `missed-ppcm` (2026-10-28)
+
+Asked for by the owner before the first run. Nothing was scheduled or run.
+
+**Method.** MinIO was unreachable: the Docker daemon was down, and its data is a named volume.
+So each stored archive's size was **rebuilt from `tender_documents.manifest`** instead of read
+with a `head`. The manifest holds every ZIP entry's offset, compressed size and path, so the
+size is the last entry's offset, plus its local header, plus its compressed data, plus the
+central directory and end record. The one field the manifest does not hold is the
+local-header extra field, which was a constant 16 bytes on every entry. So the rebuild is low
+by under a kilobyte per archive. Confirm with `storage.head` once MinIO is up (the scratch
+script does both).
+
+**All 54 stored ARMEPS archives** (53 tenders, one with an addendum set; published 07-21 → 10-19;
+4–8 files each, median 4):
+
+| | count | total | median | p90 | mean | max |
+|---|---|---|---|---|---|---|
+| per archive | 54 | 232.0 MB | 0.56 MB | 10.55 MB | 4.30 MB | 59.1 MB |
+| per tender | 53 | 232.0 MB | 0.56 MB | 10.55 MB | 4.38 MB | 59.1 MB |
+| per tender, open | 30 | 179.2 MB | 0.56 MB | 12.66 MB | 5.97 MB | 59.1 MB |
+| per tender, quotation | 23 | 52.8 MB | 0.57 MB | 3.55 MB | 2.30 MB | 26.9 MB |
+
+The distribution is all tail. The three largest (12529234 at 59.1 MB, 12534231 at 47.1 MB,
+12543225 at 26.9 MB) are 57% of the total. Uncompressed, the files are 262 MB, so the ZIPs
+save only 12%: they are mostly PDFs and scans, which are already compressed.
+
+**Extrapolated to the ~560 tenders the first run would repair** (bootstrap, 20,000 draws of
+560 from the measured per-tender sizes):
+
+| assumption | p5 | median | p95 |
+|---|---|---|---|
+| the repairs' mix: open 76, quotation 487 of 563 | 1.31 GB | **1.56 GB** | 1.84 GB |
+| any type, as the 53 stored | 2.02 GB | 2.51 GB | 3.01 GB |
+
+The mix row is the one to read, because 87% of the repairs are quotations, whose archives are
+less than half an open tender's on average. Three caveats:
+
+- A bootstrap can only redraw the 53 archives it has seen. One archive larger than 59 MB
+  among 560 moves the total, so read the range as a floor on the tail, not a bound.
+- The quotation side rests on 23 archives.
+- The repairs are older (announced July–September) and all finished. That means more
+  addenda per tender than this sample, which is mostly live tenders with one set each, so
+  the per-tender figure is more likely low than high.
+
+Not counted: the CfT pages (canonical HTML, tens of KB each) and the text stored beside an
+archive once a checklist reads it.
