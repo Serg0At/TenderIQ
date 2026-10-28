@@ -92,6 +92,19 @@ export default class UnmatchedResultRepository {
   }
 
   /**
+   * An unresolved result's procedure is known to have been public (ticket 12:
+   * PPCM's bid-report names its armeps.am page). The next read of the result
+   * finds the same fact in storage and says the same, so this only spares the
+   * count a day of being wrong. Returns the number of rows changed.
+   */
+  static async markPublic({ source, externalRef }, trx = db) {
+    return trx(TABLE)
+      .where({ source, external_ref: String(externalRef) })
+      .whereNull('resolved_at')
+      .update({ was_public: true });
+  }
+
+  /**
    * A result that was unmatched now belongs to `tenderId`. Only an unresolved
    * row moves, so a repeat is a no-op and the first resolution time stands.
    * Returns the number of rows resolved (0 or 1).

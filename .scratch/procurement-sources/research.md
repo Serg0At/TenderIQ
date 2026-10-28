@@ -323,6 +323,13 @@ the PPCM "Organized procurement procedures" report, filtered by `tender_referenc
   oldest hits and misses share a publish date). The likely cause is that PPCM lists a procedure
   only once the buyer files its results, but that is **unconfirmed**. `bid-report` would settle
   it, but it answered `{"status":500}` to every request that day, even with an empty filter.
+  **Corrected 2026-10-27 (ticket 12):** bid-report was never down. It answers only the request its
+  own page (`bid-report-app.js`) sends: `filter` with `code`, `publicationDate: {min, max}` and
+  `tenderSubmissionDeadline: {min, max}` all present (nulls allowed) **and** a non-null `order`
+  (`{ field: "tender_submission_deadline", ascending: false }`). A bare filter, or `order: null`,
+  is `{"status":500}`. The code filter is exact. `cftTendersOpeningDate` falls on the report's
+  `t_opening_date` day for 86 of 86 entries checked; `contractNoticeDate` on the announcement day
+  for 85; `datePublished` equals the announcement for only 29 (the rest are later).
 - **Prices: 95 of 95 bidder rows matched our `final_offer_net` exactly.** PPCM's
   `participant_total_price` is the final auction offer, net of VAT. It is never the opening offer.
 - **Contract price = our gross award** (`awards.amount`) on 28 of 29 winners. The 29th differs

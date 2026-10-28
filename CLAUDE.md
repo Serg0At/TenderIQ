@@ -764,6 +764,22 @@ decision that has already been made.
   **PPCM writes an e-auction's times as Yerevan wall clock in UTC** — 4 h ahead of
   eauction.armeps.am, while its ARMEPS times are true — and `ppcm/observation.js` moves them
   back, or 5% of e-auctions (announced after 20:00) fail rule 3's day comparison.
+- **PPCM's missed-tender sweep finds what Tendra never had** (ticket 12, `ppcm.sweep`,
+  `missed-ppcm` daily). It reads the organized-procedures report **by announcement day**, per
+  competitive form, 90 days back, every day: every row of a procedure shares its announcement,
+  so a day holds whole procedures, and each goes through the ask by code's own
+  `recordProcedure`. Single source is not swept (never a miss). An unmatched procedure carries
+  ticket 31's `was_public`: **a miss is `no_candidate` and `was_public` true**, and no operator
+  alert reads it yet. A competitive one asks **bid-report** for its armeps.am `resourceId`
+  (`ppcm.repair`, once per code a day) and queues `armeps.detail`; a page bid-report names, not
+  `paperBased`, makes the procedure public whether or not gnumner listed it (`armepsPage`), and
+  its stored answer is read back as that fact by every later sweep. bid-report answers **only
+  the request its own page sends** — every filter field present and an `order` — and
+  `{"status":500}` to anything less, which is all research.md ever sent it; refused, the
+  procedure stays `no_candidate` and the sweep does not fail. A created ARMEPS or e-auction
+  tender asks PPCM about its code again (`queuePpcmRetries`), so a repaired tender takes its
+  result. PPCM lists paper procedures beside ARMEPS ones, so a non-auction row is
+  `channelUnstated`: a code held only on paper or e-auction is `other_channel`, not a miss.
 - **Rule 3 refuses a single-source disagreement**: a result and a tender that both state a
   procedure type and disagree on whether it was single source are not one procedure, so a
   single-source price never lands on a competitive tender (and into competition figures), nor

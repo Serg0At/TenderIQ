@@ -23,6 +23,27 @@ export const storedPayload = ({ reportId, code, bodies }) =>
   `{"reportId":${JSON.stringify(reportId)},"code":${JSON.stringify(code)},"responses":[${bodies.join(',')}]}`;
 
 /**
+ * The stored payload of one sweep query (ticket 12): one form, one
+ * announcement day, its pages as received. `parseStored` reads it like an
+ * answer by code, with no code.
+ */
+export const storedDayPayload = ({ reportId, form, day, bodies }) =>
+  `{"reportId":${JSON.stringify(reportId)},"form":${JSON.stringify(form)},"day":${JSON.stringify(day)},` +
+  `"responses":[${bodies.join(',')}]}`;
+
+/** A bid-report answer for one code, stored as received inside the code it was asked for. */
+export const storedBidReport = ({ code, body }) => `{"code":${JSON.stringify(code)},"response":${body}}`;
+
+/** A stored bid-report answer → its tenders. One PPCM did not serve is refused, as a report page is. */
+export const parseBidReport = (stored) => {
+  const doc = JSON.parse(stored);
+  if (doc.response?.status !== 0 || !Array.isArray(doc.response.data)) {
+    throw new Error(`[${SOURCE}] a stored bid-report answer that PPCM did not serve (status ${doc.response?.status})`);
+  }
+  return { code: doc.code, tenders: doc.response.data };
+};
+
+/**
  * A stored payload → `{ reportId, code, rows }`, each row an object keyed by
  * `columns`. A row of any other length is refused: the report's columns moved,
  * and reading it by position would put a price in the wrong field.
@@ -311,6 +332,12 @@ export const observeProcedures = ({ reportId, code, rows }) => {
       pointer: null,
       procedureCode: text(first.tender_reference),
       submissionChannel: procedureType === 'e_auction' ? 'eauction' : 'armeps',
+      // PPCM lists paper procedures beside ARMEPS ones and says which only in
+      // bid-report (`paperBased`): a code Tendra holds only as a paper (or
+      // e-auction) tender is that tender's, not an ARMEPS tender it missed
+      // (resolution.service.js, `channelUnstated`). An auction's form is its
+      // channel.
+      channelUnstated: procedureType !== 'e_auction',
       procedureType,
       form: text(first.p_form),
       buyerName: text(first.authority_name),
@@ -328,4 +355,81 @@ export const observeProcedures = ({ reportId, code, rows }) => {
   });
 };
 
-export default { SOURCE, storedPayload, parseStored, procedureTypeOf, procedureId, observeProcedures };
+/**
+ * The rows of one sweep query — one form, one day, many codes — → one
+ * observation per procedure, as `observeProcedures` reads one code's. Every
+ * row of a procedure shares its announcement, so the day holds the whole
+ * procedure. A row with no code names no procedure anything could be matched
+ * to, and is counted rather than read.
+ */
+export const observeDay = ({ reportId, rows }) => {
+  const byCode = new Map();
+  let uncoded = 0;
+  for (const row of rows) {
+    const code = text(row.tender_reference);
+    if (!code) {
+      uncoded += 1;
+      continue;
+    }
+    if (!byCode.has(code)) byCode.set(code, []);
+    byCode.get(code).push(row);
+  }
+  const observations = [...byCode.entries()].flatMap(([code, codeRows]) =>
+    observeProcedures({ reportId, code, rows: codeRows })
+  );
+  return { observations, uncoded };
+};
+
+/** Armenia has kept UTC+4 all year since 2012, so a fixed offset is exact. */
+const YEREVAN_OFFSET_MS = 4 * 60 * 60 * 1000;
+const yerevanDay = (at) => (at ? new Date(new Date(at).getTime() + YEREVAN_OFFSET_MS).toISOString().slice(0, 10) : null);
+
+/**
+ * bid-report's tenders of a code → the armeps.am CfT of one procedure, or why
+ * there is none. Pure.
+ *
+ * The procedure is the one entry of its exact code whose bids opened on the
+ * procedure's opening day (`cftTendersOpeningDate` against the report's
+ * `t_opening_date`): 86 of 86 entries checked on 2026-10-27 agreed, while
+ * `datePublished` — despite its name — equalled the announcement on only 29,
+ * the rest being a later re-publication. A re-announcement opens on another
+ * day, which tells two runs of one code apart. A procedure stating no opening
+ * is matched on its announcement against `contractNoticeDate` (85 of 86; the
+ * miss was an announcement PPCM keeps as a bare date).
+ *
+ *   { resourceId }            — an armeps.am page to fetch
+ *   { none: 'paper' }         — a paper procedure: it has no armeps.am page
+ *   { none: 'not_listed' }    — bid-report has no entry of that code and day
+ *   { none: 'ambiguous' }     — two entries of that code on that day
+ *   { none: 'no_resource' }   — an entry with no `armepsId`
+ */
+export const cftOf = (tenders, observation) => {
+  const key = text(observation.procedureCode);
+  const opening = yerevanDay(observation.deadlineAt);
+  const announced = yerevanDay(observation.publishedAt);
+  const fits = (tender) =>
+    opening !== null
+      ? yerevanDay(tender.cftTendersOpeningDate ?? tender.tenderSubmissionDeadline) === opening
+      : announced !== null && yerevanDay(tender.contractNoticeDate) === announced;
+  const same = (tenders ?? []).filter((tender) => text(tender?.code) === key && fits(tender));
+  if (!same.length) return { none: 'not_listed' };
+  if (same.length > 1) return { none: 'ambiguous' };
+  const [tender] = same;
+  if (tender.paperBased === true) return { none: 'paper' };
+  const resourceId = Number(tender.armepsId);
+  return Number.isInteger(resourceId) && resourceId > 0 ? { resourceId } : { none: 'no_resource' };
+};
+
+export default {
+  SOURCE,
+  storedPayload,
+  storedDayPayload,
+  storedBidReport,
+  parseBidReport,
+  parseStored,
+  procedureTypeOf,
+  procedureId,
+  observeProcedures,
+  observeDay,
+  cftOf,
+};

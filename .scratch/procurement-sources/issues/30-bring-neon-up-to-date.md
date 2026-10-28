@@ -78,7 +78,11 @@ After the deploy:
 
 - [ ] `npm run scheduler`, so the new repeatable jobs (gnumner sweeps, ARMEPS refresh,
       `refresh-gnumner` paper close-out, `refresh-ppcm` ARMEPS results — ticket 10, no
-      migration) are registered.
+      migration; `missed-ppcm` missed-tender sweep — ticket 12, no migration) are registered.
+      `missed-ppcm`'s first run asks bid-report about every competitive procedure of the last
+      90 days that Tendra lacks, and fetches the armeps.am page of each one it names: on a
+      database that has never run it, a few hundred ARMEPS tenders appear, with their document
+      archives queued, at the results priority (ticket 12, *For the owner*).
 - [ ] Every gnumner invitation listing has a floor beside its watermark
       (`sweep:published:gnumner:{open,quotation}:floor`, ticket 31). Its first sweep is a cold
       start and writes it. A watermark with no floor (a sweep under older code) leaves the

@@ -48,6 +48,19 @@ const register = async () => {
       );
       logger.info(`[scheduler] ${displayName}: result re-check scheduled "${refreshCron}"`);
     }
+
+    // A third question: what did the source report that Tendra holds no
+    // tender for? PPCM's missed-tender sweep (ticket 12), read by date rather
+    // than asked per tender — the only way to see a tender Tendra never had.
+    const { missedSweep } = getSourceConfig(source);
+    if (missedSweep?.cron) {
+      await ingestFetchQueue.upsertJobScheduler(
+        `missed-${source}`,
+        { pattern: missedSweep.cron },
+        { name: JOB.PPCM_SWEEP, data: { source } }
+      );
+      logger.info(`[scheduler] ${displayName}: missed-tender sweep scheduled "${missedSweep.cron}"`);
+    }
   }
 
   // Source-independent: it reports on every source and on the queues

@@ -169,6 +169,12 @@ const sources = {
       reportId: '22654759-87e3-4c54-9095-ffe7517123c4',
       // `tender_reference`, an exact and case-sensitive match on the code.
       codeParamId: '2241bc3a-61eb-4986-b249-2ef5e2b38a33',
+      // `p_form`, an exact match on the form's Armenian name («Բաց մրցույթ»
+      // does not return «Հրատապ բաց մրցույթ», checked 2026-10-27).
+      formParamId: 'bf2d5e57-d8f9-4060-9f36-914cfc7643ed',
+      // `announcement_date`, a DATE parameter: "YYYY-MM-DD,YYYY-MM-DD", both
+      // ends inclusive — the reports page's own encoding (reports-app.js).
+      announcedParamId: 'e2fab567-8fb5-a1aa-bc3f-13d264f2eaaf',
       // Any `page` other than `{ index, size }` silently caps at 15 rows.
       pageSize: 100,
       // A code's rows past this many pages is not one tender's ledger.
@@ -182,6 +188,50 @@ const sources = {
         'contract_sign_date', 'contract_id', 'contract_price', 'brief_description_per_tender',
         'brief_description_per_contract', 'authority_type', 'procurement_type', 'lot_name', 'lot_number', 'year',
       ],
+    },
+    /**
+     * The missed-tender sweep (ticket 12): the same report read by
+     * announcement day, one form at a time, every day of the window, so
+     * every procedure PPCM has filed is resolved — and one Tendra holds no
+     * tender for is recorded as `no_candidate`.
+     *
+     * By announcement day because every row of a procedure shares its
+     * announcement, so a day's answer holds whole procedures, and a buyer's
+     * late filing lands in a day already being read. 90 days of the four
+     * competitive forms held ~8,000 rows on 2026-10-27 (e-auction 5,577,
+     * quotation 2,243), a day ≤ 300: one page each, about 450 requests a
+     * day, nearly all of them days with nothing new.
+     *
+     * Single source is not swept: a procedure with no invitation is never a
+     * tender Tendra missed (ticket 31), and «Մեկ անձ» is half of every
+     * procedure filed. Nor are grants («Դրամաշնորհային մրցույթ», 1,924 rows
+     * in the year to 2026-10-27), which no supplier bids for. Every other
+     * form `get-form-list` names — «Բաց ընթացակարգ», simplified, framework,
+     * competitive dialogue, negotiated, exchange — had 0 rows that year; a
+     * form that starts to carry rows has to be added here by name, exactly.
+     */
+    missedSweep: {
+      cron: process.env.SOURCE_PPCM_SWEEP_CRON || '29 1 * * *',
+      windowDays: 90,
+      forms: ['Բաց մրցույթ', 'Հրատապ բաց մրցույթ', 'Գնանշման հարցում', 'Երկփուլ մրցույթ', 'Էլեկտրոնային աճուրդ'],
+      // A page of 1,000 is served (291 rows of the busiest day checked came
+      // back in one): a day is one request, and a split page cannot cut a
+      // procedure's rows in two.
+      pageSize: 1000,
+      maxPages: 10,
+    },
+    /**
+     * PPCM's bid-report (`/ppcm/public/bid-report`), asked for the armeps.am
+     * `resourceId` (`armepsId`) of a procedure Tendra has no tender for, so
+     * the gap repairs itself (ticket 12). It answers only the shape its own
+     * page sends — every filter field present and an `order` — and
+     * `{"status":500}` to anything else, which is what research.md saw on
+     * 2026-10-18 (verified 2026-10-27). A code is asked at most once per
+     * `repairPollHours`, whatever the answer.
+     */
+    bidReport: {
+      repairPollHours: 24,
+      pageSize: 20,
     },
   },
 };

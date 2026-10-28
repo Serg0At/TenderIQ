@@ -174,6 +174,29 @@ itself: a code held only on e-auction, or one whose method marker is `ԷԱՃ` wi
 tender of it. Otherwise every e-auction older than Tendra's history would read as a missed tender. A notice that cannot be read is `unsupported_format`, because which lots failed is
 the whole point. Like any result, it never creates a tender.
 
+## Missed tenders, through PPCM (2026-10-27, ticket 12)
+
+A periodic sweep reads PPCM's organized-procedures report by announcement day and resolves every
+procedure in it, so the rule "a `no_candidate` result means Tendra missed a tender" finally has
+something that finds them. Three things were settled while building it:
+
+- **A missed tender is `no_candidate` and public**, read through ticket 31's `was_public`, not
+  `no_candidate` alone: a procedure announced before Tendra's history, or one gnumner's covered
+  window says was never published, is not a miss. A procedure whose armeps.am page PPCM's
+  bid-report names is public whatever gnumner listed, since a CfT page is itself an announcement.
+- **bid-report works, if it is asked the way its own page asks.** It answered `{"status":500}` to
+  every request in research because those requests left out filter fields and the `order`; sent
+  whole, it gives each procedure's `armepsId` and `paperBased`. So the self-repair runs: the page
+  is fetched the normal way, and once the tender exists the result is asked about again by code
+  and attaches.
+- **PPCM's external id stays `{code}@{announced}`**, not the `resourceId` this ADR named. bid-report
+  is asked only for procedures with no tender, so most PPCM links never learn a `resourceId`, and
+  one link source with two id schemes is two rows for one procedure. The announcement never moves.
+
+PPCM lists paper procedures beside ARMEPS ones and states which only in bid-report, so a PPCM row
+that is not an auction is matched in every channel: a code Tendra holds only on paper or e-auction
+is that tender's, not a missed ARMEPS one.
+
 ## Considered options
 
 - **A tender is a procedure code, with runs inside it.** One card per code, but alerts, pursuits

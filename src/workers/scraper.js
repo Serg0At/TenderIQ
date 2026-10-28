@@ -21,7 +21,7 @@ import {
   handlePaperFailed,
   paperRefresher,
 } from './paper.js';
-import { handlePpcmResults, ppcmRefresher } from './ppcm.js';
+import { handlePpcmRepair, handlePpcmResults, handlePpcmSweep, handlePpcmSweepDay, ppcmRefresher } from './ppcm.js';
 import { sweepBoard, readListingPage } from './listingChain.js';
 
 /**
@@ -296,6 +296,12 @@ export const processIngestFetch = async (job, token) => {
       return handlePaperFailed(job, token);
     case JOB.PPCM_RESULTS:
       return handlePpcmResults(job, token);
+    case JOB.PPCM_SWEEP:
+      return handlePpcmSweep(job);
+    case JOB.PPCM_SWEEP_DAY:
+      return handlePpcmSweepDay(job, token);
+    case JOB.PPCM_REPAIR:
+      return handlePpcmRepair(job, token);
     case JOB.TENDER_DETAIL:
       return handleTenderDetail(job, token);
     case JOB.TENDER_DOCUMENTS:

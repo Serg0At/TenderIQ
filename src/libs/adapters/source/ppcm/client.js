@@ -50,8 +50,11 @@ const refusal = (response) =>
       ? `status ${response.json.status}`
       : `a ${response.contentType || 'non-JSON'} body`;
 
+/** PPCM refused a request it should have served: a broken endpoint, not a broken network. */
+export class RefusedError extends Error {}
+
 /**
- * One page of one report.
+ * One POST to PPCM, answered or thrown.
  *
  * A refused answer — an HTTP error, a non-zero `status`, or a body that is
  * not JSON (a login or error page) — is what an expired session looks like,
@@ -63,18 +66,11 @@ const refusal = (response) =>
  *
  * Returns the body as received, for storage, and the parsed `data`.
  */
-export const fetchReportPage = async ({ reportId, values, index, size }) => {
-  const payload = {
-    reportId,
-    values: values.map(({ paramId, value }) => ({ paramId, value: String(value) })),
-    page: { index, size },
-    order: null,
-  };
-
+const askJson = async (url, payload, what) => {
   const ask = async (current) => {
     await gate();
     try {
-      return await postJson(reportUrl(), payload, { cookie: current.cookie });
+      return await postJson(url, payload, { cookie: current.cookie });
     } catch (error) {
       // An HTTP error status is a refusal like any other; no answer at all
       // (a timeout, a reset) is not about the session, and is thrown as is.
@@ -88,31 +84,96 @@ export const fetchReportPage = async ({ reportId, values, index, size }) => {
   if (!served(response) && reused) response = await ask(await openSession());
   if (!served(response)) {
     session = null;
-    throw new Error(`[${SOURCE}] report ${reportId} page ${index} refused: ${refusal(response)}`);
+    throw new RefusedError(`[${SOURCE}] ${what} refused: ${refusal(response)}`);
   }
   if (!Array.isArray(response.json.data)) {
-    throw new Error(`[${SOURCE}] report ${reportId} page ${index}: \`data\` is not a list of rows`);
+    throw new Error(`[${SOURCE}] ${what}: \`data\` is not a list`);
   }
-  return { body: response.body, rows: response.json.data };
+  return { body: response.body, data: response.json.data };
 };
 
-/**
- * Every row of the organized-procedures report for one procedure code, page
- * by page until a short page. Returns the raw bodies — what is stored — and
- * the rows. More pages than `maxPages` is refused, not truncated: a ledger cut
- * short would read as a complete one.
- */
-export const fetchProcedureRows = async (code) => {
-  const { reportId, codeParamId, pageSize, maxPages } = getSourceConfig(SOURCE).organizedProcedures;
+/** One page of one report: the body as received, and its rows. */
+export const fetchReportPage = async ({ reportId, values, index, size }) => {
+  const payload = {
+    reportId,
+    values: values.map(({ paramId, value }) => ({ paramId, value: String(value) })),
+    page: { index, size },
+    order: null,
+  };
+  const { body, data } = await askJson(reportUrl(), payload, `report ${reportId} page ${index}`);
+  return { body, rows: data };
+};
+
+/** Every page of one query, until a short page; more than `maxPages` is refused, not truncated. */
+const fetchAllPages = async ({ reportId, values, pageSize, maxPages, what }) => {
   const bodies = [];
   const rows = [];
   for (let index = 0; index < maxPages; index += 1) {
-    const page = await fetchReportPage({ reportId, values: [{ paramId: codeParamId, value: code }], index, size: pageSize });
+    const page = await fetchReportPage({ reportId, values, index, size: pageSize });
     bodies.push(page.body);
     rows.push(...page.rows);
     if (page.rows.length < pageSize) return { bodies, rows };
   }
-  throw new Error(`[${SOURCE}] ${code}: more than ${maxPages} pages of ${pageSize} rows`);
+  throw new Error(`[${SOURCE}] ${what}: more than ${maxPages} pages of ${pageSize} rows`);
 };
 
-export default { reportsPageUrl, reportUrl, fetchReportPage, fetchProcedureRows };
+/**
+ * Every row of the organized-procedures report for one procedure code. Returns
+ * the raw bodies — what is stored — and the rows. More pages than `maxPages`
+ * is refused: a ledger cut short would read as a complete one.
+ */
+export const fetchProcedureRows = async (code) => {
+  const { reportId, codeParamId, pageSize, maxPages } = getSourceConfig(SOURCE).organizedProcedures;
+  return fetchAllPages({ reportId, values: [{ paramId: codeParamId, value: code }], pageSize, maxPages, what: code });
+};
+
+/**
+ * Every row of one procedure form announced on one day (`YYYY-MM-DD`), for
+ * the missed-tender sweep (ticket 12). Both ends of PPCM's date range are
+ * inclusive, so the day is asked as itself twice.
+ */
+export const fetchDayRows = async ({ form, day }) => {
+  const { reportId, formParamId, announcedParamId } = getSourceConfig(SOURCE).organizedProcedures;
+  const { pageSize, maxPages } = getSourceConfig(SOURCE).missedSweep;
+  const values = [
+    { paramId: formParamId, value: form },
+    { paramId: announcedParamId, value: `${day},${day}` },
+  ];
+  return fetchAllPages({ reportId, values, pageSize, maxPages, what: `${form} on ${day}` });
+};
+
+export const bidReportUrl = () => `${getSourceConfig(SOURCE).baseUrl}/ppcm/public/bid-report/list-tender`;
+
+/**
+ * bid-report's tenders of one procedure code: each with its `armepsId` (the
+ * armeps.am `resourceId`), `paperBased` and `datePublished`. The filter is
+ * exact on the code. It must be sent whole, every field present and an
+ * `order` given, as the page itself sends it: anything less answers
+ * `{"status":500}` (sources.config.js#ppcm.bidReport). A refusal is a
+ * `RefusedError`, which the sweep reads as "bid-report is unavailable".
+ */
+export const fetchBidReportTenders = async (code) => {
+  const { pageSize } = getSourceConfig(SOURCE).bidReport;
+  const payload = {
+    filter: {
+      code,
+      publicationDate: { min: null, max: null },
+      tenderSubmissionDeadline: { min: null, max: null },
+    },
+    order: { field: 'tender_submission_deadline', ascending: false },
+    page: { index: 0, size: pageSize },
+  };
+  const { body, data } = await askJson(bidReportUrl(), payload, `bid-report for ${code}`);
+  return { body, tenders: data };
+};
+
+export default {
+  reportsPageUrl,
+  reportUrl,
+  bidReportUrl,
+  fetchReportPage,
+  fetchProcedureRows,
+  fetchDayRows,
+  fetchBidReportTenders,
+  RefusedError,
+};

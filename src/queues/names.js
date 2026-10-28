@@ -110,6 +110,27 @@ export const JOB = {
    * ingest.fetch: armeps.am's host and budget.
    */
   PPCM_RESULTS: 'ppcm.results',
+  /**
+   * The missed-tender sweep (ticket 12), scheduled daily as `missed-ppcm`:
+   * queues one PPCM_SWEEP_DAY per swept form and announcement day of the
+   * window. Makes no request itself.
+   */
+  PPCM_SWEEP: 'ppcm.sweep',
+  /**
+   * One form's procedures announced on one day, read off PPCM's
+   * organized-procedures report, stored, and resolved one by one: a tender's
+   * results, or an unmatched result — and, for an ARMEPS procedure Tendra
+   * has no tender for, its armeps.am page asked of bid-report and fetched
+   * (workers/ppcm.js). Rides ingest.fetch: armeps.am's host and budget.
+   */
+  PPCM_SWEEP_DAY: 'ppcm.sweep.day',
+  /**
+   * One procedure code's armeps.am page, asked of PPCM's bid-report for a
+   * procedure the sweep found no tender for (ticket 12), and fetched
+   * (`armeps.detail`) when it names one. Queued by the sweep, at most once
+   * per code per `bidReport.repairPollHours`.
+   */
+  PPCM_REPAIR: 'ppcm.repair',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',

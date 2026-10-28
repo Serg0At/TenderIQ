@@ -20,7 +20,7 @@
  *     status,                                   // the source's status as a domain value, null if unmapped
  *     unreadable: { format } | undefined,       // a file its parser could not read (a paper .rar)
  *     amendment: boolean | undefined,           // a notice amending a tender it does not name (gnumner)
- *     channelUnstated: boolean | undefined,     // a result whose source names no channel (a gnumner contract notice)
+ *     channelUnstated: boolean | undefined,     // a result whose source names no channel (a gnumner contract notice, a PPCM non-auction row)
  *     failure: boolean | undefined,             // a notice that lots of a tender it does not name failed (gnumner, ticket 09)
  *     createsWhenNeverPublic: boolean | undefined } // a result that is its own tender when none was ever public (ticket 31)
  *
@@ -330,6 +330,9 @@ export const invitationSpan = (observation) => {
  *
  *   - an invitation of its code was seen on gnumner's invitation listings, at
  *     any date (`codeSeen`): public;
+ *   - PPCM's bid-report names its armeps.am page, not paper-based
+ *     (`armepsPage`, ticket 12): public — a CfT page on armeps.am is a public
+ *     announcement whether or not gnumner listed it;
  *   - a single-source procedure: never public, there is no invitation to
  *     announce;
  *   - otherwise only inside the window the sweeps have read without a gap
@@ -343,8 +346,11 @@ export const invitationSpan = (observation) => {
  * is eauction's sweep, not these listings'. `false` is what lets a result
  * become its own tender; `true` with no tender is what Tendra missed.
  */
-export const wasPublic = (observation, { window = null, codeSeen = false, uncodedNearby = false } = {}) => {
-  if (codeSeen) return true;
+export const wasPublic = (
+  observation,
+  { window = null, codeSeen = false, uncodedNearby = false, armepsPage = false } = {}
+) => {
+  if (codeSeen || armepsPage) return true;
   if (observation.procedureType === 'single_source') return false;
   if (observation.procedureType === 'e_auction') return null;
   const span = invitationSpan(observation);

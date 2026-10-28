@@ -592,8 +592,13 @@ const coveredWindow = async () => {
   return from < to ? { from, to } : null;
 };
 
-/** `wasPublic`'s facts for a contract notice (services/resolution.service.js): what the sweeps have read, and what the listings showed. */
-const publicityOf = async (observation) => {
+/**
+ * `wasPublic`'s facts for a result (services/resolution.service.js): what
+ * gnumner's sweeps have read, and what its invitation listings showed — for a
+ * contract notice, and for a PPCM procedure (ticket 12), whose ARMEPS and
+ * paper invitations are announced on the same listings.
+ */
+export const publicityOf = async (observation) => {
   const span = invitationSpan(observation);
   const shown = await listingNotices.publicityFacts({
     source: SOURCE,
@@ -826,6 +831,7 @@ export default {
   handlePaperFailed,
   recordFailedNotice,
   queueResultRetries,
+  publicityOf,
   paperDocumentsJob,
   paperRefresher,
 };

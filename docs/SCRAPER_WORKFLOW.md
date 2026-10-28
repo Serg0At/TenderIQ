@@ -25,12 +25,13 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
 | `gnumner` | HTML scrape of the announcement, amendment, contract-concluded and failed-procedure listings, and the files they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` / `paper.failed` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
 | `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
-| `ppcm` | PPCM's organized-procedures report (JSON behind armeps.am/ppcm), by procedure code — **no listing**, results only | `13 */2 * * *` refresh of ARMEPS tenders past their deadline, not cancelled, with a lot that has neither an award nor a recorded failure | ARMEPS `awards` and `public_tender_bids` (`source = 'ppcm'`), supplier `parties` with their ՀՎՀՀ, a `ppcm` results link, `awarded` |
+| `ppcm` | PPCM's organized-procedures report (JSON behind armeps.am/ppcm), by procedure code and by announcement day — **no listing**, results only | `13 */2 * * *` refresh of ARMEPS tenders past their deadline, not cancelled, with a lot that has neither an award nor a recorded failure; `29 1 * * *` missed-tender sweep | ARMEPS `awards` and `public_tender_bids` (`source = 'ppcm'`), supplier `parties` with their ՀՎՀՀ, a `ppcm` results link, `awarded`; `unmatched_results` for procedures Tendra has no tender for, and `armeps.detail` jobs that repair them |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
 
 Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit`, `concurrency`,
 `maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`; for `ppcm`,
-`rateLimitSource` (whose budget it spends), `pollIntervalHours` and the report's ids and columns.
+`rateLimitSource` (whose budget it spends), `pollIntervalHours`, the report's ids and columns,
+`missedSweep` (the sweep's cron, window and forms) and `bidReport` (`repairPollHours`).
 
 There is deliberately no `lookbackHours` on `eauction`: the eauction listing table has no publish-date
 column, so depth is driven by the tid high-water mark instead (stage 3).
@@ -575,10 +576,69 @@ and dates. Its id, the code parameter's id and the 36 column names are in
    not matched to two ՀՎՀՀ. Everything else is counted (`no_tax_id`, `ambiguous`, `no_bid`,
    `several_bids`, `conflicting`, `holds_other`) and attaches nothing. No link, bid, award,
    status, rank or rejection is written. A ՀՎՀՀ two parties then hold is logged and returned in
-   `shared`, never merged. An e-auction PPCM has no tender for is ticket
-   12's to record.
+   `shared`, never merged. An e-auction PPCM has no tender for, or two, is an unmatched result,
+   and one that attaches resolves its row.
 
 `reason: 'replay'` re-records the latest stored answer with no request.
+
+A PPCM row that is not an auction does not say whether it was an ARMEPS or a paper procedure —
+PPCM lists both, and says which only in bid-report's `paperBased` — so its code is looked up in
+every channel (`channelUnstated`, as for a gnumner contract notice): a code Tendra holds only as a
+paper or e-auction tender is that tender's (`other_channel`), not an ARMEPS tender it missed.
+
+### 8. Missed tenders — `ppcm.sweep`
+
+The refresh asks PPCM about tenders Tendra holds; it can never see one Tendra lacks. The sweep
+(ticket 12, ADR 0004: *a `no_candidate` result means Tendra missed a tender*) reads the same
+report by date instead.
+
+1. **Fan out** (`missed-ppcm`, daily at 01:29 UTC, `handlePpcmSweep`): one `ppcm.sweep.day` per
+   swept form and announcement day, today and the 90 days before. The forms are the competitive
+   ones — open, urgent open, quotation, two-stage, e-auction (`missedSweep.forms`, the exact
+   `get-form-list` names; the `p_form` filter is exact). Single source is not swept: a procedure
+   with no invitation is never one Tendra missed, and it is half of everything filed. Ids carry
+   the run's day, so a second run that day queues nothing.
+2. **Ask** (`fetchDayRows`): the form and `announcement_date` = `"D,D"` (a DATE parameter is
+   `"from,to"`, both ends inclusive — the reports page's own encoding), pages of 1,000. **By
+   announcement day** because every row of a procedure shares its announcement, so a day's
+   answer holds whole procedures, and a buyer's late filing lands in a day already being read.
+   On 2026-10-27, 90 days of the four competitive forms held about 8,000 rows and the busiest day
+   291: one request per form and day, about 450 a day, nearly all of them answering what they
+   answered yesterday.
+3. **Store** the pages inside the query (`sweep:{day}:{form}`); an identical answer stores
+   nothing, and only the procedures not linked yet are resolved again — a tender may have
+   appeared, the covered window grown, bid-report come back — so `last_seen_at` moves and nothing
+   linked is rewritten. The payload row is written last, as for an ask by code.
+4. **Observe** (`observeDay`): the rows grouped by code, each code read exactly as an answer by
+   code is (`observeProcedures`). A row with no code is counted, not read.
+5. **Resolve and write** through the ask by code's own path (`recordProcedure`), with ticket
+   31's publicity facts — gnumner's invitation listings and their covered window — so every
+   unmatched procedure carries `was_public`. A tender's results are written as by the refresh, an
+   e-auction's ՀՎՀՀ attached, and a procedure with no candidate is a `no_candidate` row keyed by
+   its procedure id: re-seen, the same row. **A miss is `no_candidate` and `was_public` true**;
+   `false` (never public) and `null` (unknown: outside the window, or an e-auction gnumner never
+   listed) are not, and the operator alert that reads this (a later, production-only feature) is
+   not built.
+6. **Repair** (`repairGap`, then `ppcm.repair`): a `no_candidate` procedure that is not an auction
+   and not single source asks PPCM's **bid-report** for its code's tenders. bid-report answers
+   only the shape its own page sends (every filter field present and an `order`) and
+   `{"status":500}` to anything else. The entry of the exact code whose bids opened on the
+   procedure's opening day (`cftTendersOpeningDate` = the report's `t_opening_date`, 86 of 86;
+   `datePublished` is often a later re-publication, and matched the announcement on only 29)
+   gives its `armepsId`, the armeps.am `resourceId`: when it is not `paperBased`, the page is queued
+   (`armeps.detail`, at most once per `repairPollHours` per page, claimed as
+   `ppcm:page:{resourceId}`) and the procedure is public — a CfT page on
+   armeps.am is an announcement whether or not gnumner listed it (`armepsPage`). The answer is
+   stored (`bid-report:{code}`) and read back as a fact by every later read of the procedure —
+   the sweep's and an ask by code's — so `was_public` says the same on every read. A code is asked at most once per `repairPollHours` (24), claimed
+   in Redis (`ppcm:cft:{code}`) before the request. bid-report refusing completes the job: the
+   procedure stays `no_candidate` and counted, and the sweep never fails for it. Throttled is
+   delayed. e-auctions are never repaired: nothing maps their code to a tid.
+7. **Attach** (`queuePpcmRetries`): when the normalizer creates an ARMEPS or e-auction tender, every
+   PPCM procedure left unmatched under its code is asked about again by code (`ppcm.results`
+   with the tender's id, once per spelling PPCM used) — the tender a repair fetched among them.
+   The tender holds no PPCM link, so even an unchanged answer is resolved again; exactly one
+   fitting candidate links, writes the results and sets `resolved_tender_id` and `resolved_at`.
 
 Party resolution (`party.repo.js#upsert`) is **by ՀՎՀՀ first, per-source id second**: a bidder
 stating a ՀՎՀՀ exactly one party holds reuses that party — an ARMEPS bidder an e-auction ledger
@@ -601,6 +661,8 @@ Every stage is safe to re-run, which is what makes at-least-once queue delivery 
 | `document.download` | content hash | same object key → overwrite-in-place, one DB row |
 | `normalize.tender` | `tender_sources (source, external_id)` + field hash | resolves to the same tender; no new version unless fields changed |
 | `import.ppcm` | file hash, then award reference | row-level upsert |
+| `ppcm.sweep.day` | `(source, ref, hash)`, then `unmatched_results (source, external_ref)` | known hash → nothing stored, unlinked procedures resolved again; an unmatched one is one row, `last_seen_at` moved |
+| `ppcm.repair` | Redis claims per code (`ppcm:cft:`) and per page (`ppcm:page:`) | one bid-report ask per code and one page fetch per page a day, at most |
 
 Storage keys are deterministic by design: a retried job writes the *same* key, so a partial
 failure leaves a correct object rather than a duplicate.
