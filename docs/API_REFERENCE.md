@@ -88,7 +88,8 @@ All paths are relative to the base path **`/api/v1`**.
 - [List sent invitations](#list-sent-invitations) — `GET /organization/invitations`
 - [Cancel an invitation](#cancel-an-invitation) — `DELETE /organization/invitations/:id`
 - [Get supplier identity](#get-supplier-identity) — `GET /organization/supplier-identity`
-- [Set supplier identity](#set-supplier-identity) — `PUT /organization/supplier-identity`
+- [Claim a supplier party](#claim-a-supplier-party) — `POST /organization/supplier-identity`
+- [Unclaim a supplier party](#unclaim-a-supplier-party) — `DELETE /organization/supplier-identity/:partyId`
 - [Search supplier candidates](#search-supplier-candidates) — `GET /organization/supplier-identity/candidates`
 
 ### Invitations (addressed to me)
@@ -1147,7 +1148,7 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
   was shown.
 - `meta.basis` — `ranked`, or `insufficient_data` (below).
 - `meta.missing` — the signal sources this organization has not given yet, from `field`,
-  `saved_search`, `supplier_identity` (see [Set supplier identity](#set-supplier-identity)) and
+  `saved_search`, `supplier_identity` (see [Claim a supplier party](#claim-a-supplier-party)) and
   `pipeline` (nothing [tracked](#track-a-tender) yet), so the client can offer the button that adds
   each.
 
@@ -3206,9 +3207,14 @@ No request body
 
 ## Get supplier identity
 
-Which party in the public corpus this organization bids **as** — the join that makes automatic
+The parties in the public corpus this organization bids **as** — the join that makes automatic
 win/loss resolution possible at all. Awards and the public bid ledger identify a bidder by
-`parties.id`; without this link there is no way to ask "did we win".
+`parties.id`; without a claim there is no way to ask "did we win".
+
+A **set**, because one company is often several parties: its e-auction bids are keyed by
+operator id, its paper bids by name, and only a ՀՎՀՀ joins them. Every claim is a separate,
+deliberate choice from [Search supplier candidates](#search-supplier-candidates). Bid
+reconciliation, the win rate and relevance ranking read every claimed party.
 
 **API:**
 `GET /api/v1/organization/supplier-identity`
@@ -3223,28 +3229,20 @@ No request body
 
 ```json
 {
-  "data": {
-    "supplierPartyId": "cm9zx4k1p0100qw8fn2j5l8w1",
-    "name": "«Շինարար» ՍՊԸ",
-    "taxId": null
-  }
+  "data": [
+    {
+      "partyId": "cm9zx4k1p0100qw8fn2j5l8w1",
+      "name": "«Շինարար» ՍՊԸ",
+      "taxId": "02512345",
+      "region": null,
+      "claimedAt": "2026-10-28T12:00:00.000Z"
+    }
+  ]
 }
 ```
 
-Unclaimed:
-
-```json
-{
-  "data": {
-    "supplierPartyId": null,
-    "name": null,
-    "taxId": null
-  }
-}
-```
-
-`taxId` is `null` for supplier parties in practice: `parties.tax_id` is populated only for
-buyers, scraped from the invitation ZIP.
+Oldest claim first. Unclaimed: `"data": []`. `taxId` is the party's ՀՎՀՀ where a source states
+one (PPCM, an e-auction bidder that PPCM matched, a paper contract's winner), else `null`.
 
 **Errors:**
 
@@ -3253,16 +3251,19 @@ buyers, scraped from the invitation ZIP.
 
 ---
 
-## Set supplier identity
+## Claim a supplier party
 
-Claims (or unclaims) the party this organization bids as. Requires `org:manage`, not
-`bid:write` — this decides whose public win record gets attributed to the account, so a
-coordinator entering prices should not be able to re-point it. It is **never auto-matched on
-name**: party names are scraped Armenian legal names with inconsistent quoting, and a fuzzy
-link would attach one company's win record to another account invisibly.
+Adds one party to the set this organization bids as. Requires `org:manage`, not `bid:write` —
+this decides whose public win record gets attributed to the account, so a coordinator entering
+prices should not be able to re-point it. It is **never auto-matched on name**: party names are
+scraped Armenian legal names with inconsistent quoting, and a fuzzy link would attach one
+company's win record to another account invisibly.
+
+A party can be claimed by **one organization** only. Claiming one this organization already
+holds changes nothing and answers as a new claim would.
 
 **API:**
-`PUT /api/v1/organization/supplier-identity`
+`POST /api/v1/organization/supplier-identity`
 
 **Authentication:** required (Bearer). Permission: `org:manage` (`owner` and `admin` only).
 
@@ -3270,25 +3271,48 @@ link would attach one company's win record to another account invisibly.
 
 ```json
 {
-  "supplierPartyId": "cm9zx4k1p0100qw8fn2j5l8w1"
+  "partyId": "cm9zx4k1p0100qw8fn2j5l8w1"
 }
 ```
 
-- `supplierPartyId` (**required**, nullable): a party id (max 40 chars), or `null` to unclaim —
-  an organization that linked the wrong party has to be able to undo it.
+- `partyId` (**required**): a party id (max 40 chars).
 
 **Response data:**
 
-The identity, same shape as [Get supplier identity](#get-supplier-identity).
+`201`, with the whole set, same shape as [Get supplier identity](#get-supplier-identity).
 
 **Errors:**
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`: only `owner` and `admin` hold `org:manage`.
 - `404 NOT_FOUND`: "Party not found."
-- `409 CONFLICT`: "That supplier is already claimed by another organization." — a partial
-  unique index arbitrating, not application logic.
-- `422 VALIDATION_FAILED`: `supplierPartyId` omitted.
+- `409 CONFLICT`: "That supplier is already claimed by another organization." — a unique index
+  arbitrating, not application logic. It never says which organization.
+- `422 VALIDATION_FAILED`: `partyId` omitted.
+- `429 QUOTA_EXCEEDED`: the organization already claims 10 parties (`details: { limit,
+  claimed }`). A claim is exclusive, so an uncapped set would let one account lock other
+  companies out of their own win records.
+
+---
+
+## Unclaim a supplier party
+
+Removes one party from the set — an organization that linked the wrong party has to be able to
+undo it.
+
+**API:**
+`DELETE /api/v1/organization/supplier-identity/:partyId`
+
+**Authentication:** required (Bearer). Permission: `org:manage`.
+
+**Response data:** `204`, no body.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`.
+- `404 NOT_FOUND`: this organization does not claim that party (another organization's claim
+  is the same 404).
 
 ---
 
@@ -5520,8 +5544,9 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | GET | `/api/v1/invitations` | Pending offers addressed to me, any organization | Yes (orgless allowed) |
 | POST | `/api/v1/invitations/:id/accept` | Join at the offered role; session only if orgless | Yes (orgless allowed) |
 | POST | `/api/v1/invitations/:id/decline` | Refuse an offer; the sender sees it | Yes (orgless allowed) |
-| GET | `/api/v1/organization/supplier-identity` | The party this org bids as | Yes (`tender:read`) |
-| PUT | `/api/v1/organization/supplier-identity` | Claim or unclaim that party | Yes (`org:manage`) |
+| GET | `/api/v1/organization/supplier-identity` | The parties this org bids as | Yes (`tender:read`) |
+| POST | `/api/v1/organization/supplier-identity` | Claim one more party | Yes (`org:manage`) |
+| DELETE | `/api/v1/organization/supplier-identity/:partyId` | Unclaim one party | Yes (`org:manage`) |
 | GET | `/api/v1/organization/supplier-identity/candidates` | Search parties for the claim | Yes (`tender:read`) |
 | GET | `/api/v1/vault-documents` | List certificates | Yes (`vault:read`) |
 | GET | `/api/v1/vault-documents/summary` | Counts per kind, with lapsed counts | Yes (`vault:read`) |

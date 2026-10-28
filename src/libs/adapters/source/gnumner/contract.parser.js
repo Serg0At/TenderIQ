@@ -23,10 +23,17 @@ import { ARMENIAN, CYRILLIC, armenianPart, cellText, isBlank, wordDocuments } fr
  *   Չափա-բաժնի համարը | Ընտրված մասնակիցը | Պայմանագրի …
  *   1 | «ԱՅԱՅ ՍԵՔ» ՍՊԸ | number | signed | deadline | advance | price: available, total
  *   Ընտրված մասնակցի (մասնակիցների) անվանումը և հասցեն …
+ *   Չափա-բաժնի համարը | Ընտրված մասնակիցը | Հասցե | Էլ.-փոստ | Բանկային հաշիվը | ՀՎՀՀ / Անձնագրի համարը և սերիան
+ *   1 | «ԱՅԱՅ ՍԵՔ» ՍՊԸ | address | e-mail | account | 01234567
+ *
+ * That last table is the only ՀՎՀՀ the notice states, and only the winner's
+ * (ticket 32; on the 14 readable notices stored on 2026-10-28, every one has
+ * it). The column takes a passport too, and a foreign winner's own number
+ * (a Bulgarian one is nine digits), so only eight digits are read as a ՀՎՀՀ.
  *
  * A Russian machine translation of the whole notice often follows; nothing
- * after the winners' table is read, and its Russian headings match none of
- * the Armenian ones. A bilingual notice glues the translation onto each cell
+ * after the winners' name-and-address table is read, and its Russian headings
+ * match none of the Armenian ones. A bilingual notice glues the translation onto each cell
  * («ԲԵԼՄԵՏ ՍՊԸБЕЛМЕТ ООО»), so a cell is read up to its first Cyrillic letter.
  *
  * What varies, all seen: the lot as a «Չափաբաժին N» row (with or without N,
@@ -171,6 +178,7 @@ const readRows = (rows) => {
     bids: [],
     rejected: [],
     contracts: [],
+    winners: [],
     unreadRows: 0,
     priceTableFound: false,
     lotInFirstCell: false,
@@ -180,6 +188,7 @@ const readRows = (rows) => {
   let section = null;
   let nameAt = 1;
   let winnerAt = 1;
+  let taxIdAt = -1;
   let criteria = [];
   let labelLot; // the last «Չափաբաժին» row's lot: undefined before one, NaN for a label that is not one lot
   let lastContractLots = null;
@@ -218,8 +227,21 @@ const readRows = (rows) => {
       winnerAt = cells.findIndex((c) => /Ընտրված մասնակիցը/u.test(c));
       continue;
     }
-    if (/անվանումը և հասցեն/u.test(row) && section === 'contract') break;
+    // The winners' name-and-address table, headed by its own row of columns.
+    if (cells.some((c) => /ՀՎՀՀ/u.test(c)) && cells.some((c) => /Ընտրված մասնակիցը/u.test(c))) {
+      section = 'winners';
+      winnerAt = cells.findIndex((c) => /Ընտրված մասնակիցը/u.test(c));
+      taxIdAt = cells.findIndex((c) => /ՀՎՀՀ/u.test(c));
+      continue;
+    }
+    if (/անվանումը և հասցեն/u.test(row) && section === 'contract') {
+      section = null;
+      continue;
+    }
     if (/^(?:Այլ տեղեկություններ|Ընտրված մասնակցի որոշման|Կիրառված գնման ընթացակարգ|Անգործության ժամկետ)/u.test(cells[0])) {
+      // The winners' table is the last one read: what follows it is notes and
+      // the Russian copy, as before it was read at all.
+      if (section === 'winners') break;
       section = null;
       continue;
     }
@@ -293,6 +315,12 @@ const readRows = (rows) => {
         signedOn: readDate(after[1] ?? ''),
         price: price === undefined ? null : price,
       });
+    } else if (section === 'winners') {
+      if (cells.length <= Math.max(winnerAt, taxIdAt) || isBlank(cells[winnerAt])) continue;
+      const lots = lotList(cells[0]);
+      // Some repeat the label in the cell: «ՀՎՀՀ՝ 06948084».
+      const taxId = cells[taxIdAt].replace(/\s/g, '').match(/^(?:ՀՎՀՀ[`'՝:\-]*)?(\d{8})$/u)?.[1];
+      if (lots && taxId) out.winners.push({ lotNumbers: lots, name: cells[winnerAt], taxId });
     }
   }
   return out;
@@ -418,7 +446,18 @@ const assemble = (read) => {
         signedOn: contract.signedOn,
         // One price for several lots is not any one lot's price.
         price: contract.lotNumbers.length === 1 ? contract.price : null,
+        winnerTaxId: null,
       };
+    }
+  }
+
+  // The winners' ՀՎՀՀ, onto the lots whose contract names the same winner —
+  // within this notice, as rejections and contracts are attached; a row whose
+  // name the lot's contract does not carry attaches nothing.
+  for (const row of read.winners) {
+    for (const lotNumber of row.lotNumbers) {
+      const contract = lots.get(lotNumber)?.contract;
+      if (contract && bidderKey(contract.winner) === bidderKey(row.name)) contract.winnerTaxId = row.taxId;
     }
   }
 
@@ -463,7 +502,9 @@ const readNotice = ($, entryName) => {
  *   `entryName` the .docx inside a .zip, null for a .docx; `procedure` the
  *   type the notice states (`quotation`, `single_source`) or null — each
  *   lot `{ lotNumber, budget, bids: [{ name, key, net, vat, gross, rejected,
- *   reasons }], contract: { winner, winnerKey, number, signedOn, price } | null }`.
+ *   reasons }], contract: { winner, winnerKey, number, signedOn, price,
+ *   winnerTaxId } | null }` — `winnerTaxId` the eight-digit ՀՎՀՀ the
+ *   winners' table states for that winner, else null.
  */
 export const parseContractNotice = (bytes) => {
   const { format, documents } = wordDocuments(bytes, readNotice);

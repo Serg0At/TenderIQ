@@ -70,6 +70,16 @@ second time to confirm it is a no-op:
       then `npm run buyers:merge -- --apply`. It reads only stored documents and raises no
       alert. Locally it merged 17 pairs and refused 2 groups (ticket 19). A refused group is
       merged only on a person's word: `-- --apply --confirm <ՀՎՀՀ>`.
+- [ ] 15. `migrations/add_supplier_identities.js`: `supplier_identities`, the set of parties an
+      organization bids as (ticket 32). It copies every `organizations.supplier_party_id` claim
+      into the table, then **drops that column** and `organizations_supplier_party_uq`. **Run it
+      with the deploy, not before**: the old code reads the column, and the new code reads only
+      the table. Before running it, record `select count(*) from organizations where
+      supplier_party_id is not null`; it reports `claimsCopied`, and the two must agree. A
+      second run copies nothing. **Still on disk**: delete it after this step has run on Neon
+      (step 4 of CLAUDE.md's schema workflow). After the deploy, `PUT
+      /organization/supplier-identity` is gone: a client claims with `POST` and unclaims with
+      `DELETE …/:partyId`.
 
 Environment:
 
@@ -96,6 +106,22 @@ After the deploy:
       start and writes it. A watermark with no floor (a sweep under older code) leaves the
       covered window empty: every competitive contract notice stays "unknown", which is safe
       but not useful. Delete that listing's watermark to force a cold start.
+- [ ] `npm run notices:replay -- --kind=contract` (ticket 32). It re-reads every stored gnumner
+      contract notice from storage through its production `retry` handler. A winner whose notice
+      states its ՀՎՀՀ moves from its name-keyed party to `gnumner:bo:{ՀՎՀՀ}`, or to the
+      e-auction or PPCM party already holding it: that is ticket 32's merge. Its other bids in
+      the same notice move with it. Notices stored under the old code otherwise keep their
+      winners keyed by name forever, because an unchanged notice is never read again.
+      - **Before:** `select count(*) from supplier_identities s join parties p on p.id =
+        s.party_id where p.source_id like 'gnumner:bo:name:%'`. A claim on a name-keyed paper
+        party keeps only that party's records. Its re-keyed wins move to the ՀՎՀՀ party, so
+        the organization must claim that party too. Locally there were 0 such claims.
+      - **After:** record the merge count, ticket 32's open item:
+        `select count(distinct p.id) from parties p where p.source_id not like 'gnumner:%' and
+        exists (select 1 from public_tender_bids b where b.supplier_id = p.id and b.source =
+        'gnumner')`.
+      - It raises no alert, and a second run changes nothing. Locally it replayed 31 contract
+        and 35 failure notices with byte-identical tenders and unchanged queue counts.
 - [ ] One repeat sweep per source writes 0 rows and enqueues 0 jobs. A `normalize:replay` changes
       nothing.
 - [ ] Neon checks the tickets left for deploy time:

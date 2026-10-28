@@ -92,6 +92,20 @@ export default class UnmatchedResultRepository {
   }
 
   /**
+   * Unresolved results of one source and reason whose ref starts with
+   * `refPrefix` — the notices a parser or converter that improved might now
+   * read (`npm run notices:replay -- --unmatched=…`).
+   */
+  static async findOpenByReason({ source, refPrefix, reason }, trx = db) {
+    return trx(TABLE)
+      .where({ source, reason })
+      .whereNull('resolved_at')
+      .andWhere('external_ref', 'like', `${refPrefix}%`)
+      .orderBy('external_ref')
+      .select('external_ref');
+  }
+
+  /**
    * An unresolved result's procedure is known to have been public (ticket 12:
    * PPCM's bid-report names its armeps.am page). The next read of the result
    * finds the same fact in storage and says the same, so this only spares the

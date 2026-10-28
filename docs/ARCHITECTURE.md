@@ -270,7 +270,7 @@ that is what makes services testable with fakes and keeps the dependency directi
 | Group | Tables |
 |---|---|
 | Procurement core (OCDS) | `parties`, `party_aliases`, `tenders`, `awards`, `contracts`, `tender_documents`, `source_payloads` |
-| Tenancy & identity | `users`, `organizations`, `roles`, `memberships` |
+| Tenancy & identity | `users`, `organizations`, `roles`, `memberships`, `supplier_identities` |
 | Bid workflow | `tracked_tenders`, `bids`, `checklists`, `checklist_items`, `vault_documents` |
 | Discovery | `saved_searches` |
 | Intelligence | `price_benchmarks`, `buyer_profiles`, `supplier_profiles` |
@@ -284,11 +284,12 @@ Load-bearing details:
 - `tenders.version` + `is_latest` implement amendment history; readers filter on `is_latest`.
 - `source_payloads` maps `(source, ref, hash)` → an object-storage key, enabling replay.
 - IDs are application-generated CUID2 strings, not database sequences.
-- `organizations.supplier_party_id` → `parties.id` is the **only** bridge between a tenant and
-  the public procurement record. Everything else about a tenant is private and joins downward;
-  this one joins outward, and it is what makes a customer's own win/loss resolvable against
-  `awards` and `public_tender_bids`. Nullable, partial-unique, and claimed explicitly by a
-  human — never inferred from a name match.
+- `supplier_identities` (`organization_id` → `parties.id`) is the **only** bridge between a
+  tenant and the public procurement record. Everything else about a tenant is private and joins
+  downward; this one joins outward, and it is what makes a customer's own win/loss resolvable
+  against `awards` and `public_tender_bids`. A set (one company is several parties until a ՀՎՀՀ
+  joins them), unique per party, and every row claimed explicitly by a human — never inferred
+  from a name match.
 - Children of a private table take a **composite FK** on `(parent_id, organization_id)` against
   the parent's `UNIQUE (id, organization_id)`, so the denormalised org id cannot drift. Two
   independent foreign keys do not achieve this: Postgres accepted a `bids` row claiming org B

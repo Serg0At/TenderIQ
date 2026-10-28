@@ -1,6 +1,6 @@
 import bids from '../repositories/bid.repo.js';
 import publicBids from '../repositories/publicBid.repo.js';
-import organizations from '../repositories/organization.repo.js';
+import supplierIdentities from '../repositories/supplierIdentity.repo.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -20,8 +20,9 @@ import { logger } from '../utils/logger.js';
  *      the bid was never actually submitted or the ledger is not published yet.
  *      Recording a defeat that may not have happened would poison the win rate
  *      the customer is paying for.
- *   3. **A lot is decided by its award, and only by it.** Won when the
- *      organisation's party holds the lot's award; lost when another party
+ *   3. **A lot is decided by its award, and only by it.** Won when one of the
+ *      organisation's claimed parties holds the lot's award (ticket 32: the
+ *      claim is a set); lost when a party it has not claimed
  *      does, or when the lot's failure is on record (`lot_failed`: the tender
  *      cancelled, a failure notice naming the lot, or the source rejecting
  *      every bid on it). A lot with bids and neither is a result still to
@@ -101,7 +102,7 @@ export default class BidOutcomeService {
     const identityCache = new Map();
     const identityFor = async (organizationId) => {
       if (!identityCache.has(organizationId)) {
-        identityCache.set(organizationId, await organizations.supplierPartyFor(organizationId));
+        identityCache.set(organizationId, await supplierIdentities.partyIdsFor(organizationId));
       }
       return identityCache.get(organizationId);
     };
@@ -112,7 +113,7 @@ export default class BidOutcomeService {
     let unclaimed = 0;
 
     for (const bid of pending) {
-      const identity = await identityFor(bid.organization_id);
+      const partyIds = await identityFor(bid.organization_id);
 
       /**
        * No claimed supplier party means no way to find them in the ledger, and
@@ -120,12 +121,12 @@ export default class BidOutcomeService {
        * about the account. Left unresolved so it resolves itself the day they
        * claim an identity.
        */
-      if (!identity?.supplier_party_id) {
+      if (!partyIds.length) {
         unclaimed += 1;
         continue;
       }
 
-      const entries = await publicBids.supplierEntriesForTender(bid.tender_id, identity.supplier_party_id);
+      const entries = await publicBids.supplierEntriesForTender(bid.tender_id, partyIds);
       const { outcome, winningPrice } = BidOutcomeService.decide(entries, bid.lot_number);
 
       /**
@@ -165,10 +166,10 @@ export default class BidOutcomeService {
    * error.
    */
   static async resolveOne(bid, { tenderId, organizationId }) {
-    const identity = await organizations.supplierPartyFor(organizationId);
-    if (!identity?.supplier_party_id) return null;
+    const partyIds = await supplierIdentities.partyIdsFor(organizationId);
+    if (!partyIds.length) return null;
 
-    const entries = await publicBids.supplierEntriesForTender(tenderId, identity.supplier_party_id);
+    const entries = await publicBids.supplierEntriesForTender(tenderId, partyIds);
     if (!entries.length) return null;
 
     const { outcome, winningPrice } = BidOutcomeService.decide(entries, bid.lot_number);

@@ -41,6 +41,14 @@ export const buyerSourceId = (source, name) =>
 
 export const supplierSourceId = (source, sourceId) => `${source}:bo:${sourceId}`;
 
+/**
+ * A bidder keyed by its name (`{source}:bo:name:…`): a paper bidder with no
+ * ՀՎՀՀ in its notice, a foreign PPCM bidder. A name is no evidence of a ՀՎՀՀ —
+ * two companies can share one — so such a row never takes one (ticket 32): a
+ * bidder whose source states its ՀՎՀՀ is keyed by it instead.
+ */
+const nameKeyed = (sourceId) => /:bo:name:/.test(String(sourceId ?? ''));
+
 export default class PartyRepository {
   /**
    * Insert or widen a party: by ՀՎՀՀ first, by `source_id` second (ticket 11),
@@ -55,6 +63,7 @@ export default class PartyRepository {
    * ՀՎՀՀ. Only a party of the same role, or `both`: a supplier is never
    * folded into a buyer row by its ՀՎՀՀ, nor a buyer into a supplier's
    * (decided after ticket 11, kept by ticket 19) — the pair stays two rows.
+   * A name-keyed bidder never takes the ՀՎՀՀ it is given (`nameKeyed`).
    *
    * `role` widens to 'both' rather than overwriting: an organisation that buys
    * in one tender and supplies in another must not flip-flop on every ingest.
@@ -75,7 +84,7 @@ export default class PartyRepository {
       const patch = {};
       if (existing.role !== role && existing.role !== 'both') patch.role = 'both';
       if (existing.source_id === sourceId && cleanName !== existing.name) patch.name = cleanName;
-      if (taxId && !existing.tax_id) patch.tax_id = taxId;
+      if (taxId && !existing.tax_id && !nameKeyed(existing.source_id)) patch.tax_id = taxId;
       if (region && !existing.region) patch.region = region;
       if (Object.keys(patch).length) await trx(TABLE).where({ id: existing.id }).update(patch);
       return existing.id;
@@ -83,7 +92,7 @@ export default class PartyRepository {
 
     const id = createId();
     const [row] = await trx(TABLE)
-      .insert({ id, source_id: sourceId, name: cleanName, tax_id: taxId, role, region })
+      .insert({ id, source_id: sourceId, name: cleanName, tax_id: nameKeyed(sourceId) ? null : taxId, role, region })
       .onConflict('source_id')
       .merge({ name: cleanName })
       .returning('id');
@@ -284,11 +293,15 @@ export default class PartyRepository {
    *
    * Only ever fills a blank — never overwrites. A tax ID already on the row
    * came from somewhere, and a parse slip must not silently replace a party's
-   * legal identifier.
+   * legal identifier. Never onto a name-keyed bidder (`nameKeyed`).
    */
   static async setTaxId(partyId, taxId, trx = db) {
     if (!partyId || !taxId) return false;
-    const updated = await trx(TABLE).where({ id: partyId }).whereNull('tax_id').update({ tax_id: taxId });
+    const updated = await trx(TABLE)
+      .where({ id: partyId })
+      .whereNull('tax_id')
+      .whereNot('source_id', 'like', '%:bo:name:%')
+      .update({ tax_id: taxId });
     return updated > 0;
   }
 

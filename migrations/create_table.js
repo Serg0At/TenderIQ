@@ -290,10 +290,24 @@ function up(pg) {
       // claimed" is the empty list, so readers have one shape to handle.
       table.specificType('type', 'text[]').notNullable().defaultTo('{}');
       table.string('created_by').notNullable().references('id').inTable('users').onDelete('RESTRICT');
-      // The party this tenant bids AS. `awards` and `public_tender_bids` identify a bidder by
-      // parties.id, so without this column there is no way to ask "did we win this" and bid
-      // outcomes cannot be resolved. Nullable: an org that has never bid has no party yet.
-      table.string('supplier_party_id').references('id').inTable('parties').onDelete('SET NULL');
+    })
+
+    // supplier_identities — The parties this tenant bids AS. `awards` and `public_tender_bids`
+    // identify a bidder by parties.id, so without a claim there is no way to ask "did we win
+    // this". A set (ticket 32): a paper bidder is keyed by its name and an e-auction bidder by
+    // its operator id, so one company is several parties until a ՀՎՀՀ joins them, and each is
+    // a separate human claim from a search — never matched on name. Replaced
+    // organizations.supplier_party_id. Mirrored in add_supplier_identities.js.
+    .createTable('supplier_identities', table => {
+      table.string('id').primary();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      table.string('party_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
+      table.string('claimed_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('claimed_at').notNullable().defaultTo(pg.fn.now());
+      // One organization per party, as the single claim was: two orgs claiming one party
+      // would each resolve an outcome from the same ledger rows, and one of them would be wrong.
+      table.unique(['party_id'], { indexName: 'supplier_identities_party_uq' });
+      table.index(['organization_id'], 'supplier_identities_org_idx');
     })
 
     // roles — Named permission sets (owner, admin, coordinator, viewer, consultant) that
@@ -707,10 +721,6 @@ async function indexes(pg) {
      CHECK (email = lower(email))`);
   await pg.raw(`CREATE INDEX IF NOT EXISTS invitations_email_idx ON invitations (email)`);
 
-  // Two orgs claiming one supplier party would each resolve an outcome from the same ledger
-  // rows, and one of them would be wrong. Partial so the column can stay NULL until claimed.
-  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS organizations_supplier_party_uq
-     ON organizations (supplier_party_id) WHERE supplier_party_id IS NOT NULL`);
   // Three fields, not more: past that the list matches everything and ranks nothing. The ids
   // themselves are validated against the code list, which a CHECK could only duplicate.
   await pg.raw(`ALTER TABLE organizations ADD CONSTRAINT organizations_type_max_chk

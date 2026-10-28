@@ -134,20 +134,23 @@ export default class PublicBidRepository {
    * missing.
    */
   /**
-   * Where one supplier appears in one tender's ledger.
+   * Where one organization's claimed parties appear in one tender's ledger.
    *
    * The join that answers "did WE win this" — `bids` stores a tenant's own
-   * price, this stores who actually won, and `organizations.supplier_party_id`
-   * is the bridge between them.
+   * price, this stores who actually won, and `supplier_identities` is the
+   * bridge between them. Several parties because one company is several until
+   * a ՀՎՀՀ joins them (ticket 32), and a lot one of them won is won even on
+   * the row of another: `is_winner` asks whether the award is held by ANY of
+   * them, not by the row's own bidder.
    *
-   * Returns every lot the party bid on, because a multi-lot procurement can be
+   * Returns every lot those parties bid on, because a multi-lot procurement can be
    * won and lost at the same time and the caller has to decide which lot it
    * meant. `is_winner` comes from `awards`, not from `rank = 1`: the source
    * ranks REJECTED submissions too, and awarding on rank alone once recorded
    * 21% of awards to companies the buyer had thrown out.
    */
-  static async supplierEntriesForTender(tenderId, supplierPartyId, trx = db) {
-    if (!supplierPartyId) return [];
+  static async supplierEntriesForTender(tenderId, partyIds, trx = db) {
+    if (!partyIds?.length) return [];
     return trx(`${TABLE} as b`)
       .join('tenders as t', 't.id', 'b.tender_id')
       .leftJoin('awards as a', function joinAward() {
@@ -155,7 +158,8 @@ export default class PublicBidRepository {
           .andOn('a.lot_number', '=', 'b.lot_number')
           .andOn('a.source', '=', 'b.source');
       })
-      .where({ 'b.tender_id': tenderId, 'b.supplier_id': supplierPartyId })
+      .where('b.tender_id', tenderId)
+      .whereIn('b.supplier_id', partyIds)
       .select(
         'b.lot_number',
         'b.rank',
@@ -167,7 +171,7 @@ export default class PublicBidRepository {
         'a.supplier_id as award_supplier_id',
         'a.amount as award_amount',
         'a.net_amount as award_net_amount',
-        trx.raw('coalesce(a.supplier_id = b.supplier_id, false) as is_winner'),
+        trx.raw('coalesce(a.supplier_id = any(?::text[]), false) as is_winner', [partyIds]),
         /**
          * The lot's failure is on record, so no award is coming: the tender
          * was cancelled, a failure notice named the lot
@@ -185,7 +189,7 @@ export default class PublicBidRepository {
                               and o.source = b.source and o.status = 'accepted')) as lot_failed`
         )
       )
-      .orderBy('b.lot_number');
+      .orderBy(['b.lot_number', 'b.supplier_id']);
   }
 
   static async awardsForTender(tenderId, trx = db) {

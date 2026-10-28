@@ -65,8 +65,10 @@ prose and in anything a user reads.
 _Avoid_: TIN, VAT number, Company number, Registration number
 
 **Supplier identity**:
-The `parties` row an organization bids as — a deliberate human claim from a search, never
-inferred from a name or derived from the ՀՎՀՀ. Its absence is why win/loss can be unknown.
+The `parties` rows an organization bids as — a set, because one company is several parties
+until a ՀՎՀՀ joins them (its e-auction, PPCM and paper bids keyed three ways). Each is a
+deliberate human claim from a search, never inferred from a name or derived from the ՀՎՀՀ,
+and a party is claimed by one organization at most. Its absence is why win/loss can be unknown.
 _Avoid_: Supplier match, Party link, Company profile
 
 ### Tenders and sources

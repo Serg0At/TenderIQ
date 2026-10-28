@@ -376,9 +376,14 @@ POST   /invitations/:id/{accept,decline}
   e-auction and paper supplier parties come from ledgers that carry names, ranks and prices and no
   tax number. Since ticket 11 an e-auction bidder gains its ՀՎՀՀ from PPCM where tender, lot and
   exact net match one ledger row, and party resolution is ՀՎՀՀ-first, so a PPCM bidder already
-  seen on e-auction is the same party; paper bidders remain separate parties (ticket 32).
-  So `organizations.supplier_party_id` stays a deliberate human claim from a search, and expecting the
-  TIN to automate it is the obvious wrong guess. Storing it is still right: the 2027 OCDS platform
+  seen on e-auction is the same party. A paper contract notice states the **winner's** ՀՎՀՀ
+  (its last table, ticket 32), so a paper winner is keyed by it (`gnumner:bo:{ՀՎՀՀ}`) and reaches
+  the same party too, on every lot of that notice, its losing bids included. Never across notices:
+  a bidder with no number in its own notice stays keyed by its name, and **a name-keyed party
+  never gains a ՀՎՀՀ** (`party.repo.js#nameKeyed`). Writing one onto it would hand every other
+  notice's bidder of that name a stranger's identity.
+  So the supplier identity (`supplier_identities`) stays a set of deliberate human claims from a
+  search, and expecting the TIN to automate it is the obvious wrong guess. Storing it is still right: the 2027 OCDS platform
   identifies parties by `identifier.id`, which for Armenia is the ՀՎՀՀ.
 - **Invitations are in-app; no email is sent.** The owner types an address and always gets the same
   answer — *"if that person is registered, they will get the invitation"* — as a **module constant**,
@@ -1028,16 +1033,22 @@ decision that has already been made.
   need **no CPV**, which is why they work across the whole corpus.
 - **Bid pipeline (phase 4a/4b) is built:** `tracked_tenders` and `bids` have writers.
   `/tracked-tenders` serves the board, the pursuit state machine, the draft bid and the
-  submit lock; `/organization/supplier-identity` claims the party this org bids AS.
+  submit lock; `/organization/supplier-identity` claims the parties this org bids AS.
   `bids.reconcile` (half-hourly, on the ALERTS queue) resolves submitted bids against the
   public ledger into `won` / `lost` / `not_found`, storing `winning_price` at resolution time.
   Deadline reminders now run **two** sweeps: the matched safety net plus a tighter
   pipeline countdown on `considering`/`preparing` pursuits only.
-- **`organizations.supplier_party_id` is the join that makes win/loss possible.** Awards and
-  the public bid ledger identify a bidder by `parties.id`; without this column there is no way
-  to ask "did we win". It is claimed explicitly by a human from a search — **never auto-matched
-  on name**. Party names are scraped Armenian legal names with inconsistent quoting, and a
-  fuzzy link would attach one company's win record to another account invisibly.
+- **`supplier_identities` is the join that makes win/loss possible.** Awards and the public
+  bid ledger identify a bidder by `parties.id`; without a claim there is no way to ask "did we
+  win". Each party is claimed explicitly by a human from a search — **never auto-matched on
+  name**. Party names are scraped Armenian legal names with inconsistent quoting, and a fuzzy
+  link would attach one company's win record to another account invisibly. **A set** (ticket
+  32, replacing `organizations.supplier_party_id`): one company is several parties until a
+  ՀՎՀՀ joins them, so reconciliation, the win rate and relevance read every claim, and a lot is
+  won when ANY claimed party holds its award (`publicBid.repo.js#supplierEntriesForTender`).
+  A party is claimed by one organization at most (`supplier_identities_party_uq`), and an
+  organization claims at most 10: a claim is exclusive, so uncapped it locks other companies
+  out of their own win records.
 - **`not_found` is a real bid outcome, not an error.** The org says they bid, the ledger does
   not list them: either it was never submitted, or the ledger is not published yet. Recording
   `lost` there would fabricate a defeat. It stays unresolved on a non-cancelled tender so the

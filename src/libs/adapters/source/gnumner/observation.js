@@ -309,13 +309,41 @@ export const noticeIdOfResult = (id) => `paper:${resultNoticeDigest(id)}`;
 const yerevanDay = (date) => (date ? new Date(`${date}T00:00:00+04:00`) : null);
 
 /**
- * A paper supplier's per-source id. The bid ledger names bidders and nothing
- * else — no operator id, no ՀՎՀՀ in the price table — so, as for a buyer, the
- * name is the identity (contract.parser.js#bidderKey): a company renaming
- * itself becomes a second party, which is far better than two companies
- * becoming one.
+ * A paper supplier's per-source id and ՀՎՀՀ. The price table names bidders and
+ * nothing else, so a bidder is keyed by its name (contract.parser.js#bidderKey):
+ * a company renaming itself becomes a second party, which is far better than
+ * two companies becoming one.
+ *
+ * A winner's ՀՎՀՀ is stated in the notice's last table (ticket 32), and a
+ * bidder the notice gives one is keyed by it — `gnumner:bo:{ՀՎՀՀ}`, as PPCM's
+ * are — on every lot of that notice, its losing bids included: within one
+ * document a name is one bidder. Never across notices, where the same name can
+ * be another company, and a name-keyed party never gains a ՀՎՀՀ
+ * (party.repo.js#upsert). With it, party resolution reaches the company's
+ * e-auction or PPCM party first.
  */
-const supplierSourceId = (key) => `name:${sha256(key).slice(0, 16)}`;
+const supplierOf = (key, taxIds) => {
+  const taxId = taxIds.get(key) ?? null;
+  return taxId
+    ? { supplierSourceId: taxId, supplierTaxId: taxId }
+    : { supplierSourceId: `name:${sha256(key).slice(0, 16)}`, supplierTaxId: null };
+};
+
+/**
+ * Each bidder key of one notice → the ՀՎՀՀ the winners' table states for it,
+ * from every lot whose contract names it as the winner. A name the notice
+ * gives two different numbers is given none: which one is which is not
+ * stated.
+ */
+const noticeTaxIds = (lots) => {
+  const taxIds = new Map();
+  for (const lot of lots) {
+    const { winnerKey = null, winnerTaxId = null } = lot.contract ?? {};
+    if (!winnerKey || !winnerTaxId || !lot.bids.some((bid) => bid.key === winnerKey)) continue;
+    taxIds.set(winnerKey, taxIds.has(winnerKey) && taxIds.get(winnerKey) !== winnerTaxId ? null : winnerTaxId);
+  }
+  return taxIds;
+};
 
 /** VAT as a percentage of the net price: 20 for a VAT payer, 0 for a non-payer. */
 const vatPercent = ({ net, gross }) =>
@@ -333,13 +361,13 @@ const vatPercent = ({ net, gross }) =>
  * the available funds only. A sealed bid has one price: it is the final
  * offer, and no rank is stated, so none is stored.
  */
-const ledgerLot = (lot) => {
+const ledgerLot = (lot, taxIds) => {
   const winner = lot.contract?.winnerKey ? lot.bids.find((bid) => bid.key === lot.contract.winnerKey) : null;
   return {
     lotNumber: lot.lotNumber,
     estimatedValue: lot.budget,
     bids: lot.bids.map((bid) => ({
-      supplierSourceId: supplierSourceId(bid.key),
+      ...supplierOf(bid.key, taxIds),
       supplierName: bid.name,
       rank: null,
       initialPrice: null,
@@ -352,7 +380,7 @@ const ledgerLot = (lot) => {
     })),
     award: winner
       ? {
-          supplierSourceId: supplierSourceId(winner.key),
+          ...supplierOf(winner.key, taxIds),
           supplierName: winner.name,
           amount: winner.gross,
           netAmount: winner.net,
@@ -395,7 +423,9 @@ const statedProcedure = (byCode, byNotice) =>
 
 export const observeContract = (notice, { externalId, parsed }) => {
   const read = parsed.readable ? parsed.notice : null;
-  const ledger = read ? read.lots.filter((lot) => lot.bids.length).map(ledgerLot) : [];
+  const lots = read ? read.lots.filter((lot) => lot.bids.length) : [];
+  const taxIds = noticeTaxIds(lots);
+  const ledger = lots.map((lot) => ledgerLot(lot, taxIds));
   const procedureCode = notice.procedureCode ?? read?.procedureCode ?? null;
   const procedureType = statedProcedure(procedureTypeOfCode(procedureCode), read?.procedure ?? null);
   const publishedAt = yerevanDay(read?.invitationDate);

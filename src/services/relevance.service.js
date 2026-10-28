@@ -117,7 +117,7 @@ const BASIS_SOURCES = [
   },
   {
     name: 'supplier_identity',
-    present: (s) => Boolean(s.ledger?.partyId),
+    present: (s) => (s.ledger?.partyIds ?? []).length > 0,
     scorable: (s) => (s.ledger?.items ?? []).length > 0,
   },
   {
@@ -484,7 +484,7 @@ export const compareRanked = (a, b) => {
  * Rank candidate tenders for one organization.
  *
  * @param {Array}  candidates  `{ id, title, referenceCode, cpvCode, cpvCodes, buyerId, estimatedValue, deadlineAt, lots: [{ lotNumber, codes, keywordHits }] }`
- * @param {object} signals     `{ fields, savedSearches, ledger: { partyId, items: [{ tenderId, cpvCode, buyerId, at, won }] },
+ * @param {object} signals     `{ fields, savedSearches, ledger: { partyIds, items: [{ tenderId, cpvCode, buyerId, at, won }] },
  *                             pipeline: [{ trackedTenderId, tenderId, status, goNoGo, at, codes }],
  *                             textProfile: [string] — titles and lot names of tenders bid on or pursued;
  *                             needed only when a candidate has no code, and its `text` then too }`
