@@ -16,7 +16,7 @@ import publicBids from '../repositories/publicBid.repo.js';
  */
 
 /** Amounts compare in cents: PPCM's are floats, the ledger's numeric strings. */
-const cents = (value) => {
+export const cents = (value) => {
   const n = Number(value);
   return value === null || value === undefined || !Number.isFinite(n) ? null : Math.round(n * 100);
 };
