@@ -207,8 +207,8 @@ with a `head`. The manifest holds every ZIP entry's offset, compressed size and 
 size is the last entry's offset, plus its local header, plus its compressed data, plus the
 central directory and end record. The one field the manifest does not hold is the
 local-header extra field, which was a constant 16 bytes on every entry. So the rebuild is low
-by under a kilobyte per archive. Confirm with `storage.head` once MinIO is up (the scratch
-script does both).
+by under a kilobyte per archive. Confirm with `storage.head` on each
+`tender_documents.storage_key` once MinIO is up.
 
 **All 54 stored ARMEPS archives** (53 tenders, one with an addendum set; published 07-21 → 10-19;
 4–8 files each, median 4):
