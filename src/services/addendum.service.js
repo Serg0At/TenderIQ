@@ -138,6 +138,18 @@ export default class AddendumService {
       return { ...recorded, failure: await FailureService.rederive(recorded.tenderId, trx, now) };
     });
 
+    // Reported where it is made, like a shared supplier ՀՎՀՀ (ticket 11).
+    if (result.buyersMerged) {
+      logger.info(`[buyers] ${facts.sourceId}: ՀՎՀՀ ${facts.taxId} merged ${result.buyersMerged} buyer(s) into one`);
+    }
+    if (result.buyersRefused) {
+      logger.warn(
+        `[buyers] ${facts.sourceId}: ՀՎՀՀ ${facts.taxId} is held by ${result.buyersRefused.length} buyers whose ` +
+          'names differ — not merged (npm run buyers:merge -- --confirm): ' +
+          result.buyersRefused.map((b) => `${b.source_id} «${b.name}»`).join(', ')
+      );
+    }
+
     // The cancellation the lots completed: an amendment like any other, for
     // the matcher's open rule to decide.
     if (result.failure?.event) {

@@ -1,5 +1,6 @@
 import { extractProcedureCode } from './listing.parser.js';
 import { cellText, documentText, fileFormat, wordDocuments } from './word.js';
+import { agreedTaxId, beneficiaryTaxIds } from '../../../taxId.js';
 
 export { fileFormat };
 
@@ -187,6 +188,7 @@ const readDocument = ($, entryName) => {
     submissionAddress: submission.address,
     deadline: submission.deadline,
     lots: readLots($),
+    taxIds: beneficiaryTaxIds(text),
     textLength: text.length,
   };
 };
@@ -256,7 +258,10 @@ export const parseInvitation = (bytes) => {
   // attaches whatever its format (ticket 07).
   if (!document) return { format, readable: false, document: null };
 
-  return { format, readable: true, document };
+  // The buyer's ՀՎՀՀ is read off every document of the upload, not only the
+  // one picked: the guarantee form is often an annex of its own (ticket 19).
+  const taxId = agreedTaxId(documents.flatMap((doc) => doc.taxIds));
+  return { format, readable: true, document: { ...document, taxId } };
 };
 
 /**

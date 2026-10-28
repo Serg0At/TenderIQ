@@ -371,7 +371,8 @@ POST   /invitations/:id/{accept,decline}
 - **The ՀՎՀՀ does NOT link an org to its supplier party today.** PPCM publishes every bidder's ՀՎՀՀ
   (ADR 0004), and since ticket 10 an ARMEPS bidder's `ppcm:bo:{ՀՎՀՀ}` party carries it — whether to
   use it for the claim is an open decision, and until it is made the rule below stands. Buyers get
-  theirs from the invitation ZIP (`invitation.parser.js` → `tender.repo.js:applyInvitationFacts`).
+  theirs from their invitation documents (e-auction's and ARMEPS's archive through
+  `tender.repo.js:applyInvitationFacts`, paper's invitation at normalize; ticket 19).
   e-auction and paper supplier parties come from ledgers that carry names, ranks and prices and no
   tax number. Since ticket 11 an e-auction bidder gains its ՀՎՀՀ from PPCM where tender, lot and
   exact net match one ledger row, and party resolution is ՀՎՀՀ-first, so a PPCM bidder already
@@ -724,8 +725,8 @@ decision that has already been made.
   `documents.js#documentSetHash` over the buyer's files, not the archive's bytes. armeps.am
   has no listing, so `tender.refresh` is per source (`REFRESHERS` in `workers/scraper.js`):
   for armeps it re-reads every *open* tender, because a deadline moves there without the
-  gnumner notice changing. Buyers are keyed per source (`armeps:buyer:…`), so a buyer that
-  runs both channels is two parties — 25 of the first 31 ARMEPS buyers; merging is open.
+  gnumner notice changing. Buyers are keyed per source (`armeps:buyer:…`); a buyer that
+  runs several channels is one party once its ՀՎՀՀ is known (next bullet but one).
 - **PPCM is an ARMEPS tender's results** (ticket 10, `workers/ppcm.js`, `ppcm.results`). Its
   organized-procedures report is asked by procedure code (`refresh-ppcm`, every 2 h, each code
   at most daily, claimed in Redis) for ARMEPS tenders past their deadline, within 90 days, not
@@ -754,8 +755,25 @@ decision that has already been made.
   party already holds that ՀՎՀՀ: **party resolution is ՀՎՀՀ-first, per-source id second**
   (`party.repo.js#upsert`, ticket 11), and two parties holding one ՀՎՀՀ fall back to the
   per-source id; a shared ՀՎՀՀ is reported when an attach creates it, never merged. Only a
-  holder of the same role or `both` counts — a bidder is never folded into a buyer row by ՀՎՀՀ
-  (ticket 19 decides that; a branch can carry its parent's: two buyers hold 01506928).
+  holder of the same role or `both` counts — a bidder is never folded into a buyer row by ՀՎՀՀ,
+  nor a buyer into a bidder's. That path is bidders' only: a buyer never takes it (next bullet).
+- **Buyers holding one ՀՎՀՀ are merged, by ՀՎՀՀ, never by name** (ticket 19,
+  `party.repo.js#mergeBuyers`): tenders move to the holder with the most, the other's per-source
+  id becomes an alias (`party_aliases`, which `upsert` resolves third) and its row is deleted.
+  The alias is load-bearing: `buyer_id` is in the amendment hash, so a replay that re-created a
+  merged-away buyer would re-alert every subscriber. Buyer with buyer only (`role = 'buyer'`).
+  **The ՀՎՀՀ decides, a name can only stop it**: a group whose names differ by more than
+  quoting and case is refused and reported, because a branch prints its parent's number (Yerevan
+  State University and its Ijevan branch, 01506928) and telling a branch from a re-spelling is
+  reading the name. A person's answer is `npm run buyers:merge -- --apply --confirm <ՀՎՀՀ>`.
+  The source does not tell them apart either — every buyer's per-source id is its name's. The
+  ՀՎՀՀ is the invitation's bank-guarantee form, field 11 «Շահառուի ՀՎՀՀ» (`libs/taxId.js`), on
+  every Word document of a set: paper's from its invitation at normalize time
+  (`upsertBuyer` resolves by per-source id only, fills that row, then merges — so the name veto
+  holds on every path — before the tender is compared), an
+  ARMEPS buyer's from its document archive, e-auction's from its own rule. Only .docx is read;
+  PPCM states no buyer ՀՎՀՀ except through a by-name lookup, so it is not used.
+  `npm run buyers:merge` (dry run by default) fills and merges from storage.
 - **For an e-auction PPCM writes only the bidders' ՀՎՀՀ** (ticket 11,
   `services/bidderTaxId.service.js`): never a link, bid, award, status, rank or rejection.
   Awarded e-auctions with a bidder lacking one fill the room the ARMEPS asks leave in a batch,

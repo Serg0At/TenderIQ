@@ -229,6 +229,7 @@ export const normalizeTender = async ({
     sourceId: `${source}:${observation.externalId}`,
     tenderId: decision.tenderId ?? null,
     buyerName: observation.buyerName,
+    buyerTaxId: observation.buyerTaxId ?? null,
     tender,
     lots: observation.ledger,
     link: {
@@ -354,6 +355,14 @@ export const normalizeTender = async ({
   }
 
   if (result.event) logger.info(`[normalizer] ${result.event}`, { sourceId, ...result });
+  // Reported where it is made, as at the document stage (ticket 19).
+  if (result.buyersRefused) {
+    logger.warn(
+      `[buyers] ${source}:${sourceId}: ՀՎՀՀ ${observation.buyerTaxId} is held by buyers whose names differ — ` +
+        'not merged (npm run buyers:merge -- --confirm): ' +
+        result.buyersRefused.map((b) => `${b.source_id} «${b.name}»`).join(', ')
+    );
+  }
   return result;
 };
 

@@ -62,6 +62,14 @@ second time to confirm it is a no-op:
       ՀՎՀՀ-first party resolution (ticket 11). Deliberately not unique. Nothing to fill.
       **Still on disk**: delete it after this step has run on Neon (step 4 of CLAUDE.md's schema
       workflow). Before or after the deploy — the code works without it, only slower.
+- [ ] 14. `migrations/add_party_aliases.js`: `party_aliases`, the per-source id of a buyer
+      merged into another by ՀՎՀՀ (ticket 19). **Run it before the deploy**: party resolution
+      reads it on every new party, so ingestion fails without it. **Still on disk**: delete it
+      after this step has run on Neon (step 4 of CLAUDE.md's schema workflow). Then, after the
+      deploy, `npm run buyers:merge` (dry run: read the merged pairs and the refused groups),
+      then `npm run buyers:merge -- --apply`. It reads only stored documents and raises no
+      alert. Locally it merged 17 pairs and refused 2 groups (ticket 19). A refused group is
+      merged only on a person's word: `-- --apply --confirm <ՀՎՀՀ>`.
 
 Environment:
 

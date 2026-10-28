@@ -882,7 +882,11 @@ export default class TenderRepository {
       const codesReplaced = codes.length > 0 && !sameCodes(tender.cpv_codes, codes);
       if (codesReplaced) await trx(TABLE).where({ id: tender.id }).update({ cpv_codes: codes });
 
+      // A buyer that gains its ՀՎՀՀ here may share it with another source's
+      // buyer — the ARMEPS ministry that already buys by e-auction. Whichever
+      // archive comes second merges them (ticket 19).
       const taxIdSet = taxId ? await parties.setTaxId(tender.buyer_id, taxId, trx) : false;
+      const buyerMerge = taxId ? await parties.mergeBuyers(taxId, {}, trx) : null;
 
       // Replace rather than merge: the invitation lists the lots in full, so it
       // is authoritative, and a lot removed by an addendum must disappear here
@@ -940,6 +944,8 @@ export default class TenderRepository {
         cpvSet: Boolean(cpvCode && !tender.cpv_code),
         codesReplaced,
         taxIdSet,
+        buyersMerged: buyerMerge?.merged.length ?? 0,
+        buyersRefused: buyerMerge?.refused ?? null,
         lotsSeen: lots.length,
         lotsWritten,
         documentRecorded: (inserted?.rowCount ?? 0) > 0,
@@ -1186,9 +1192,9 @@ export default class TenderRepository {
    * `knownIds`) means another file just created it: this one throws, and the
    * retry resolves against it.
    */
-  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, tender, lots, link, supersedes = [], replaces = false, supersedeCurrent = false, runGuard = null }) {
+  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, buyerTaxId = null, tender, lots, link, supersedes = [], replaces = false, supersedeCurrent = false, runGuard = null }) {
     return db.transaction(async (trx) => {
-      const buyerId = await parties.upsertBuyer({ source, name: buyerName }, trx);
+      const { id: buyerId, refused: buyersRefused } = await parties.upsertBuyer({ source, name: buyerName, taxId: buyerTaxId }, trx);
       if (!buyerId) {
         // buyer_id is NOT NULL and there is no honest placeholder for it.
         // Skipping keeps the tender out until the page yields a real buyer.
@@ -1246,7 +1252,7 @@ export default class TenderRepository {
           currency: tender.currency,
           awardedAt: tender.auctionAt,
         });
-        return { event: 'TenderIngested', tenderId: id, version: 1, ...ledger };
+        return { event: 'TenderIngested', tenderId: id, version: 1, buyersRefused, ...ledger };
       }
 
       const unchanged =
@@ -1285,7 +1291,7 @@ export default class TenderRepository {
         if (!sameCodes(existing.cpv_codes, row.cpv_codes)) {
           await trx(TABLE).where({ id: existing.id }).update({ cpv_codes: row.cpv_codes });
         }
-        return { event: null, tenderId: existing.id, version: existing.version };
+        return { event: null, tenderId: existing.id, version: existing.version, buyersRefused };
       }
 
       await trx(TABLE)
@@ -1305,6 +1311,7 @@ export default class TenderRepository {
         tenderId: existing.id,
         version: existing.version + 1,
         changedFields: changedKeys({ ...existing, cpv_codes: storedCodes }, row),
+        buyersRefused,
         ...ledger,
       };
     });

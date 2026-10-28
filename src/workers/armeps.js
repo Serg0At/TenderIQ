@@ -9,6 +9,8 @@ import {
   tenderStructureEntry,
   parseTenderStructure,
   cpvForLots,
+  taxIdEntries,
+  buyerTaxIdOf,
 } from '../libs/adapters/source/armeps/documents.js';
 import { ZipError, bufferSource, listEntries, openEntry } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
@@ -165,10 +167,30 @@ export const armepsDocumentsJob = (observation, { sourceId, result, fresh, prior
   };
 };
 
-const readEntry = async (source, entry) => {
+const entryBytes = async (source, entry, maxBytes = 5 * 1024 * 1024) => {
   const chunks = [];
-  for await (const chunk of await openEntry(source, entry, { maxBytes: 5 * 1024 * 1024 })) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
+  for await (const chunk of await openEntry(source, entry, { maxBytes })) chunks.push(chunk);
+  return Buffer.concat(chunks);
+};
+
+const readEntry = async (source, entry) => (await entryBytes(source, entry)).toString('utf8');
+
+/**
+ * The buyer's ՀՎՀՀ out of the set's Word documents (ticket 19), for this
+ * stage and for `buyers:merge` reading stored sets. An entry that cannot be
+ * read is skipped, not fatal: the lots and the list are worth more than the
+ * number, and a missing ՀՎՀՀ only leaves the buyer unmerged.
+ */
+export const readBuyerTaxId = async (archive, entries, resourceId, log = logger) => {
+  const files = [];
+  for (const entry of taxIdEntries(entries, resourceId)) {
+    try {
+      files.push(await entryBytes(archive, entry, 40 * 1024 * 1024));
+    } catch (error) {
+      log.warn(`${entry.path} not read for the buyer's ՀՎՀՀ: ${error.message}`);
+    }
+  }
+  return buyerTaxIdOf(files);
 };
 
 /**
@@ -241,6 +263,7 @@ export const handleArmepsDocuments = async (job, token) => {
     log.warn(`Tender Structure XML declares ${structure.declaredLots} lots and lists ${structure.lots.length}`);
   }
   const lots = cpvForLots(structure?.lots ?? [], cpv);
+  const taxId = await readBuyerTaxId(archive, entries, resourceId, log);
 
   // A set that differs from the one stored last is an addendum: a new
   // version and, while the tender is biddable, an amendment alert.
@@ -252,7 +275,7 @@ export const handleArmepsDocuments = async (job, token) => {
       kind: 'contract_documents',
       url: documentsUrl(resourceId),
       storageKey: archiveKey,
-      taxId: null,
+      taxId,
       cpvCode: null,
       lots: lots.map(({ lotNumber, cpvCode, name }) => ({ lotNumber, itemSequence: 0, cpvCode, name })),
       manifest,
@@ -287,4 +310,4 @@ export const armepsRefresher = {
   }),
 };
 
-export default { handleArmepsDetail, handleArmepsDocuments, armepsDocumentsJob, armepsRefresher };
+export default { handleArmepsDetail, handleArmepsDocuments, armepsDocumentsJob, armepsRefresher, readBuyerTaxId };

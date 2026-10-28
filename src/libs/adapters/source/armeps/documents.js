@@ -1,6 +1,8 @@
 import * as cheerio from 'cheerio';
 import { languageOfFilename } from '../../../documentLanguage.js';
 import { sha256 } from '../../../../utils/hash.js';
+import { agreedTaxId, beneficiaryTaxIds } from '../../../taxId.js';
+import { documentText, wordDocuments } from '../gnumner/word.js';
 
 /**
  * Pure: an armeps.am contract-documents ZIP's entries (and the CfT page's
@@ -146,4 +148,32 @@ export const cpvForLots = (lots, cpv = []) =>
     return { ...lot, cpvCode: fits.length === 1 ? fits[0].code : null };
   });
 
-export default { documentSetHash, documentManifest, tenderStructureEntry, parseTenderStructure, cpvForLots };
+/**
+ * The entries the buyer's ՀՎՀՀ is read from (ticket 19): every published
+ * .docx, and every .zip, whose .docx one level down are read too.
+ *
+ * Only Word's XML format. A set's invitation is as often an old .doc or a
+ * .pdf, and neither has a reader here (the gnumner parsers' format check says
+ * the same): of the first 54 sets, the .docx gave 34 a ՀՎՀՀ — 21 of 32
+ * buyers — and a .doc or .pdf reader would have added 9 sets and 2 buyers.
+ * Added later, it replays from storage with `npm run buyers:merge`.
+ */
+export const taxIdEntries = (entries, resourceId) =>
+  published(entries, resourceId).filter((entry) => /\.(docx|zip)$/i.test(entry.path));
+
+/**
+ * The buyer's ՀՎՀՀ: the guarantee form's beneficiary (libs/taxId.js), on
+ * which every Word document of the set agrees, or null.
+ */
+export const buyerTaxIdOf = (files) =>
+  agreedTaxId(files.flatMap((bytes) => wordDocuments(bytes, ($) => beneficiaryTaxIds(documentText($))).documents.flat()));
+
+export default {
+  documentSetHash,
+  documentManifest,
+  tenderStructureEntry,
+  parseTenderStructure,
+  cpvForLots,
+  taxIdEntries,
+  buyerTaxIdOf,
+};

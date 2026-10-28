@@ -38,6 +38,7 @@ async function down(pg) {
     'tender_sources',
     'tenders',
     'users',
+    'party_aliases',
     'parties',
   ];
 

@@ -211,6 +211,9 @@ export const observeInvitation = (bytes, { externalId, notices = [] }) => {
     procedureCode,
     procedureType: notice.procedureType,
     buyerName: document.buyerName,
+    // The guarantee form's beneficiary (libs/taxId.js): the key the buyer merges
+    // on with its e-auction and ARMEPS parties (ticket 19).
+    buyerTaxId: document.taxId ?? null,
     publishedAt,
     deadlineAt,
     lotNumbers: document.lots.map((lot) => lot.lotNumber),

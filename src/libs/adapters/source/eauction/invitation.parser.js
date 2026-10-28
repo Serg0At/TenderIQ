@@ -51,9 +51,11 @@ const MAX_ENTRY_BYTES = 80 * 1024 * 1024;
  * agent, a guarantee issuer, a worked example in the boilerplate — to the
  * buyer, and `setTaxId` only ever fills a blank, so a wrong value becomes
  * permanent with no signal. A value is returned only when the whole document
- * agrees on exactly one.
+ * agrees on exactly one. Exactly eight digits: an ARMEPS invitation prints the
+ * education ministry's 02698732 as «002698732», whose first eight are another
+ * number (ticket 19; no stored e-auction text has a nine-digit run).
  */
-const TAX_ID_RE = /ՀՎՀՀ[`\s:\-]*(\d{8})/g;
+const TAX_ID_RE = /ՀՎՀՀ[`\s:\-]*(\d{8})(?!\d)/g;
 
 const extractTaxId = (text) => {
   const found = new Set();

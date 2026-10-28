@@ -18,6 +18,16 @@ function up(pg) {
       table.index(['tax_id'], 'parties_tax_id_idx');
     })
 
+    // party_aliases — The per-source id of a buyer merged into another by ՀՎՀՀ (ticket 19), so
+    // the next read of that source resolves to the survivor instead of re-creating the buyer the
+    // merge removed. Mirrored in add_party_aliases.js.
+    .createTable('party_aliases', table => {
+      table.string('source_id').primary();
+      table.string('party_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
+      table.timestamp('merged_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['party_id'], 'party_aliases_party_idx');
+    })
+
     // tenders — One row per procurement notice — the OCDS-aligned core that every downstream
     // feature reads from.
     .createTable('tenders', table => {

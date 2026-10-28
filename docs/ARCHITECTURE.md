@@ -269,7 +269,7 @@ that is what makes services testable with fakes and keeps the dependency directi
 
 | Group | Tables |
 |---|---|
-| Procurement core (OCDS) | `parties`, `tenders`, `awards`, `contracts`, `tender_documents`, `source_payloads` |
+| Procurement core (OCDS) | `parties`, `party_aliases`, `tenders`, `awards`, `contracts`, `tender_documents`, `source_payloads` |
 | Tenancy & identity | `users`, `organizations`, `roles`, `memberships` |
 | Bid workflow | `tracked_tenders`, `bids`, `checklists`, `checklist_items`, `vault_documents` |
 | Discovery | `saved_searches` |

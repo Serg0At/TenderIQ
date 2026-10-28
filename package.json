@@ -19,6 +19,7 @@
     "documents:backfill": "node src/scripts/backfillDocuments.js",
     "documents:manifests": "node src/scripts/backfillDocumentManifests.js",
     "cpv:backfill": "node src/scripts/backfillCpvCodes.js",
+    "buyers:merge": "node src/scripts/mergeBuyers.js",
     "notices:backfill": "node src/scripts/backfillListingNotices.js",
     "checklist:try": "node src/scripts/tryChecklist.js",
     "telegram:webhook": "node src/scripts/telegramWebhook.js",
