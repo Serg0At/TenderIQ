@@ -678,8 +678,10 @@ export const deriveStatus = ({ submissionChannel, links = [], current = null, de
       // only what the deadline said at the time — so a deadline that has since
       // moved into the future reopens it. armeps.am states no status at all,
       // and an extension caught after the old deadline passed must not leave
-      // a biddable tender closed.
-      if (ahead && current === 'closed') return 'active';
+      // a biddable tender closed. A deadline that is not known has not moved:
+      // a paper tender closed by its ceiling (ticket 37) stays closed when a
+      // result re-derives it from a row with no `deadline_at`.
+      if (ahead && deadlineAt && current === 'closed') return 'active';
       next = ahead ? 'active' : 'closed';
     }
   }

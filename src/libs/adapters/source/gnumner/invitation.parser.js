@@ -94,52 +94,144 @@ const readSubject = (text) => {
  *     հրապարակման օրվան հաջորդող օրվանից», and their own bid-opening dates are
  *     still publication + N (8, 41 and 7, all seen): the same arithmetic,
  *     because the count starts the day after either way.
- *   - a date: «… մինչև 27.10.2026թ օրվա ժամը 12:30», also as 26,10,2026.
+ *   - a date: «… մինչև 27.10.2026թ օրվա ժամը 12:30», also as 26,10,2026;
+ *     or in words, «… մինչև 2026 թվականի Հոկտեմբերի 16-ին ժամը 12:00», also
+ *     after a day count whose «օրվա» it replaces («… հաշված 7 -րդ օրը՝ 2026
+ *     թվականի սեպտեմբերի 11-ին ժամը 11։00»), where the date is read.
  *
  * Spellings seen: «8- րդ», «“7”րդ», «ժամը 16,30», «11։00» (Armenian colon).
  * A buyer who leaves the address blank («ներկայացնել հասցեով, …») still states
  * the deadline: the address is null and the deadline is read. Some put a mark
  * after the verb («ներկայացնել` ՀՀ, Ք. Երևան, …»); a letter after it is
  * another word («ներկայացնելու»), never this sentence.
+ *
+ * A day counted from when the invitation was SENT to a supplier («… հրավերը
+ * հնարավոր մասնակցին ուղարկվելու օրվանից հաշված 7-րդ օրվա …», ticket 37) is
+ * not read: gnumner does not say when that was, and publication + N would be
+ * later than the real deadline whenever the buyer sent it first. The
+ * deadline is then the listing's close, or none (observation.js).
  */
 const SUBMISSION_RE =
   /ներկայացնել(?:\s*[`՝’']\s*|\s+)(.*?)\s*հասցե(?:ով|ում)\s*,?\s*փաստաթղթային\s+ձևով(.{0,240})/u;
-const TIME = '\\s+ժամը\\s+(\\d{1,2})\\s*[:։.․,]\\s*(\\d{2})';
+
+/**
+ * The bid-opening sentence (ticket 37): «Հայտերի բացումը տեղի կունենա
+ * <address> հասցեում, «2026» «հոկտեմբերի» «26»-ին ժամը 17:00-ին». Read from
+ * the address on, in the forms the deadline is: a date in figures or in
+ * words, a day count, and a month and day with no year («սույն թվականի
+ * հոկտեմբերի 15-ին», "of this year"). Some buyers state only the hour, and
+ * then it is null.
+ *
+ * Not a deadline fallback: it equals the deadline in 52 of 60 stored
+ * invitations, and opens after it in 3 (observation.js). Production does not
+ * read it; `sources:verify` counts how often it agrees, so that decision can
+ * be checked again as invitations accumulate.
+ */
+const OPENING_RE = /Հայտերի\s+բացումը\s+տեղի\s+(.{0,320})/u;
+
+/** Where a sentence ends: a full stop before the next capital, never the colon of «11։00». */
+const sentence = (tail) => tail.split(/[:։]\s+(?=[Ա-Ֆ])/u)[0];
+
+// «ժամը 12:00», «, ժամը՝ 12:00», «ժամը _15։20_», and «ժամը 11-ին» (on the hour).
+const TIME = '[\\s,`՝’\']*ժամը\\s*[`՝’\':_]*\\s*(\\d{1,2})(?:\\s*[:։.․,]\\s*(\\d{2}))?';
 const DAY_COUNT_RE = new RegExp(
   `հրապարակման\\s+(?:(?:օրվան\\s+)?հաջորդ(?:ող)?\\s+)?օրվանից\\s+(?:հաշված\\s+)?[«"“(]?\\s*(\\d{1,2})\\s*[»"”)]?\\s*-?\\s*(?:րդ)?\\s*օր(?:վա|ը|ն)?${TIME}`,
   'u'
 );
-const DATE_RE = new RegExp(`(\\d{1,2})[.,](\\d{1,2})[.,](\\d{4})\\s*թ?\\.?\\s*(?:օրվա)?${TIME}`, 'u');
+// «27.10.2026թ օրվա ժամը», «12.10.2026թ-ին ժամը», «14.10.2026թ., ժամը՝», «15.10.2026 թ-ին ժամը».
+const DATE_RE = new RegExp(
+  `(\\d{1,2})[.,](\\d{1,2})[.,](\\d{4})\\s*թ?\\s*[.․]?\\s*(?:-\\s*ին|օրվա)?${TIME}`,
+  'u'
+);
+// Read with the quote marks taken out: «2026 թվականի սեպտեմբերի 30-ին», «2026թ-ի
+// Հոկտեմբերի 01-ին», «2026 թ. հոկտեմբերի 26-ին», «2026թ հոկտեմբերի 21-ը»,
+// «սույն թվականի հոկտեմբերի 05-ին», «հոկտեմբերի 15-ին».
+const WORD_DATE_RE = new RegExp(
+  `(?:(\\d{4})\\s*(?:թվականի|թ\\s*[.․]?\\s*(?:-\\s*ի)?)?\\s*|սույն\\s+թվականի\\s+)?([\\u0531-\\u0556\\u0561-\\u0587]+ի)\\s+(\\d{1,2})\\s*-?\\s*(?:ին|ը)${TIME}`,
+  'u'
+);
 
-const clock = (hour, minute) => (hour <= 23 && minute <= 59 ? { hour, minute } : null);
+/**
+ * A genitive month name by its first letters, so a misspelling still reads
+ * («հոկտեմեբրի», «հոկտոմբորի» are both seen). The genitive «-ի» is required
+ * by WORD_DATE_RE, which keeps a street named after a month («Հոկտեմբերյան
+ * 2») from being read as one.
+ */
+const MONTHS = [
+  ['հունվ', 1], ['փետր', 2], ['մարտ', 3], ['ապր', 4], ['մայ', 5], ['հունի', 6],
+  ['հուլ', 7], ['օգոս', 8], ['սեպտ', 9], ['հոկտ', 10], ['նոյ', 11], ['դեկ', 12],
+];
+const monthOf = (word) => MONTHS.find(([prefix]) => word.toLowerCase().startsWith(prefix))?.[1] ?? null;
 
-const readDeadline = (sentence) => {
-  const count = sentence.match(DAY_COUNT_RE);
+const pad2 = (n) => String(n).padStart(2, '0');
+const clock = (hour, minute = '00') =>
+  Number(hour) <= 23 && Number(minute) <= 59 ? { hour: Number(hour), minute: Number(minute) } : null;
+
+/** A date the calendar does not have («31.09») is a typo, not the 1st of the next month. */
+const realDate = (y, m, d) => {
+  const real = new Date(Date.UTC(y, m - 1, d));
+  return real.getUTCFullYear() === y && real.getUTCMonth() === m - 1 && real.getUTCDate() === d;
+};
+
+// A date with no year is checked against a leap year, so «29 February» stands until a year is known.
+const LEAP_YEAR = 2028;
+
+const dated = (y, m, d, time) => {
+  if (!time || !m || !realDate(y ?? LEAP_YEAR, m, d)) return null;
+  // No year: «սույն թվականի» ("of this year") or none written. The year is
+  // the publication's, which only observation.js knows.
+  if (y === null) return { monthDay: `${pad2(m)}-${pad2(d)}`, ...time };
+  return y >= 2000 && y <= 2100 ? { date: `${y}-${pad2(m)}-${pad2(d)}`, ...time } : null;
+};
+
+/**
+ * One sentence's "when": `{ day, hour, minute }` counted from publication,
+ * `{ date }`, `{ monthDay }` with no year, or null.
+ */
+const readWhen = (text) => {
+  const count = text.match(DAY_COUNT_RE);
   if (count) {
     const day = Number(count[1]);
-    const time = clock(Number(count[2]), Number(count[3]));
+    const time = clock(count[2], count[3]);
     return day >= 1 && day <= 60 && time ? { day, ...time } : null;
   }
-  const dated = sentence.match(DATE_RE);
-  if (dated) {
-    const [d, m, y] = [Number(dated[1]), Number(dated[2]), Number(dated[3])];
-    const time = clock(Number(dated[4]), Number(dated[5]));
-    // A date the calendar does not have («31.09») is a typo, not the 1st of
-    // the next month.
-    const real = new Date(Date.UTC(y, m - 1, d));
-    if (!time || real.getUTCFullYear() !== y || real.getUTCMonth() !== m - 1 || real.getUTCDate() !== d) return null;
-    return { date: `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`, ...time };
+  const figures = text.match(DATE_RE);
+  if (figures) return dated(Number(figures[3]), Number(figures[2]), Number(figures[1]), clock(figures[4], figures[5]));
+  const words = text.replace(/[«»"“”„]/g, ' ').replace(/\s+/g, ' ').match(WORD_DATE_RE);
+  if (words) {
+    const year = words[1] ? Number(words[1]) : null;
+    return dated(year, monthOf(words[2]), Number(words[3]), clock(words[4], words[5]));
   }
   return null;
 };
 
+/**
+ * The deadline sentence's time — never one counted from when the invitation
+ * was sent: «ուղարկվելու» in what the day is counted from (up to the first
+ * «օրվանից»), even beside «հրապարակման». A remark after the deadline that
+ * mentions sending («…ժամը 15:30-ը:/ … հրավերն ուղարկվելու օրվանից երկու …»,
+ * cf739305) is not that. And never a date with no year: none is seen in a
+ * deadline sentence, and the year `paperDeadline` would give it is unchecked
+ * there.
+ */
 const readSubmission = (text) => {
-  const found = text.replace(/\n/g, ' ').match(SUBMISSION_RE);
+  const found = text.match(SUBMISSION_RE);
   if (!found) return { address: null, deadline: null };
+  const tail = sentence(found[2]);
+  const when = /ուղարկվ/u.test(tail.split('օրվանից')[0]) ? null : readWhen(tail);
   return {
     address: unquote(found[1].replace(/[.,]+$/, '')) || null,
-    deadline: readDeadline(found[2]),
+    deadline: when?.monthDay ? null : when,
   };
+};
+
+const readOpening = (text) => {
+  const found = text.match(OPENING_RE);
+  if (!found) return null;
+  // From the address on: an address holds figures («Կոմիտաս 54 բ») and,
+  // once, a street named after a month.
+  const at = found[1].search(/հասցե/u);
+  return readWhen(sentence(at === -1 ? found[1] : found[1].slice(at)));
 };
 
 /**
@@ -206,7 +298,8 @@ const readLots = ($) => {
 
 const readDocument = ($, entryName) => {
   const text = documentText($);
-  const submission = readSubmission(text);
+  const flat = text.replace(/\n/g, ' ');
+  const submission = readSubmission(flat);
   return {
     entryName,
     procedureCode: readCode(text),
@@ -214,6 +307,7 @@ const readDocument = ($, entryName) => {
     subject: readSubject(text),
     submissionAddress: submission.address,
     deadline: submission.deadline,
+    opening: readOpening(flat),
     ...readLots($),
     taxIds: beneficiaryTaxIds(text),
     textLength: text.length,

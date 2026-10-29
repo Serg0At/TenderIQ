@@ -19,6 +19,7 @@ import {
   paperUploadRef,
   pathDigest,
   resultNoticeDigest,
+  UNDATED_OPEN_DAYS,
 } from '../libs/adapters/source/gnumner/observation.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
@@ -876,13 +877,18 @@ export const queueResultRetries = async ({ tenderId, version, referenceCode, pri
 
 /**
  * The paper refresh, for scraper.js#handleRefreshSweep: paper tenders whose
- * deadline has passed while they still say open, each re-normalized from
+ * deadline has passed while they still say open — or, stating none, whose
+ * ceiling has (`UNDATED_OPEN_DAYS`, ticket 37) — each re-normalized from
  * storage. Ids `gnumner-refresh-…`, never a notice's, so a refresh cannot
  * swallow a discovery.
  */
 export const paperRefresher = {
   find: ({ refreshWindowDays, maxRefreshBatch }) =>
-    tenders.findPaperPastDeadline({ windowDays: refreshWindowDays, limit: maxRefreshBatch }),
+    tenders.findPaperPastDeadline({
+      windowDays: refreshWindowDays,
+      limit: maxRefreshBatch,
+      undatedOpenDays: UNDATED_OPEN_DAYS,
+    }),
   job: (row, bucket) => ({
     name: JOB.PAPER_INVITATION,
     data: { source: SOURCE, invitationId: row.external_id, reason: 'refresh', bucket },

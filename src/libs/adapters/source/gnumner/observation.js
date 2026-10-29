@@ -114,7 +114,10 @@ const pad = (n) => String(n).padStart(2, '0');
  * told a day early; rolling forward on a calendar we maintain could tell them
  * a day late, which loses the bid.
  *
- * A stated date («մինչև 27.10.2026թ … ժամը 12:30») is taken as it is.
+ * A stated date («մինչև 27.10.2026թ … ժամը 12:30») is taken as it is. One
+ * with no year («սույն թվականի հոկտեմբերի 15-ին», "of this year") is in the
+ * publication's Yerevan year — or the next, for a month more than a month
+ * behind it: a January date in a notice published in late December.
  */
 export const paperDeadline = (publishedAt, stated) => {
   if (!publishedAt || !stated) return null;
@@ -122,17 +125,50 @@ export const paperDeadline = (publishedAt, stated) => {
   if (stated.date) return new Date(`${stated.date}T${time}`);
 
   const wallClock = new Date(new Date(publishedAt).getTime() + YEREVAN_OFFSET_MS);
+  if (stated.monthDay) {
+    const year = wallClock.getUTCFullYear();
+    const thisYear = new Date(`${year}-${stated.monthDay}T${time}`);
+    const behind = wallClock.getTime() - thisYear.getTime() > 31 * 24 * 60 * 60 * 1000;
+    const at = behind ? new Date(`${year + 1}-${stated.monthDay}T${time}`) : thisYear;
+    // 29 February in a year that has none, which Date rolls into 1 March.
+    const day = new Date(at.getTime() + YEREVAN_OFFSET_MS).toISOString().slice(5, 10);
+    return day === stated.monthDay ? at : null;
+  }
   wallClock.setUTCDate(wallClock.getUTCDate() + stated.day);
   return new Date(`${wallClock.toISOString().slice(0, 10)}T${time}`);
 };
 
 /**
+ * How long a paper tender with no deadline is shown open: days after its
+ * publication, per procedure type, any other type the longest (ticket 37,
+ * 2026-10-29). About twice the longest seen: stated in the 61 stored
+ * invitations, quotation 16 days and open 41; typed as the listing's close,
+ * quotation 15 (58 notices) and open 44 (40). A live tender closed early is a
+ * missed tender, while a dead one shown too long costs a supplier a look, so
+ * the margin is wide. Not a deadline: `deadline_at` stays null, and only the
+ * status reads it.
+ */
+export const UNDATED_OPEN_DAYS = { quotation: 30, open: 90 };
+
+/**
+ * The latest a paper tender stating no deadline can still be open: its
+ * publication — its newest file's, which is the one re-read — plus the
+ * ceiling. SQL twin: `tender.repo.js#findPaperPastDeadline`; change both.
+ */
+export const undatedOpenUntil = (publishedAt, procedureType) => {
+  const days = UNDATED_OPEN_DAYS[procedureType] ?? Math.max(...Object.values(UNDATED_OPEN_DAYS));
+  return new Date(new Date(publishedAt).getTime() + days * 24 * 60 * 60 * 1000);
+};
+
+/**
  * What the normalizer should say about a paper deadline: the invitation's is
  * used, the listing's typed close is the fallback, and a tender with neither
- * is stored with none — shown biddable until a person looks, so it is said.
+ * is stored with none — closed by the ceiling (`openUntil`), so it is said.
  */
-const deadlineWarnings = ({ stated, listed }) => {
-  if (!stated && !listed) return ['states no deadline, and the listing shows no close: stored without one'];
+const deadlineWarnings = ({ stated, listed, openUntil }) => {
+  if (!stated && !listed) {
+    return [`states no deadline, and the listing shows no close: stored without one, open until ${openUntil.toISOString()}`];
+  }
   if (!stated) return ["states no deadline; the listing's close is used"];
   if (listed && listed.getTime() !== stated.getTime()) {
     return [`deadline ${stated.toISOString()} differs from the listing's ${listed.toISOString()}; the invitation's is used`];
@@ -209,8 +245,17 @@ export const observeInvitation = async (bytes, { externalId, notices = [] }) => 
   // The listing's own close, typed by the buyer when posting, is the fallback
   // for an invitation whose sentence was not found — it agrees with the
   // document in 34 of 36 cases checked.
+  //
+  // The bid opening the invitation states is NOT a fallback (ticket 37): it
+  // equals the deadline to the minute in 52 of the 60 stored invitations that
+  // state both, and 3 of the 8 others open after the deadline — a supplier
+  // told a deadline up to a day late. `sources:verify` keeps the count.
   const listed = notice.closesAt ? new Date(notice.closesAt) : null;
   const deadlineAt = stated ?? listed;
+  // With no deadline, the latest it can still be open: its status closes
+  // there (resolution.service.js#deriveStatus), and the paper refresh comes
+  // back for it then.
+  const openUntil = deadlineAt ? null : undatedOpenUntil(publishedAt, notice.procedureType);
   const procedureCode = document.procedureCode ?? notice.procedureCode ?? null;
   const codes = document.lots.map((lot) => lot.cpvCode).filter(Boolean);
 
@@ -224,8 +269,9 @@ export const observeInvitation = async (bytes, { externalId, notices = [] }) => 
     buyerTaxId: document.taxId ?? null,
     publishedAt,
     deadlineAt,
+    openUntil,
     lotNumbers: document.lots.map((lot) => lot.lotNumber),
-    warnings: deadlineWarnings({ stated, listed }),
+    warnings: deadlineWarnings({ stated, listed, openUntil }),
     tender: {
       sourceStatus: null,
       // The buyer's notice headline; the subject only when a notice has none.
@@ -558,4 +604,6 @@ export default {
   observeAmendment,
   observeContract,
   paperDeadline,
+  UNDATED_OPEN_DAYS,
+  undatedOpenUntil,
 };

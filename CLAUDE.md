@@ -643,7 +643,12 @@ decision that has already been made.
   counted `no_code`. `tenders.submission_address` holds where the envelope goes, and paper is the
   one source that writes `tenders.description` (the contract subject). A paper file never
   changes, so `refresh-gnumner` re-normalizes from storage the ones past their deadline, so they
-  close.
+  close. **One with no deadline closes at a ceiling** (ticket 37, `observation.js#
+  undatedOpenUntil`): publication + 30 days for a quotation, 90 otherwise, about twice the
+  longest seen. `deadline_at` stays null, since nobody stated it, and `deriveStatus` never
+  reopens a `closed` tender on a null deadline. A deadline counted from when the invitation
+  was *sent* is not read: gnumner does not show that day. The stated bid opening is not a
+  fallback either, because it disagreed with the deadline in 8 of 60 files.
 - **A re-posted paper invitation is an amendment of its run** (ticket 07). Paper names no
   predecessor, so for the paper channel alone a detail joins the stored tender of the same
   normalized code and buyer when the two overlap — the earlier still open, and not cancelled or

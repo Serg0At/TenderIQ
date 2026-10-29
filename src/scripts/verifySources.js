@@ -3,11 +3,12 @@ import { getStorage } from '../libs/storage/index.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { observeDay, observeProcedures, parseStored, procedureId } from '../libs/adapters/source/ppcm/observation.js';
 import { parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
+import { paperDeadline, undatedOpenUntil } from '../libs/adapters/source/gnumner/observation.js';
 import { cents, matchTaxIds } from '../services/bidderTaxId.service.js';
 import { lookupsFor, resolve } from '../services/resolution.service.js';
 import publicBids from '../repositories/publicBid.repo.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
-import tenders from '../repositories/tender.repo.js';
+import tenders, { BIDDABLE_STATUSES } from '../repositories/tender.repo.js';
 import verification from '../repositories/sourceVerification.repo.js';
 
 /**
@@ -15,9 +16,10 @@ import verification from '../repositories/sourceVerification.repo.js';
  * suite (ticket 13): per source, the tenders it created and linked and the
  * results it could not attach, by reason; the unreadable files by notice kind
  * and extension, which is what chooses a converter; tenders by channel and
- * status; paper tenders holding no lot, by what their file says; gnumner's
- * e-auction notices against the e-auction tenders held; and PPCM's rows
- * against eauction's own ledger on the e-auctions both hold.
+ * status; paper tenders holding no lot, by what their file says, and stating
+ * no deadline, by status; gnumner's e-auction notices against the e-auction
+ * tenders held; and PPCM's rows against eauction's own ledger on the
+ * e-auctions both hold.
  *
  * The PPCM comparison replays every stored PPCM answer through the production
  * parser and resolution (`observeProcedures`, `resolve`, `matchTaxIds`) — a
@@ -136,32 +138,86 @@ const printChannels = async (window) => {
 };
 
 /**
- * Paper tenders with no lot, each file read again through the production
- * parser (ticket 36): a lot table found and no row read from it is template
- * drift the parser missed; no lot table at all is an invitation that has
- * none, or one laid out in a way not yet seen. Either way the tender cannot
- * be cancelled by a failure notice or have a bid decided per lot.
+ * Paper tenders made from an invitation file, each current file read again
+ * through the production parser, once, for three counts.
+ *
+ * With no lot (ticket 36): a lot table found and no row read from it is
+ * template drift the parser missed; no lot table at all is an invitation that
+ * has none, or one laid out in a way not yet seen. Either way the tender
+ * cannot be cancelled by a failure notice or have a bid decided per lot.
+ *
+ * With no deadline (ticket 37): the file states none the parser reads and
+ * the listing showed no close, so only the ceiling (`undatedOpenUntil`)
+ * closes it. `closed` there is the ceiling's doing — with no deadline,
+ * nothing else closes a paper tender — and a biddable one is listed with the
+ * day it will close. `deadline read, not written` is a parser fixed but not
+ * replayed.
+ *
+ * The stated bid opening against the deadline sentence, on the files that
+ * state both (ticket 37): whether the opening could stand in for a deadline
+ * the sentence does not give. It is not used, because it disagreed in 8 of 60
+ * on 2026-10-29; this is the number to look at before changing that.
  */
-const printPaperLots = async (window) => {
-  const { tenders: total, withoutLots } = await verification.paperTendersWithoutLots(window);
-  console.log('— paper tenders with no lots —');
+const printPaperFiles = async (window) => {
+  const rows = await verification.paperFileTenders(window);
   const storage = await getStorage();
+  const read = async (key) => (key ? parseInvitation(Buffer.from(await storage.get(key))) : null);
+  const parsed = [];
+  for (const row of rows) parsed.push({ row, file: await read(row.storage_key) });
+
+  console.log('— paper tenders with no lots —');
   const kinds = {};
   const listed = [];
-  for (const { reference_code: code, storage_key: key } of withoutLots) {
+  for (const { row, file } of parsed.filter(({ row }) => !row.has_lots)) {
     let kind = 'no current file';
-    if (key) {
-      const { readable, document } = await parseInvitation(Buffer.from(await storage.get(key)));
-      if (!readable) kind = 'file not readable';
-      else if (!document.lotTable) kind = 'no lot table';
-      else kind = document.lots.length ? 'lots read, not written' : 'lot table, no row read';
-    }
+    if (file && !file.readable) kind = 'file not readable';
+    else if (file && !file.document.lotTable) kind = 'no lot table';
+    else if (file) kind = file.document.lots.length ? 'lots read, not written' : 'lot table, no row read';
     count(kinds, kind);
-    listed.push(`${code ?? '(no code)'} (${kind})`);
+    listed.push(`${row.reference_code ?? '(no code)'} (${kind})`);
   }
   const split = Object.entries(kinds).map(([kind, n]) => `${kind} ${n}`);
-  console.log(`  ${withoutLots.length} of ${total} paper tenders made from an invitation${split.length ? `: ${split.join(', ')}` : ''}`);
+  const withoutLots = parsed.filter(({ row }) => !row.has_lots).length;
+  console.log(`  ${withoutLots} of ${rows.length} paper tenders made from an invitation${split.length ? `: ${split.join(', ')}` : ''}`);
   if (listed.length) console.log(`  ${listed.join(', ')}`);
+  console.log('');
+
+  console.log('— paper tenders with no deadline —');
+  const undated = parsed.filter(({ row }) => !row.deadline_at);
+  const statuses = {};
+  const open = [];
+  let unwritten = 0;
+  for (const { row, file } of undated) {
+    count(statuses, row.status === 'closed' ? 'closed by the ceiling' : row.status);
+    if (file?.readable && file.document.deadline) unwritten += 1;
+    if (BIDDABLE_STATUSES.includes(row.status)) {
+      const until = undatedOpenUntil(row.published_at, row.procedure_type);
+      open.push(`${row.reference_code ?? '(no code)'} (${row.status} until ${until.toISOString().slice(0, 10)})`);
+    }
+  }
+  const byStatus = Object.entries(statuses).map(([status, n]) => `${status} ${n}`);
+  console.log(`  ${undated.length} of ${rows.length} paper tenders made from an invitation${byStatus.length ? `: ${byStatus.join(', ')}` : ''}`);
+  if (unwritten) console.log(`  ${unwritten} of them: deadline read, not written`);
+  if (open.length) console.log(`  ${open.join(', ')}`);
+  console.log('');
+
+  console.log('— paper bid opening against the deadline sentence —');
+  const tally = { both: 0, exact: 0, sameDay: 0, later: 0 };
+  const yerevanDay = (at) => new Date(at.getTime() + 4 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  for (const { row, file } of parsed) {
+    if (!file?.readable) continue;
+    const stated = paperDeadline(row.published_at, file.document.deadline);
+    const opening = paperDeadline(row.published_at, file.document.opening);
+    if (!stated || !opening) continue;
+    tally.both += 1;
+    if (opening.getTime() === stated.getTime()) tally.exact += 1;
+    else if (yerevanDay(opening) === yerevanDay(stated)) tally.sameDay += 1;
+    if (opening.getTime() > stated.getTime()) tally.later += 1;
+  }
+  console.log(
+    `  ${tally.exact} of ${tally.both} equal to the minute; ${tally.sameDay} the same day at another time; ` +
+      `${tally.both - tally.exact - tally.sameDay} another day; ${tally.later} opening after the deadline`
+  );
   console.log('');
 };
 
@@ -335,7 +391,7 @@ const run = async () => {
   await printSources(window);
   await printFormats(window);
   await printChannels(window);
-  await printPaperLots(window);
+  await printPaperFiles(window);
   await printEauctionCoverage(window);
   await printPpcmComparison(window);
 };

@@ -137,16 +137,17 @@ export default class SourceVerificationRepository {
   }
 
   /**
-   * Paper tenders made from an invitation file, and those holding no lot
-   * (ticket 36), each with the stored file its lots are read from: the run's
+   * Paper tenders made from an invitation file, each with whether it holds a
+   * lot (ticket 36), its deadline, status, procedure type and publication
+   * (ticket 37), and the stored file its fields are read from: the run's
    * current file — a superseded one's lots are never written — newest payload
    * first. A result-only tender (ticket 31) has no file and is not counted:
-   * there is no lot table to miss.
+   * there is no lot table to miss and no deadline it stated.
    *
    * A file's link is the SQL twin of `paperNotice.service.js#isFileLink` —
    * change both — and its payload is under `detail:{hash}` (`workers/paper.js`).
    */
-  static async paperTendersWithoutLots(window, trx = db) {
+  static async paperFileTenders(window, trx = db) {
     const fileLink = (alias) =>
       `${alias}.tender_id = t.id and ${alias}.source = 'gnumner' and ${alias}.role = 'detail'
          and ${alias}.external_id ~ '^[0-9a-f]{64}$'`;
@@ -158,6 +159,10 @@ export default class SourceVerificationRepository {
         .whereRaw(`exists (select 1 from tender_sources f where ${fileLink('f')})`)
         .select(
           't.reference_code',
+          't.status',
+          't.procedure_type',
+          't.published_at',
+          't.deadline_at',
           trx.raw('exists (select 1 from tender_lots l where l.tender_id = t.id) as has_lots'),
           trx.raw(
             `(select p.storage_key
@@ -172,7 +177,7 @@ export default class SourceVerificationRepository {
       's.first_seen_at',
       window
     );
-    return { tenders: rows.length, withoutLots: rows.filter((row) => !row.has_lots) };
+    return rows;
   }
 
   /**

@@ -204,7 +204,10 @@ export const normalizeTender = async ({
       submissionChannel: observation.submissionChannel,
       links: [{ source, status: observation.status }],
       current: decision.tender?.status ?? null,
-      deadlineAt: observation.deadlineAt,
+      // A tender that states no deadline closes at the latest it can still be
+      // open (a paper invitation's `openUntil`, ticket 37); `deadline_at`
+      // stays null, since that is not a deadline anyone stated.
+      deadlineAt: observation.deadlineAt ?? observation.openUntil ?? null,
       replaces,
     },
     new Date()

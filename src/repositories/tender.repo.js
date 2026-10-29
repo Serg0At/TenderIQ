@@ -1130,18 +1130,35 @@ export default class TenderRepository {
    * re-post replaced (superseded, ticket 07) are left out — a replaced file
    * would write its old deadline back. Bounded below so a tender that
    * somehow never closes is not re-read for ever.
+   *
+   * A tender with no deadline is past it once its publication — its newest
+   * file's (ticket 07) — is older than `undatedOpenDays` for its procedure
+   * type, the longest for any other (ticket 37). The SQL twin of
+   * `observation.js#undatedOpenUntil`, which the re-normalize closes it on;
+   * change both. Both read the same publication — `published_at` is the
+   * current file's first notice, as the observation counts it — and were
+   * they ever to differ, the tender would be re-read hourly, from storage,
+   * until the window's floor passes it.
    */
-  static async findPaperPastDeadline({ windowDays, limit }, trx = db) {
+  static async findPaperPastDeadline({ windowDays, limit, undatedOpenDays }, trx = db) {
     const now = new Date();
     const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+    const types = Object.entries(undatedOpenDays);
+    const longest = Math.max(...Object.values(undatedOpenDays));
+    const closesAt = trx.raw(
+      `coalesce(t.deadline_at, t.published_at + make_interval(days => case t.procedure_type ${types
+        .map(() => 'when ? then ?::int')
+        .join(' ')} else ?::int end))`,
+      [...types.flatMap(([type, days]) => [type, days]), longest]
+    );
 
     return currentLink(trx(`${TABLE} as t`), 'gnumner')
       .where({ 't.submission_channel': 'paper', 's.role': 'detail' })
       .whereRaw("s.external_id ~ '^[0-9a-f]{64}$'")
       .whereIn('t.status', BIDDABLE_STATUSES)
-      .andWhere('t.deadline_at', '<', now)
-      .andWhere('t.deadline_at', '>', floor)
-      .orderBy([{ column: 't.deadline_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .andWhere(closesAt, '<', now)
+      .andWhere(closesAt, '>', floor)
+      .orderBy([{ column: closesAt, order: 'asc' }, { column: 't.id', order: 'asc' }])
       .limit(limit)
       .select('t.id', 's.external_id', 't.status', 't.deadline_at');
   }
