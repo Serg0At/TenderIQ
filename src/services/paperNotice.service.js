@@ -97,7 +97,7 @@ export const noticesFor = async ({ invitationId, discovery = null }) => {
   return notices;
 };
 
-/** A paper invitation's content hash: what a file's detail link is keyed on. */
+/** A paper invitation's content hash: what a file's detail link is keyed on. SQL twin: `sourceVerification.repo.js#paperTendersWithoutLots`. */
 const isFileLink = (link) => link.source === SOURCE && link.role === 'detail' && /^[0-9a-f]{64}$/.test(link.external_id);
 
 /**

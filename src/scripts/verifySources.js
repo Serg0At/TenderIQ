@@ -2,6 +2,7 @@ import { closeDb } from '../libs/knex.js';
 import { getStorage } from '../libs/storage/index.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { observeDay, observeProcedures, parseStored, procedureId } from '../libs/adapters/source/ppcm/observation.js';
+import { parseInvitation } from '../libs/adapters/source/gnumner/invitation.parser.js';
 import { cents, matchTaxIds } from '../services/bidderTaxId.service.js';
 import { lookupsFor, resolve } from '../services/resolution.service.js';
 import publicBids from '../repositories/publicBid.repo.js';
@@ -14,8 +15,9 @@ import verification from '../repositories/sourceVerification.repo.js';
  * suite (ticket 13): per source, the tenders it created and linked and the
  * results it could not attach, by reason; the unreadable files by notice kind
  * and extension, which is what chooses a converter; tenders by channel and
- * status; gnumner's e-auction notices against the e-auction tenders held; and
- * PPCM's rows against eauction's own ledger on the e-auctions both hold.
+ * status; paper tenders holding no lot, by what their file says; gnumner's
+ * e-auction notices against the e-auction tenders held; and PPCM's rows
+ * against eauction's own ledger on the e-auctions both hold.
  *
  * The PPCM comparison replays every stored PPCM answer through the production
  * parser and resolution (`observeProcedures`, `resolve`, `matchTaxIds`) — a
@@ -130,6 +132,36 @@ const printChannels = async (window) => {
   for (const [channel, cells] of groupsOf(rows, 'submission_channel')) {
     console.log(`  ${channel.padEnd(9)} ${pad(sum(cells, 'n'), 5)}: ${cells.map((row) => `${row.status} ${row.n}`).join(', ')}`);
   }
+  console.log('');
+};
+
+/**
+ * Paper tenders with no lot, each file read again through the production
+ * parser (ticket 36): a lot table found and no row read from it is template
+ * drift the parser missed; no lot table at all is an invitation that has
+ * none, or one laid out in a way not yet seen. Either way the tender cannot
+ * be cancelled by a failure notice or have a bid decided per lot.
+ */
+const printPaperLots = async (window) => {
+  const { tenders: total, withoutLots } = await verification.paperTendersWithoutLots(window);
+  console.log('— paper tenders with no lots —');
+  const storage = await getStorage();
+  const kinds = {};
+  const listed = [];
+  for (const { reference_code: code, storage_key: key } of withoutLots) {
+    let kind = 'no current file';
+    if (key) {
+      const { readable, document } = await parseInvitation(Buffer.from(await storage.get(key)));
+      if (!readable) kind = 'file not readable';
+      else if (!document.lotTable) kind = 'no lot table';
+      else kind = document.lots.length ? 'lots read, not written' : 'lot table, no row read';
+    }
+    count(kinds, kind);
+    listed.push(`${code ?? '(no code)'} (${kind})`);
+  }
+  const split = Object.entries(kinds).map(([kind, n]) => `${kind} ${n}`);
+  console.log(`  ${withoutLots.length} of ${total} paper tenders made from an invitation${split.length ? `: ${split.join(', ')}` : ''}`);
+  if (listed.length) console.log(`  ${listed.join(', ')}`);
   console.log('');
 };
 
@@ -303,6 +335,7 @@ const run = async () => {
   await printSources(window);
   await printFormats(window);
   await printChannels(window);
+  await printPaperLots(window);
   await printEauctionCoverage(window);
   await printPpcmComparison(window);
 };

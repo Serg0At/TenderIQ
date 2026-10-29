@@ -42,7 +42,7 @@
     "notices:replay": "Read stored gnumner contract and failed-procedure notices again through their production retry handlers, and paper invitations through normalize.tender with the notices that uploaded them, from storage with no request (--kind=contract,failed,invitation, --unmatched=<reason>, --ref=<ids>). For a parser or converter that improved.",
     "telegram:webhook": "Register or clear the Telegram webhook URL with the Bot API (--set <url> | --delete | --info).",
     "relevance:backtest": "Replay the relevance ranking at a past cut-off for every supplier in the ledger and report where their real bids landed (--cutoff, --months, --min-history). Prints numbers, asserts nothing.",
-    "sources:verify": "Check the source merge rules on real data: per source, tenders created and linked and unmatched results by reason, unreadable files by notice kind and extension, tenders by channel and status, gnumner's e-auction notices against tenders held, and PPCM against the e-auction ledger (--from/--to). Reads the database and storage, writes nothing; prints numbers, asserts nothing.",
+    "sources:verify": "Check the source merge rules on real data: per source, tenders created and linked and unmatched results by reason, unreadable files by notice kind and extension, tenders by channel and status, paper tenders holding no lot (lot table missed, none, unreadable), gnumner's e-auction notices against tenders held, and PPCM against the e-auction ledger (--from/--to). Reads the database and storage, writes nothing; prints numbers, asserts nothing.",
     "checklist:try": "Run the AI checklist extractor against one invitation archive and print the result. No database, storage or queue — for prompt iteration."
   },
   "author": "At",

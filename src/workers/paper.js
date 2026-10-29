@@ -10,6 +10,7 @@ import {
   amendmentNoticeId,
   contractNoticeId,
   failedNoticeId,
+  firstNotice,
   noticeIdOfResult,
   observeAmendment,
   observeContract,
@@ -22,7 +23,7 @@ import {
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
 import AddendumService from '../services/addendum.service.js';
-import { noticeOfJob, storedNotice, withRunPublications } from '../services/paperNotice.service.js';
+import { noticeOfJob, noticesFor, storedNotice, withRunPublications } from '../services/paperNotice.service.js';
 import FailureService from '../services/failure.service.js';
 import ResultsService from '../services/results.service.js';
 import { deriveStatus, invitationSpan, lookupsFor, normalizeCode, resolve } from '../services/resolution.service.js';
@@ -251,11 +252,28 @@ export const storedInvitationJobs = async (invitationId, { priority = PRIORITY.R
  */
 export const paperDocumentsJob = (observation, { sourceId, result, fresh, priority }) => {
   if (!(fresh || result.event) || !observation.url) return null;
-  return {
-    name: JOB.PAPER_DOCUMENTS,
-    data: { source: SOURCE, invitationId: sourceId, url: observation.url, fileName: uploadedName(observation.url) },
-    opts: { jobId: `${SOURCE}-docs-${sourceId.slice(0, 24)}`, priority },
-  };
+  return documentsJobOf({ invitationId: sourceId, url: observation.url, priority });
+};
+
+const documentsJobOf = ({ invitationId, url, priority }) => ({
+  name: JOB.PAPER_DOCUMENTS,
+  data: { source: SOURCE, invitationId, url, fileName: uploadedName(url) },
+  opts: { jobId: `${SOURCE}-docs-${invitationId.slice(0, 24)}`, priority },
+});
+
+/**
+ * The document stage's job for a stored invitation that is a tender, as its
+ * first run built it — the URL is its earliest notice's, which is the
+ * observation's — or null when no notice of it is linked.
+ *
+ * For `notices:replay --kind=invitation`, which runs it in its own process
+ * after the normalize: a replay raises no event when no field moved, so the
+ * normalize queues no document job, and the lots a parser fix now reads would
+ * otherwise never be written (ticket 36).
+ */
+export const storedDocumentsJob = async (invitationId, { priority = PRIORITY.RESULTS } = {}) => {
+  const notice = firstNotice(await noticesFor({ invitationId }));
+  return notice?.url ? documentsJobOf({ invitationId, url: notice.url, priority }) : null;
 };
 
 /**

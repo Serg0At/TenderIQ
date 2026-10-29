@@ -90,17 +90,23 @@ const readSubject = (text) => {
  *     the buyer's own — 7, 8, 10 and 14 are all seen on quotations, 41 on an
  *     open tender — and a buyer whose 7th day is a holiday writes 8 rather than
  *     leave it there. Some write «… հրապարակման հաջորդող (or հաջորդ) օրվանից
- *     հաշված N-րդ օրվա» ("counted from the day after publication"), and their
- *     own bid-opening dates are still publication + N (8 and 41, both seen):
- *     the same arithmetic, because the count starts the day after either way.
+ *     հաշված N-րդ օրվա» ("counted from the day after publication"), or «…
+ *     հրապարակման օրվան հաջորդող օրվանից», and their own bid-opening dates are
+ *     still publication + N (8, 41 and 7, all seen): the same arithmetic,
+ *     because the count starts the day after either way.
  *   - a date: «… մինչև 27.10.2026թ օրվա ժամը 12:30», also as 26,10,2026.
  *
  * Spellings seen: «8- րդ», «“7”րդ», «ժամը 16,30», «11։00» (Armenian colon).
+ * A buyer who leaves the address blank («ներկայացնել հասցեով, …») still states
+ * the deadline: the address is null and the deadline is read. Some put a mark
+ * after the verb («ներկայացնել` ՀՀ, Ք. Երևան, …»); a letter after it is
+ * another word («ներկայացնելու»), never this sentence.
  */
-const SUBMISSION_RE = /ներկայացնել\s+(.+?)\s*հասցե(?:ով|ում)\s*,?\s*փաստաթղթային\s+ձևով(.{0,240})/u;
+const SUBMISSION_RE =
+  /ներկայացնել(?:\s*[`՝’']\s*|\s+)(.*?)\s*հասցե(?:ով|ում)\s*,?\s*փաստաթղթային\s+ձևով(.{0,240})/u;
 const TIME = '\\s+ժամը\\s+(\\d{1,2})\\s*[:։.․,]\\s*(\\d{2})';
 const DAY_COUNT_RE = new RegExp(
-  `հրապարակման\\s+(?:հաջորդ(?:ող)?\\s+)?օրվանից\\s+(?:հաշված\\s+)?[«"“(]?\\s*(\\d{1,2})\\s*[»"”)]?\\s*-?\\s*(?:րդ)?\\s*օր(?:վա|ը|ն)?${TIME}`,
+  `հրապարակման\\s+(?:(?:օրվան\\s+)?հաջորդ(?:ող)?\\s+)?օրվանից\\s+(?:հաշված\\s+)?[«"“(]?\\s*(\\d{1,2})\\s*[»"”)]?\\s*-?\\s*(?:րդ)?\\s*օր(?:վա|ը|ն)?${TIME}`,
   'u'
 );
 const DATE_RE = new RegExp(`(\\d{1,2})[.,](\\d{1,2})[.,](\\d{4})\\s*թ?\\.?\\s*(?:օրվա)?${TIME}`, 'u');
@@ -144,28 +150,49 @@ const readSubmission = (text) => {
 const CPV_CELL_RE = /^(\d{8})\s*\/\s*\d+$/;
 
 /**
+ * The budget cell of a lot row: an amount, as `61 469 813`, `3,999,000`,
+ * `7.244.340` or `168․000` (U+2024, the dot Armenian keyboards type). Two
+ * wordings around it are seen (ticket 36): «Մինչև 3999000» ("up to") and the
+ * amount spelled out after it, «10 000 000 (տասը միլիոն ՀՀ դրամ)». Both are
+ * taken off before the digits are checked; the amount itself is not kept, so
+ * a dot need not be told apart as thousands or decimals.
+ */
+const isAmount = (cell) =>
+  /^\d+(?:[.․]\d+)*$/u.test(
+    cell
+      .replace(/^Մինչև\s*/u, '')
+      .replace(/\s*\(.*\)$/u, '')
+      .replace(/[\s,]/g, '')
+  );
+
+/**
  * The lot table: the first whose header starts «Չափաբաժինների» ("lot
- * numbers"). A data row is a lot number (or nothing), the lot's budget, an
- * optional CPV cell and the lot name, which is the last cell. Header rows are
- * the ones with no amount in them.
+ * numbers"), or is the cell «Չափաբաժնի» alone — the singular some buyers
+ * write, over «համարները» in the row below. «Չափաբաժնի համար» is the bid
+ * form's table, not this one. A data row is a lot number (or nothing), the
+ * lot's budget, an optional CPV cell and the lot name, which is the last
+ * cell. Header rows are the ones with no amount in them.
  *
  * Some buyers leave every number blank; the table is then still the list of
  * lots, in order, and they are numbered by position. A table with some
  * numbers and some blanks keeps only the numbered rows — a blank there is a
  * continuation line, not a lot.
+ *
+ * `lotTable` says whether the table was found at all, so an invitation with
+ * no lot table is told apart from one whose table no row was read from
+ * (`sources:verify` counts both).
  */
 const readLots = ($) => {
   const table = $('w\\:tbl')
-    .filter((_, tbl) => /^Չափաբաժին/u.test(cellText($, $(tbl).find('w\\:tc').first())))
+    .filter((_, tbl) => /^Չափաբաժ(?:ին|նի$)/u.test(cellText($, $(tbl).find('w\\:tc').first())))
     .first();
-  if (!table.length) return [];
+  if (!table.length) return { lotTable: false, lots: [] };
 
   const rows = [];
   table.children('w\\:tr').each((_, tr) => {
     const cells = $(tr).children('w\\:tc').map((__, tc) => cellText($, tc)).get();
     if (cells.length < 3) return;
-    const amount = cells[1].replace(/[\s,]/g, '');
-    if (!/^\d+(?:\.\d+)?$/.test(amount)) return;
+    if (!isAmount(cells[1])) return;
     const cpv = cells.slice(2, -1).map((c) => c.match(CPV_CELL_RE)).find(Boolean);
     const name = cells[cells.length - 1] || null;
     if (!name) return;
@@ -174,7 +201,7 @@ const readLots = ($) => {
 
   const numbered = rows.filter((row) => row.number !== null);
   const lots = numbered.length ? numbered : rows.map((row, i) => ({ ...row, number: i + 1 }));
-  return lots.map(({ number, cpvCode, name }) => ({ lotNumber: number, cpvCode, name }));
+  return { lotTable: true, lots: lots.map(({ number, cpvCode, name }) => ({ lotNumber: number, cpvCode, name })) };
 };
 
 const readDocument = ($, entryName) => {
@@ -187,7 +214,7 @@ const readDocument = ($, entryName) => {
     subject: readSubject(text),
     submissionAddress: submission.address,
     deadline: submission.deadline,
-    lots: readLots($),
+    ...readLots($),
     taxIds: beneficiaryTaxIds(text),
     textLength: text.length,
   };

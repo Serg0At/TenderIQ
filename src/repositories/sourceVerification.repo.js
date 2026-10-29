@@ -1,5 +1,6 @@
 import db from '../libs/knex.js';
 import { codeKeySql } from './tender.repo.js';
+import { SUPERSEDED } from './tenderSource.repo.js';
 
 /** `[from, to)` on one timestamp column; either end may be open. */
 const within = (qb, column, { from = null, to = null } = {}) => {
@@ -133,6 +134,45 @@ export default class SourceVerificationRepository {
       's.first_seen_at',
       window
     );
+  }
+
+  /**
+   * Paper tenders made from an invitation file, and those holding no lot
+   * (ticket 36), each with the stored file its lots are read from: the run's
+   * current file — a superseded one's lots are never written — newest payload
+   * first. A result-only tender (ticket 31) has no file and is not counted:
+   * there is no lot table to miss.
+   *
+   * A file's link is the SQL twin of `paperNotice.service.js#isFileLink` —
+   * change both — and its payload is under `detail:{hash}` (`workers/paper.js`).
+   */
+  static async paperTendersWithoutLots(window, trx = db) {
+    const fileLink = (alias) =>
+      `${alias}.tender_id = t.id and ${alias}.source = 'gnumner' and ${alias}.role = 'detail'
+         and ${alias}.external_id ~ '^[0-9a-f]{64}$'`;
+    const rows = await within(
+      trx('tenders as t')
+        .join('tender_sources as s', creatingLink(trx))
+        .where('t.is_latest', true)
+        .andWhere('t.submission_channel', 'paper')
+        .whereRaw(`exists (select 1 from tender_sources f where ${fileLink('f')})`)
+        .select(
+          't.reference_code',
+          trx.raw('exists (select 1 from tender_lots l where l.tender_id = t.id) as has_lots'),
+          trx.raw(
+            `(select p.storage_key
+                from tender_sources f
+                join source_payloads p on p.source = f.source and p.ref = 'detail:' || f.external_id
+               where ${fileLink('f')} and f.observed_status is distinct from ?
+               order by p.fetched_at desc
+               limit 1) as storage_key`,
+            [SUPERSEDED]
+          )
+        ),
+      's.first_seen_at',
+      window
+    );
+    return { tenders: rows.length, withoutLots: rows.filter((row) => !row.has_lots) };
   }
 
   /**

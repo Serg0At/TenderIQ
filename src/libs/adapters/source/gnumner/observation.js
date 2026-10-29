@@ -141,7 +141,7 @@ const deadlineWarnings = ({ stated, listed }) => {
 };
 
 /** The first publication of an upload: the earliest of its notices, the URL breaking a tie so a replay picks the same one. */
-const firstNotice = (notices) =>
+export const firstNotice = (notices) =>
   [...notices].sort(
     (a, b) => new Date(a.publishedAt) - new Date(b.publishedAt) || String(a.url).localeCompare(String(b.url))
   )[0] ?? null;

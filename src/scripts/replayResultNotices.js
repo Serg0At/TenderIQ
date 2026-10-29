@@ -1,7 +1,13 @@
 import { closeDb } from '../libs/knex.js';
 import { closeQueues } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
-import { handlePaperContract, handlePaperFailed, storedInvitationJobs } from '../workers/paper.js';
+import {
+  handlePaperContract,
+  handlePaperDocuments,
+  handlePaperFailed,
+  storedDocumentsJob,
+  storedInvitationJobs,
+} from '../workers/paper.js';
 import { normalizeTender } from '../workers/normalizer.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
@@ -38,18 +44,31 @@ const INVITATION_ID = /^[0-9a-f]{64}$/;
 
 /**
  * One stored invitation through `normalize.tender`, in this process, a job
- * per notice that uploaded it. Its answer is the last job's: the first
- * creates or rejects, and the rest only link their notices. At results
- * priority, not backfill's: the document stage, which writes the lots a
- * failure notice is checked against, skips backfill for gnumner, and it costs
- * no request.
+ * per notice that uploaded it, then through the document stage
+ * (`paper.documents`), which writes its lots through
+ * `AddendumService.recordDocuments` — and so asks its failure notices again.
+ * Its answer is the last normalize's: the first creates or rejects, and the
+ * rest only link their notices. At results priority, not backfill's: the
+ * document stage skips backfill for gnumner, and it costs no request.
+ *
+ * The document stage runs here, not only when the normalize queues it: a
+ * normalize queues it for a new file or an event, and a replay whose fields
+ * did not move raises none, so the lots a parser fix reads (ticket 36) would
+ * never be written. Run twice — here and from a queued job — it writes the
+ * same rows.
  */
 const replayInvitation = async (job) => {
-  const jobs = await storedInvitationJobs(job.data.externalRef, { priority: PRIORITY.RESULTS });
+  const invitationId = job.data.externalRef;
+  const jobs = await storedInvitationJobs(invitationId, { priority: PRIORITY.RESULTS });
   if (!jobs.length) return { skipped: 'no_notice_recorded' };
   let result;
   for (const data of jobs) result = await normalizeTender(data);
-  return result;
+  if (!result.tenderId) return result;
+
+  const documents = await storedDocumentsJob(invitationId, { priority: PRIORITY.RESULTS });
+  if (!documents) return result;
+  const stored = await handlePaperDocuments(documents);
+  return { ...result, lotsWritten: stored.lotsWritten ?? null, documentsSkipped: stored.skipped ?? null };
 };
 
 /** Invitations first: a tender one creates is what a result notice read after it can match. */
@@ -117,7 +136,8 @@ const run = async () => {
         const result = await handle(job);
         const outcome = `${kind}: ${outcomeOf(result)}`;
         counts[outcome] = (counts[outcome] ?? 0) + 1;
-        console.log(`${externalRef}  ${outcomeOf(result)}${result.tenderId ? `  ${result.tenderId}` : ''}`);
+        const lots = result.lotsWritten === undefined ? '' : `  lots ${result.lotsWritten ?? `skipped (${result.documentsSkipped})`}`;
+        console.log(`${externalRef}  ${outcomeOf(result)}${result.tenderId ? `  ${result.tenderId}` : ''}${lots}`);
       } catch (error) {
         failed += 1;
         console.error(`${externalRef}  FAILED: ${error.message}`);
