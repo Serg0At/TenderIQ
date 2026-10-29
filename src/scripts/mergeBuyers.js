@@ -39,7 +39,7 @@ const READERS = {
     // `tender-docs/armeps/{resourceId}/{hash}.zip`, as tenderDocument.service.js reads it.
     return readBuyerTaxId(archive, await listEntries(archive), storageKey.split('/')[2]);
   },
-  gnumner: async (bytes) => parseInvitation(bytes).document?.taxId ?? null,
+  gnumner: async (bytes) => (await parseInvitation(bytes)).document?.taxId ?? null,
 };
 
 /** One buyer's sets, each read; the ՀՎՀՀ they agree on. */

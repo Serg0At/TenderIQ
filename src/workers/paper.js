@@ -14,6 +14,8 @@ import {
   observeAmendment,
   observeContract,
   observeFailure,
+  paperNoticeId,
+  paperUploadRef,
   pathDigest,
   resultNoticeDigest,
 } from '../libs/adapters/source/gnumner/observation.js';
@@ -98,6 +100,17 @@ const renormalize = async (invitationId, { priority, discovery = null, tag, dela
 };
 
 /**
+ * That the notice at `path` uploaded the invitation stored under
+ * `storageKey`: an `upload:` row (observation.js#paperUploadRef). Written for
+ * every notice, readable file or not, because an unreadable one has no tender
+ * whose links would say it — and a replay once a converter can read it needs
+ * the notice, or there is no publication to count its deadline from
+ * (`storedInvitationJobs`). Idempotent like every `source_payloads` row.
+ */
+const recordUpload = (path, invitationId, storageKey) =>
+  sourcePayloads.record({ source: SOURCE, ref: paperUploadRef(paperNoticeId(path)), storageKey, hash: invitationId });
+
+/**
  * One upload's bytes, through the rate limit: a throttle defers the job
  * without spending an attempt. A path gnumner does not have answers 200 with
  * its error page — a missing file, not a format to count, and a stored copy
@@ -128,9 +141,10 @@ const fetchUpload = async (job, token, path) => {
 /**
  * Fetch one uploaded invitation, store it, and hand it to the normalizer.
  *
- * Whether the file can be read is not decided here: an .rar is stored like a
+ * Whether the file can be read is not decided here: a .doc is stored like a
  * .docx, and the normalizer counts it (invitation.parser.js, the format
- * check). So a converter added later replays every one of them from storage.
+ * check). So a converter added later replays every one of them from storage,
+ * through the notice recorded beside it (`recordUpload`).
  *
  * `reason: 'refresh'` is the paper refresh (paperRefresher): no request, only
  * a re-normalize of the stored file, so a tender whose deadline has passed
@@ -167,6 +181,8 @@ export const handlePaperInvitation = async (job, token) => {
   // the tender's save, so a first upload still in the normalize queue is not
   // a race. A tender that has not moved writes nothing.
   if (await sourcePayloads.existsWithHash(SOURCE, ref(invitationId), invitationId)) {
+    const stored = await sourcePayloads.findLatestByRef(SOURCE, ref(invitationId));
+    await recordUpload(path, invitationId, stored.storage_key);
     await tenderSources.touch({ source: SOURCE, externalId: invitationId });
     await renormalize(invitationId, { priority, discovery, tag: noticeTag, delay: SECOND_NOTICE_DELAY_MS });
     return { unchanged: true, invitationId };
@@ -178,6 +194,9 @@ export const handlePaperInvitation = async (job, token) => {
   await storage.put(key, bytes, { contentType: result.contentType || 'application/octet-stream' });
 
   const inserted = await sourcePayloads.record({ source: SOURCE, ref: ref(invitationId), storageKey: key, hash: invitationId });
+  // Before the normalize is queued: a crash in between is retried through the
+  // branch above, which records it too.
+  await recordUpload(path, invitationId, key);
   if (!inserted) {
     await renormalize(invitationId, { priority, discovery, tag: noticeTag, delay: SECOND_NOTICE_DELAY_MS });
     return { unchanged: true, invitationId };
@@ -191,6 +210,38 @@ export const handlePaperInvitation = async (job, token) => {
 
   log.info(`invitation stored (.${ext}), normalize enqueued`, { storageKey: key });
   return { stored: true, storageKey: key, invitationId, format: ext };
+};
+
+/**
+ * A stored invitation read again as its first run read it: one
+ * `normalize.tender` job's data per notice that uploaded it, earliest
+ * publication first, each carrying its notice as the discovery — so the first
+ * creates the tender and the rest link their notices, as the fetches did.
+ * A file stored before notices were recorded (`recordUpload`) that is a
+ * tender already gets one job with no discovery: the normalizer reads its
+ * notices back through its links. Neither, and it is empty, since without a
+ * notice there is no publication to count its deadline from.
+ *
+ * For `notices:replay --kind=invitation`, once a converter can read a file
+ * left `unsupported_format`. Reads only storage and the database.
+ */
+export const storedInvitationJobs = async (invitationId, { priority = PRIORITY.RESULTS } = {}) => {
+  if (!isInvitationId(invitationId)) throw new Error(`not an invitation hash: ${JSON.stringify(invitationId)}`);
+  const stored = await sourcePayloads.findLatestByRef(SOURCE, ref(invitationId));
+  if (!stored) return [];
+
+  const prefix = paperUploadRef('');
+  const notices = [];
+  for (const upload of await sourcePayloads.refsWithHash(SOURCE, prefix, invitationId)) {
+    const notice = await storedNotice(upload.ref.slice(prefix.length));
+    if (notice) notices.push({ ...notice, seenAt: upload.fetched_at.toISOString() });
+  }
+  notices.sort((a, b) => new Date(a.publishedAt) - new Date(b.publishedAt));
+
+  const job = { source: SOURCE, sourceId: invitationId, ref: stored.ref, hash: stored.hash, storageKey: stored.storage_key, priority };
+  if (notices.length) return notices.map((discovery) => ({ ...job, discovery }));
+  const linked = await tenderSources.listPointingAt({ source: SOURCE, pointsTo: `${SOURCE}:${invitationId}` });
+  return linked.length ? [{ ...job, discovery: null }] : [];
 };
 
 /**
@@ -249,7 +300,7 @@ const storePaperDocuments = async (job) => {
   const storage = await getStorage();
   const bytes = Buffer.from(await storage.get(stored.storage_key));
 
-  const parsed = parseInvitation(bytes);
+  const parsed = await parseInvitation(bytes);
   if (!parsed.readable) return { skipped: 'unreadable' };
 
   const archive = invitationArchive(bytes, { format: parsed.format, fileName });
@@ -335,7 +386,7 @@ export const recordAmendment = async ({ hash, notice, priority = PRIORITY.LIVE }
   const bytes = Buffer.from(await storage.get(stored.storage_key));
 
   // The body is read only for a title with no code, and only for its code.
-  const bodyCode = notice.procedureCode ? null : noticeBodyCode(bytes);
+  const bodyCode = notice.procedureCode ? null : await noticeBodyCode(bytes);
   const observation = observeAmendment(notice, { externalId: hash, bodyCode });
   const decision = resolve(observation, await tenders.findCandidates(lookupsFor(observation)));
 
@@ -499,7 +550,7 @@ export const recordFailedNotice = async ({ externalId, notice, priority = PRIORI
   const bytes = Buffer.from(await storage.get(stored.storage_key));
 
   // The body is asked for its code only when the title names none; its lots always.
-  const observation = observeFailure(notice, { externalId, parsed: parseFailedNotice(bytes) });
+  const observation = observeFailure(notice, { externalId, parsed: await parseFailedNotice(bytes) });
   for (const warning of observation.warnings) log.warn(warning);
   // Was an invitation of the code ever listed: the notice states no
   // invitation date, so the covered window is not asked.
@@ -627,7 +678,7 @@ export const recordContract = async ({ externalId, notice, priority = PRIORITY.L
   const storage = await getStorage();
   const bytes = Buffer.from(await storage.get(stored.storage_key));
 
-  const observation = observeContract(notice, { externalId, parsed: parseContractNotice(bytes) });
+  const observation = observeContract(notice, { externalId, parsed: await parseContractNotice(bytes) });
   for (const warning of observation.warnings) log.warn(warning);
   // A re-posted run is matched on any of its files' publications, not only the newest.
   const candidates = await withRunPublications(await tenders.findCandidates(lookupsFor(observation)));

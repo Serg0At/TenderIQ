@@ -156,10 +156,10 @@ export const classify = (href, { baseUrl, hosts }) => {
       externalId: url.pathname,
       url: url.toString(),
       // The file type is recorded here only to be counted. Whether a format
-      // can be read is the invitation parser's decision (ticket 06), and
-      // non-.docx files are counted there as `unsupported_format` on purpose —
-      // .doc, .rar and scanned PDFs are meant to become supported once those
-      // counts show which ones matter.
+      // can be read is the invitation parser's decision (ticket 06), from the
+      // bytes and never this extension; what it cannot read — .doc, scanned
+      // PDFs — is counted there as `unsupported_format` on purpose, until
+      // those counts show which converter matters (.rar and .7z, ticket 33).
       fileType: extension ? extension[1].toLowerCase() : null,
     };
   }

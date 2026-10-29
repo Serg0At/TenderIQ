@@ -150,7 +150,8 @@ export const cpvForLots = (lots, cpv = []) =>
 
 /**
  * The entries the buyer's ՀՎՀՀ is read from (ticket 19): every published
- * .docx, and every .zip, whose .docx one level down are read too.
+ * .docx, and every .zip, whose Word documents are read too — an archive inside
+ * it included (gnumner/word.js).
  *
  * Only Word's XML format. A set's invitation is as often an old .doc or a
  * .pdf, and neither has a reader here (the gnumner parsers' format check says
@@ -165,8 +166,10 @@ export const taxIdEntries = (entries, resourceId) =>
  * The buyer's ՀՎՀՀ: the guarantee form's beneficiary (libs/taxId.js), on
  * which every Word document of the set agrees, or null.
  */
-export const buyerTaxIdOf = (files) =>
-  agreedTaxId(files.flatMap((bytes) => wordDocuments(bytes, ($) => beneficiaryTaxIds(documentText($))).documents.flat()));
+export const buyerTaxIdOf = async (files) => {
+  const read = await Promise.all(files.map((bytes) => wordDocuments(bytes, ($) => beneficiaryTaxIds(documentText($)))));
+  return agreedTaxId(read.flatMap(({ documents }) => documents.flat()));
+};
 
 export default {
   documentSetHash,

@@ -130,28 +130,29 @@ const readNotice = ($, entryName) => {
  *   numbers the table lists as failed, ascending; `unplacedRows` the rows it
  *   lists with no lot number, which are not read.
  */
-export const parseFailedNotice = (bytes) => {
-  const { format, documents } = wordDocuments(bytes, readNotice);
+export const parseFailedNotice = async (bytes) => {
+  const { format, documents } = await wordDocuments(bytes, readNotice);
   const [found = null] = documents
     .filter((doc) => doc.tableFound)
     .sort((a, b) => b.lots.length - a.lots.length);
 
   // ── The format check ──────────────────────────────────────────────────────
   // Sergey: as for invitations and contract notices, only .docx, and .docx
-  // inside a .zip, are read today — and only when the Armenian table of the
-  // 235-Ա template is found in it. Everything else comes back
-  // `readable: false`: old .doc, .rar, .pdf (scans, often), a .zip whose
-  // Armenian notice is a .doc beside a Russian .docx, and a Word file that is
-  // not the template. Which lots failed is the point of the notice — a
+  // inside a .zip, .rar or .7z (ticket 33), are read — and only when the
+  // Armenian table of the 235-Ա template is found in it. Everything else
+  // comes back `readable: false`: old .doc, .pdf (scans, often), an archive
+  // whose Armenian notice is a .doc beside a Russian .docx, and a Word file
+  // that is not the template. Which lots failed is the point of the notice — a
   // partly failed procedure must not cancel the tender — so unlike an
   // amendment notice it cannot attach unread. paper.js records each as an
   // `unsupported_format` unmatched result and changes no tender.
   //
   // That is deliberate, not a gap nobody noticed. They are counted so that
-  // the numbers, not a guess, decide which converter is worth adding
-  // (LibreOffice for .doc, unrar for archives, OCR for scans). They are meant
-  // to become supported. The raw file is stored either way, so a converter
-  // added later re-reads them from storage. On the listing's first thirty
+  // the numbers, not a guess, decide which converter is worth adding next
+  // (LibreOffice for .doc, OCR for scans; why each waits is in
+  // invitation.parser.js). They are meant to become supported. The raw file
+  // is stored either way, so a converter added later re-reads them from
+  // storage. On the listing's first thirty
   // pages (2026-10-23, 180 notices): 74 .docx, 41 .doc, 38 .pdf, 21 .rar,
   // 6 .zip — 25 of them e-auctions, which resolution skips before the format
   // is asked. The format-count query is in invitation.parser.js; failed

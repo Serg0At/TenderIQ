@@ -24,6 +24,14 @@ export const paperNoticeId = (path) => `paper:${pathDigest(path)}`;
 export const paperNoticeRef = (noticeId) => `notice:${noticeId}`;
 
 /**
+ * The `source_payloads` ref that says which file a paper notice uploaded:
+ * the invitation's key and content hash, under the notice's link id. A
+ * tender's links say it too, but an unreadable file has no tender, and
+ * without its notice a replay has no publication to count the deadline from.
+ */
+export const paperUploadRef = (noticeId) => `upload:${noticeId}`;
+
+/**
  * A notice that links to an armeps.am tender. gnumner has no ids of its own,
  * and the link target is what identifies a notice (ticket 04's listing ref is
  * `notice:armeps:{resourceId}`), so the link's external id is that target.
@@ -158,8 +166,8 @@ const primaryCode = (codes) => {
  * An upload the parser cannot read is `unreadable`, which resolution turns
  * into an `unsupported_format` unmatched result and no tender.
  */
-export const observeInvitation = (bytes, { externalId, notices = [] }) => {
-  const parsed = parseInvitation(bytes);
+export const observeInvitation = async (bytes, { externalId, notices = [] }) => {
+  const parsed = await parseInvitation(bytes);
   const notice = firstNotice(notices);
 
   const base = {
@@ -539,6 +547,7 @@ export default {
   pathDigest,
   paperNoticeId,
   paperNoticeRef,
+  paperUploadRef,
   amendmentNoticeId,
   contractNoticeId,
   failedNoticeId,

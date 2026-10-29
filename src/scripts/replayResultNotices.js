@@ -1,38 +1,63 @@
 import { closeDb } from '../libs/knex.js';
 import { closeQueues } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
-import { handlePaperContract, handlePaperFailed } from '../workers/paper.js';
+import { handlePaperContract, handlePaperFailed, storedInvitationJobs } from '../workers/paper.js';
+import { normalizeTender } from '../workers/normalizer.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
 import unmatchedResults from '../repositories/unmatchedResult.repo.js';
 
 /**
- * Read stored gnumner result notices again — contract-concluded (ticket 08)
- * and failed-procedure (ticket 09) — through their production handlers, as
- * the `retry` job a worker runs (`handlePaperContract`, `handlePaperFailed`,
- * `reason: 'retry'`). For a parser that improved: storage is replayed, gnumner
- * is never asked again. Each notice is rebuilt from the listing page stored
- * with it, and resolution decides again, so a notice that still matches
- * nothing stays as it was and one already recorded writes the same rows.
+ * Read stored gnumner notices again — contract-concluded (ticket 08) and
+ * failed-procedure (ticket 09) through their production handlers, as the
+ * `retry` job a worker runs (`handlePaperContract`, `handlePaperFailed`,
+ * `reason: 'retry'`); paper invitations (ticket 33) through
+ * `normalize.tender`, once per notice that uploaded the file, with that
+ * notice as its discovery (`storedInvitationJobs`). For a parser or converter
+ * that improved: storage is replayed, gnumner is never asked again. Each
+ * notice is rebuilt from the listing page stored with it, and resolution
+ * decides again, so a notice that still matches nothing stays as it was and
+ * one already recorded writes the same rows.
  *
  * Runs the handlers in this process, one notice at a time, and prints what
  * each became; what they queue (an amendment's match, a benchmark) goes to the
  * queues as usual, at backfill priority.
  *
  * Usage:
- *   node src/scripts/replayResultNotices.js [--kind=contract,failed] [--unmatched=unsupported_format] [--ref=contract:…,…]
+ *   node src/scripts/replayResultNotices.js [--kind=invitation,contract,failed] [--unmatched=unsupported_format] [--ref=contract:…,…]
  *
- *   --kind       which notices: contract, failed, or both (default)
+ *   --kind       which notices: invitation, contract, failed, or all (default)
  *   --unmatched  only notices left unmatched for this reason and not yet
  *                taken by a tender — e.g. `unsupported_format`, once a
  *                converter can read them
- *   --ref        only these notice ids (`contract:{digest}`, `failed:{digest}`)
+ *   --ref        only these ids (`contract:{digest}`, `failed:{digest}`, an
+ *                invitation's content hash)
  */
 
-const HANDLERS = {
-  contract: { name: JOB.PAPER_CONTRACT, handle: handlePaperContract },
-  failed: { name: JOB.PAPER_FAILED, handle: handlePaperFailed },
-};
 const SOURCE = 'gnumner';
+const INVITATION_ID = /^[0-9a-f]{64}$/;
+
+/**
+ * One stored invitation through `normalize.tender`, in this process, a job
+ * per notice that uploaded it. Its answer is the last job's: the first
+ * creates or rejects, and the rest only link their notices. At results
+ * priority, not backfill's: the document stage, which writes the lots a
+ * failure notice is checked against, skips backfill for gnumner, and it costs
+ * no request.
+ */
+const replayInvitation = async (job) => {
+  const jobs = await storedInvitationJobs(job.data.externalRef, { priority: PRIORITY.RESULTS });
+  if (!jobs.length) return { skipped: 'no_notice_recorded' };
+  let result;
+  for (const data of jobs) result = await normalizeTender(data);
+  return result;
+};
+
+/** Invitations first: a tender one creates is what a result notice read after it can match. */
+const HANDLERS = {
+  invitation: { name: JOB.NORMALIZE_TENDER, handle: replayInvitation, prefix: 'detail:' },
+  contract: { name: JOB.PAPER_CONTRACT, handle: handlePaperContract, prefix: 'contract:' },
+  failed: { name: JOB.PAPER_FAILED, handle: handlePaperFailed, prefix: 'failed:' },
+};
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((arg) => {
@@ -42,22 +67,34 @@ const args = Object.fromEntries(
 );
 const list = (value) => (typeof value === 'string' ? value.split(',').map((v) => v.trim()).filter(Boolean) : []);
 
-/** The notice ids of one kind to replay: every one stored, or the unmatched ones of a reason. */
+/**
+ * The ids of one kind to replay: every one stored, or the unmatched ones of a
+ * reason. An invitation's id is its content hash, unprefixed in
+ * `unmatched_results` and under `detail:` in storage.
+ */
 const refsOf = async (kind) => {
-  const prefix = `${kind}:`;
+  const { prefix } = HANDLERS[kind];
+  const invitation = kind === 'invitation';
   if (args.unmatched) {
-    const rows = await unmatchedResults.findOpenByReason({ source: SOURCE, refPrefix: prefix, reason: args.unmatched });
-    return rows.map((row) => row.external_ref);
+    const rows = await unmatchedResults.findOpenByReason({
+      source: SOURCE,
+      refPrefix: invitation ? '' : prefix,
+      reason: args.unmatched,
+    });
+    return rows.map((row) => row.external_ref).filter((ref) => !invitation || INVITATION_ID.test(ref));
   }
   const stored = await sourcePayloads.allByPrefix(SOURCE, prefix);
-  return [...new Set(stored.map((row) => row.ref))].sort();
+  return [...new Set(stored.map((row) => (invitation ? row.ref.slice(prefix.length) : row.ref)))].sort();
 };
 
 /** What one handler's answer says the notice became, as one label to count. */
 const outcomeOf = (result) => {
   if (result.unmatched) return `unmatched ${result.unmatched}`;
+  // normalize.tender's answer for one it could not place.
+  if (result.skipped === 'unmatched') return `unmatched ${result.reason}`;
   if (result.skipped) return `skipped ${result.skipped}`;
   if (result.resultOnly) return 'result-only tender';
+  if (result.event === 'TenderIngested') return 'tender created';
   if (result.tenderId) return `linked (${result.status ?? 'status unchanged'})`;
   return 'other';
 };

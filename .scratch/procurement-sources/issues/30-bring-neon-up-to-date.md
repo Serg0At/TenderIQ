@@ -122,6 +122,20 @@ After the deploy:
         'gnumner')`.
       - It raises no alert, and a second run changes nothing. Locally it replayed 31 contract
         and 35 failure notices with byte-identical tenders and unchanged queue counts.
+- [ ] `npm run notices:replay -- --unmatched=unsupported_format` (ticket 33). It reads every
+      gnumner file left `unsupported_format` again from storage, now that `.rar` and `.7z` are
+      read. It runs invitations first, then contract and failure notices, through their
+      production handlers. A file that now reads becomes a tender, or a link on one, or moves
+      to its real reason (`no_candidate`). One that still does not read stays open, unchanged.
+      Run it after the deploy, since the old code reads none of these.
+      - **Expect little on Neon.** It held no gnumner payloads when this list was written
+        (step 10). The new code reads these formats when it first fetches a file, so only a
+        file stored under older code can be waiting.
+      - An invitation stored under older code has no `upload:` row naming its notice. The
+        replay reports it `skipped no_notice_recorded` and leaves it open. Locally the
+        notices were recovered from the worker log (ticket 33, *Replay*).
+      - Record the `unsupported_format` block of `npm run sources:verify` before and after.
+        A second run changes nothing.
 - [ ] One repeat sweep per source writes 0 rows and enqueues 0 jobs. A `normalize:replay` changes
       nothing.
 - [ ] Neon checks the tickets left for deploy time:

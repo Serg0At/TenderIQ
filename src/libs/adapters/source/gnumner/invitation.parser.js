@@ -209,33 +209,46 @@ const readWordDocuments = (bytes) => wordDocuments(bytes, readDocument);
  * fields found wins, then the longer text, then the zip's own order, so the
  * pick is stable across replays.
  *
- * @returns {{ format: string, readable: boolean, document: object|null }}
+ * @returns {Promise<{ format: string, readable: boolean, document: object|null }>}
  *   `format` is what the bytes are: `docx`, `zip`, `doc`, `rar`, `7z`, `pdf`
  *   or `unknown`.
  */
-export const parseInvitation = (bytes) => {
-  const { format, documents } = readWordDocuments(bytes);
+export const parseInvitation = async (bytes) => {
+  const { format, documents } = await readWordDocuments(bytes);
   const [document = null] = documents
     .filter((doc) => doc.buyerName !== null || doc.submissionAddress !== null)
     .sort((a, b) => completeness(b) - completeness(a) || b.textLength - a.textLength);
 
   // ── The format check ──────────────────────────────────────────────────────
-  // Sergey: only .docx, and .docx inside a .zip, are read today — and only
-  // when the Armenian announcement template is found in it. Everything else
-  // comes back `readable: false`: old .doc, .rar, .7z, .pdf, a zip whose
-  // Armenian invitation is itself inside a .rar (only its Russian or English
-  // copy is a .docx), and a Word file that is a pasted scan. The normalizer
-  // records each as an `unsupported_format` unmatched result, and no tender.
+  // Sergey: a .docx is read, and so is every .docx inside an archive — a
+  // .zip, a .rar or a .7z, and one more archive inside that (a zip whose
+  // Armenian invitation is in a nested .rar) — since ticket 33 (2026-10-29),
+  // and only when the Armenian announcement template is found in it. What a
+  // file is comes from its bytes (word.js), never its name. Everything else
+  // comes back `readable: false`, and the normalizer records each as an
+  // `unsupported_format` unmatched result and no tender:
   //
-  // That is deliberate, not a gap nobody noticed. These formats are counted
-  // so that the numbers, not a guess, decide which converter is worth adding
-  // (LibreOffice for .doc, unrar and 7z for archives; OCR for scans is likely
-  // never worth it at ~4% of contract value). They are meant to become
-  // supported. The raw file is stored either way, so a converter added later
-  // replays from storage (`npm run normalize:replay`) without re-crawling
-  // gnumner. Which formats matter, per kind of notice and per procedure
-  // (ticket 31) — a single-source contract notice is a price kept out of
-  // every comparison, so it should not choose the converter:
+  //   - old .doc, and an archive whose Armenian invitation is a .doc beside a
+  //     Russian .docx. The Russian copy is not the template and is never read
+  //     as if it were;
+  //   - PDFs, scanned or with a text layer;
+  //   - an archive with no Word file in it (one .7z holds an .xls and a PDF),
+  //     and an encrypted, corrupt or oversized one;
+  //   - a Word file that is a pasted scan, or Word saved as HTML.
+  //
+  // Still deliberate, not a gap nobody noticed. On ticket 13's file-by-file
+  // count, unrar and 7z were the only converters that recovered invitations,
+  // so they came first. LibreOffice for .doc waits for production counts: what
+  // it unlocks is mostly failure statuses and a few competitive contract
+  // prices, and it costs a headless office suite in the worker image. OCR is
+  // likely never worth it: every scan counted was single source or a failure
+  // notice. The raw file is stored either way, with the notice that uploaded
+  // it, so a converter added later replays from storage without re-crawling
+  // gnumner: `npm run notices:replay -- --unmatched=unsupported_format`
+  // (`normalize:replay` has no notice to count a deadline from, for a file
+  // that never became a tender). Which formats are left, per kind of notice
+  // and per procedure (ticket 31) — a single-source contract notice is a
+  // price kept out of every comparison, so it should not choose the converter:
   //
   //   select case when u.external_ref like 'contract:%' then 'contract'
   //               when u.external_ref like 'failed:%' then 'failed'
@@ -269,11 +282,11 @@ export const parseInvitation = (bytes) => {
  * its title names none (decided 2026-10-21, ticket 07): «Ընթացակարգի
  * ծածկագիրը …», the line both the Article 29 template and a full invitation
  * carry. Nothing else in a notice is read. Null for anything that is not a
- * Word document (.docx, or one inside a .zip) and for one that states no code;
+ * Word document (.docx, or one inside an archive) and for one that states no code;
  * either way the notice keeps whatever its title gave it.
  */
-export const noticeBodyCode = (bytes) => {
-  const { documents } = readWordDocuments(bytes);
+export const noticeBodyCode = async (bytes) => {
+  const { documents } = await readWordDocuments(bytes);
   return documents.map((doc) => doc.procedureCode).find(Boolean) ?? null;
 };
 

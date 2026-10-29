@@ -131,7 +131,7 @@ export const normalizeTender = async ({
   const sourceConfig = getSourceConfig(source);
   // When the page was fetched — a replay re-reads an old page.
   const seenAt = latest.fetched_at;
-  const observation = observe(await readPayload(storageKey, { binary }), {
+  const observation = await observe(await readPayload(storageKey, { binary }), {
     externalId: sourceId,
     seenAt,
     baseUrl: sourceConfig.baseUrl,

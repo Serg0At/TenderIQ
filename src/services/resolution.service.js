@@ -18,7 +18,7 @@
  *     procedureCode, submissionChannel, procedureType, buyerName,
  *     publishedAt, deadlineAt, lotNumbers: number[],
  *     status,                                   // the source's status as a domain value, null if unmapped
- *     unreadable: { format } | undefined,       // a file its parser could not read (a paper .rar)
+ *     unreadable: { format } | undefined,       // a file its parser could not read (a paper .doc)
  *     amendment: boolean | undefined,           // a notice amending a tender it does not name (gnumner)
  *     channelUnstated: boolean | undefined,     // a result whose source names no channel (a gnumner contract notice, a PPCM non-auction row)
  *     failure: boolean | undefined,             // a notice that lots of a tender it does not name failed (gnumner, ticket 09)
@@ -505,7 +505,7 @@ const resolveFailure = (observation, { linked = [], byCode = [], publicity = {} 
  * result is a gap the count has to show in advance.
  *
  * A file the source's parser could not read (a paper invitation uploaded as
- * .rar, .doc or a scan) is `unsupported_format`: there is no buyer, deadline
+ * .doc or a scan) is `unsupported_format`: there is no buyer, deadline
  * or code to create anything from, and it is counted rather than dropped.
  *
  * A paper invitation of a code and buyer Tendra already holds (`codeRuns`, ticket

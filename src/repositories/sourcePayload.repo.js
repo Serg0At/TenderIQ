@@ -50,6 +50,15 @@ export default class SourcePayloadRepository {
       .select('ref', 'storage_key', 'fetched_at');
   }
 
+  /** The refs under a prefix that hold one content hash, oldest first: the notices that uploaded one file (`upload:`). */
+  static async refsWithHash(source, prefix, hash) {
+    return db(TABLE)
+      .where({ source, hash })
+      .where('ref', 'like', `${prefix}%`)
+      .orderBy([{ column: 'fetched_at' }, { column: 'id' }])
+      .select('ref', 'fetched_at');
+  }
+
   static async findLatestByRef(source, ref) {
     return await db(TABLE).where({ source, ref }).orderBy('fetched_at', 'desc').first();
   }

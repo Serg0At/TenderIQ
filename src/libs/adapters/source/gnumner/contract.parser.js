@@ -506,28 +506,31 @@ const readNotice = ($, entryName) => {
  *   winnerTaxId } | null }` — `winnerTaxId` the eight-digit ՀՎՀՀ the
  *   winners' table states for that winner, else null.
  */
-export const parseContractNotice = (bytes) => {
-  const { format, documents } = wordDocuments(bytes, readNotice);
+export const parseContractNotice = async (bytes) => {
+  const { format, documents } = await wordDocuments(bytes, readNotice);
   const [notice = null] = documents
     .filter((doc) => doc.priceTableFound && doc.bidCount > 0)
     .sort((a, b) => b.bidCount - a.bidCount);
 
   // ── The format check ──────────────────────────────────────────────────────
   // Sergey: as for invitations (invitation.parser.js), only .docx, and .docx
-  // inside a .zip, are read today — and only when the 323-Ա price table is
-  // found in it with at least one bid. Everything else comes back
-  // `readable: false`: old .doc, .rar, .7z, .pdf (several buyers upload the
-  // signed notice as a scan), and a Word file that is not the template. The
-  // contract notice's content must be read — the prices are the point — so
-  // unlike an amendment notice it cannot attach unread. paper.js records each
-  // as an `unsupported_format` unmatched result and writes no result.
+  // inside a .zip, .rar or .7z (ticket 33), are read — and only when the
+  // 323-Ա price table is found in it with at least one bid. Everything else
+  // comes back `readable: false`: old .doc, an archive whose Armenian notice is
+  // a .doc beside a Russian .docx (both .rar contract notices stored on
+  // 2026-10-29 are that), .pdf (several buyers upload the signed notice as a
+  // scan), and a Word file that is not the template. The contract notice's
+  // content must be read — the prices are the point — so unlike an amendment
+  // notice it cannot attach unread. paper.js records each as an
+  // `unsupported_format` unmatched result and writes no result.
   //
   // That is deliberate, not a gap nobody noticed. They are counted so that
-  // the numbers, not a guess, decide which converter is worth adding
-  // (LibreOffice for .doc, unrar and 7z for archives, OCR for scanned PDFs).
-  // They are meant to become supported. The raw file is stored either way,
-  // and a notice is re-read from storage (paper.js#recordContract), so a
-  // converter added later replays them without re-crawling gnumner. On the
+  // the numbers, not a guess, decide which converter is worth adding next
+  // (LibreOffice for .doc, OCR for scanned PDFs; why each waits is in
+  // invitation.parser.js). They are meant to become supported. The raw file
+  // is stored either way, and a notice is re-read from storage
+  // (paper.js#recordContract), so a converter added later replays them
+  // without re-crawling gnumner. On the
   // first ten listing pages (2026-10-21, 60 notices): 30 .docx, 13 .doc,
   // 8 .pdf, 7 .rar, 2 .zip. Which formats matter, per kind of notice and per
   // procedure (ticket 31): of the 18 unreadable contract notices stored on
