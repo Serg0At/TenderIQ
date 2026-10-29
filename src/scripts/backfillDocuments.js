@@ -16,7 +16,8 @@ import { logger } from '../utils/logger.js';
  *
  * Run it after a seed, or any time `backfillDocuments` was off while tenders
  * were ingested. Idempotent: tenders that already have a document row are not
- * selected, and the handler's content hash skips a re-download anyway.
+ * selected, and the handler makes no request for a tid whose archive is
+ * already stored (ticket 35).
  *
  *   node src/scripts/backfillDocuments.js [--limit 500] [--source eauction]
  *

@@ -39,11 +39,12 @@ const DOC_REF = (sourceId) => `invitation:${sourceId}`;
  *
  * Only when the tender changed, and keyed on the invitation URL, NOT on the
  * detail payload hash. A tender walks Հրապարակված → Նախաաճուրդային → Աճուրդ →
- * Շնորհում → Ավարտված, so the detail hash changes about five times and a
- * hash-keyed id would re-download the same unchanged 600 KB archive on every
- * one of them. The content-hash check inside the handler only skips the
- * storage write — by then the request has already been paid for out of the
- * 20/min budget.
+ * Շնորհում → Ավարտված, so it is queued about five times. The id dedupes only
+ * while a job with it still exists, so most of those reach the handler, which
+ * ends them before any request once the tid's archive is stored (ticket 35).
+ * Queued anyway rather than asked here, because knowing would cost a query on
+ * every normalize, and each later event is the retry of a download that never
+ * landed.
  */
 export const eauctionDocumentsJob = (observation, { sourceId, result, priority }) => {
   const { source } = observation;
@@ -113,6 +114,19 @@ const storeInvitation = async (job, token) => {
     );
   }
 
+  // Stored once, never again (ticket 35). The site writes an invitation once,
+  // at publication, and an amendment is a new tid (tickets 27 and 29), so a
+  // tid that has an archive has its only one. Everything a stored archive
+  // feeds — the manifest, lots, CPV codes, the buyer's ՀՎՀՀ, the open tender's
+  // re-match (ticket 25) — was done before its row was recorded, below; a
+  // second download ended at the content-hash check and did none of it again
+  // either. What this saves is the request, out of the budget discovery uses.
+  // ARMEPS re-issues its sets (ticket 18) and has its own job.
+  const ref = DOC_REF(sourceId);
+  if (await sourcePayloads.existsByRef(source, ref)) {
+    return { skipped: 'already_stored' };
+  }
+
   let result;
   try {
     result = await fetchDocument(invitationUrl);
@@ -132,10 +146,10 @@ const storeInvitation = async (job, token) => {
     );
   }
 
-  // Content-hash dedupe, identical to the detail stage: an unchanged invitation
-  // costs a request and nothing more. The site writes the file once, at
-  // publication (ticket 27), so a second hash here is not expected.
-  const ref = DOC_REF(sourceId);
+  // Content-hash dedupe, identical to the detail stage, for two jobs of one tid
+  // that both passed the check above — one shared job id rules that out within
+  // a queue, so it is `ingest.fetch` against `ingest.backfill`. It narrows that
+  // window; the unique constraint behind `record()` is what decides it.
   const hash = sha256(bytes);
   if (await sourcePayloads.existsWithHash(source, ref, hash)) {
     return { unchanged: true };

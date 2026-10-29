@@ -11,6 +11,11 @@ export default class SourcePayloadRepository {
     return Boolean(row);
   }
 
+  static async existsByRef(source, ref) {
+    const row = await db(TABLE).select('id').where({ source, ref }).first();
+    return Boolean(row);
+  }
+
   static async record({ source, ref, storageKey, hash, fetchedAt = new Date() }) {
     try {
       await db(TABLE).insert({
