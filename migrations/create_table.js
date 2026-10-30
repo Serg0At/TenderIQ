@@ -129,12 +129,14 @@ function up(pg) {
     // seen" is asked of, since a notice whose job failed or whose file was unreadable leaves no
     // tender behind. `external_id` is the notice's discovery-link id (`paper:{digest}`,
     // `armeps:{resourceId}`), so a notice whose title has no code finds its tender's through
-    // `tender_sources`. Written by the listing chain. Public data: no organization_id.
+    // `tender_sources`. Also gnumner's e-auction listing (ticket 34), a coverage count only, under
+    // ids of its own (`listing:eauction:eauction:{tmid}`). Written by the listing chain. Public
+    // data: no organization_id.
     .createTable('listing_notices', table => {
       table.string('id').primary();
       table.string('source').notNullable();
       table.string('external_id').notNullable();
-      table.string('listing').notNullable();        // the listing's slug: open | quotation
+      table.string('listing').notNullable();        // the listing's slug: open | quotation | eauction
       table.string('procedure_code');               // the title's, raw; NULL when it names none
       table.timestamp('published_at').notNullable();
       table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());

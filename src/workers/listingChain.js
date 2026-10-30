@@ -1,4 +1,4 @@
-import { DelayedError } from 'bullmq';
+import { DelayedError, UnrecoverableError } from 'bullmq';
 import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, rawKey } from '../libs/storage/index.js';
@@ -69,23 +69,47 @@ export const nextStep = ({ page, since, pageLow, pageHigh, prevLow, hasNextPage,
 };
 
 /**
- * Enqueue page 1 of every listing of the board. The watermark is read once,
- * here at the top of the chain, so a notice published mid-sweep cannot move
- * the goalposts under the pages still in flight.
+ * A listing's queue priority: live discovery unless its config names another
+ * (`priority`, a PRIORITY key) — a listing nothing waits on goes behind the
+ * ones that find tenders, on the same rate budget. A name that is not a key
+ * throws rather than falling back to live: a typo is not a choice.
+ */
+const priorityOf = (listing) => {
+  if (!listing?.priority) return PRIORITY.LIVE;
+  if (!(listing.priority in PRIORITY)) throw new UnrecoverableError(`listing "${listing.slug}": no priority "${listing.priority}"`);
+  return PRIORITY[listing.priority];
+};
+
+/**
+ * The listings one sweep job covers. A listing with a `cron` of its own is
+ * swept only by its own schedule (`data.slug`, queues/scheduler.js), never by
+ * the source's.
+ */
+export const listingsToSweep = (listingPaths, slug) =>
+  slug ? listingPaths.filter((l) => l.slug === slug) : listingPaths.filter((l) => !l.cron);
+
+/**
+ * Enqueue page 1 of every listing the sweep covers. The watermark is read
+ * once, here at the top of the chain, so a notice published mid-sweep cannot
+ * move the goalposts under the pages still in flight.
  */
 export const sweepBoard = async (job, board) => {
   const { source } = board;
+  const { slug } = job.data;
   const sourceConfig = getSourceConfig(source);
-  const log = logger.child({ job: JOB.SOURCE_SWEEP, source });
+  const log = logger.child({ job: JOB.SOURCE_SWEEP, source, ...(slug ? { slug } : {}) });
+  const listings = listingsToSweep(sourceConfig.listingPaths, slug);
+  if (slug && !listings.length) throw new UnrecoverableError(`[${source}] no listing "${slug}" to sweep`);
 
-  const { skipped } = await withLock(`sweep:${source}`, 10 * 60 * 1000, async () => {
-    for (const listing of sourceConfig.listingPaths) {
+  // A listing on its own schedule has its own lock, so the two never skip each other.
+  const { skipped } = await withLock(slug ? `sweep:${source}:${slug}` : `sweep:${source}`, 10 * 60 * 1000, async () => {
+    for (const listing of listings) {
       const since = await readHighWater(board.watermarkKey(listing.slug));
 
       await ingestFetchQueue.add(
         JOB.LISTING_PAGE,
         { source, slug: listing.slug, listingPath: listing.path, page: 1, since },
-        { priority: PRIORITY.LIVE }
+        { priority: priorityOf(listing) }
       );
       log.info(`enqueued page 1 of "${listing.slug}" (since ${since ? board.formatMark(since) : 'never'})`);
     }
@@ -231,7 +255,7 @@ export const readListingPage = async (job, token, board) => {
         high,
         low: Number.isFinite(pageLow) ? pageLow : prevLow,
       },
-      { priority: PRIORITY.LIVE }
+      { priority: priorityOf(sourceConfig.listingPaths.find((l) => l.slug === slug)) }
     );
   } else {
     // The floor first (sweepState.js#floorKey): a crash before the watermark
@@ -245,4 +269,4 @@ export const readListingPage = async (job, token, board) => {
   return { entries: result.entries.length, tally, changed, continued: step.more };
 };
 
-export default { nextStep, sweepBoard, readListingPage };
+export default { nextStep, listingsToSweep, sweepBoard, readListingPage };

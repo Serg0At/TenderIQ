@@ -808,6 +808,15 @@ decision that has already been made.
   tender asks PPCM about its code again (`queuePpcmRetries`), so a repaired tender takes its
   result. PPCM lists paper procedures beside ARMEPS ones, so a non-auction row is
   `channelUnstated`: a code held only on paper or e-auction is `other_channel`, not a miss.
+- **gnumner's e-auction listing is swept as a coverage check, never ingested** (ticket 34):
+  one more slug on the shared chain, with its own `cron` (hourly, `sweep-gnumner-eauction`) and
+  `priority`, its notices in `listing_notices` under ids of their own (`listing:eauction:eauction:{tmid}`: a
+  row keeps the listing that wrote it first, and publicity reads by listing). `sources:verify` holds a
+  notice by its title's code or, for a title naming none (~7 in 10), by an e-auction tender
+  published in the same second, never more notices than that second's tenders. **Its rows are not a publicity fact**: `publicityFacts` reads
+  only the listings it is given (required — an empty list would make `codeSeen` false, which
+  creates tenders), so e-auctions' `was_public` stays null and a span is not made "unknown" by
+  every code-less e-auction title.
 - **Rule 3 refuses a single-source disagreement**: a result and a tender that both state a
   procedure type and disagree on whether it was single source are not one procedure, so a
   single-source price never lands on a competitive tender (and into competition figures), nor

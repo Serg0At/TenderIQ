@@ -23,13 +23,16 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
 | `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
-| `gnumner` | HTML scrape of the announcement, amendment, contract-concluded and failed-procedure listings, and the files they upload | `*/5 * * * *` sweep, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` / `paper.failed` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
+| `gnumner` | HTML scrape of the announcement, amendment, contract-concluded and failed-procedure listings, and the files they upload; its e-auction listing is indexed only (ticket 34) | `*/5 * * * *` sweep, `23 * * * *` e-auction listing, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` / `paper.failed` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
 | `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
 | `ppcm` | PPCM's organized-procedures report (JSON behind armeps.am/ppcm), by procedure code and by announcement day — **no listing**, results only | `13 */2 * * *` refresh of ARMEPS tenders past their deadline, not cancelled, with a lot that has neither an award nor a recorded failure; `29 1 * * *` missed-tender sweep | ARMEPS `awards` and `public_tender_bids` (`source = 'ppcm'`), supplier `parties` with their ՀՎՀՀ, a `ppcm` results link, `awarded`; `unmatched_results` for procedures Tendra has no tender for, and `armeps.detail` jobs that repair them |
 | `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
 
 Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit`, `concurrency`,
-`maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`; for `ppcm`,
+`maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`; per listing in
+`listingPaths`, an optional `cron` (the listing is swept only on its own schedule,
+`sweep-{source}-{slug}`, and the source's sweep leaves it out) and `priority` (a `PRIORITY` key
+for its page jobs, default `LIVE`); for `ppcm`,
 `rateLimitSource` (whose budget it spends), `pollIntervalHours`, the report's ids and columns,
 `missedSweep` (the sweep's cron, window and forms) and `bidReport` (`repairPollHours`).
 
@@ -144,6 +147,17 @@ Pagination is *chained*: each page's handler decides whether to enqueue the next
 
    A routine sweep touches 1–2 pages. Loading history is a deliberate backfill with its own page
    range.
+
+   A listing nothing waits on can run on its own clock: gnumner's **e-auction listing** (ticket
+   34) has a `cron` of its own (hourly) and pages at `PRIORITY.RESULTS`, behind live discovery on
+   the same rate budget. Its notices are written to `listing_notices` under ids of their own
+   (`listing:eauction:eauction:{tmid}`, so a row never counts for whichever listing saw it first) and
+   nothing on it is ingested — eauction.armeps.am stays the only source of an e-auction tender.
+   It exists for `sources:verify`'s count of gnumner's e-auction notices against the e-auction
+   tenders held, the one check on the e-auction sweep that does not come from that site: a
+   notice is held by its title's code, or, a title naming none (about 7 in 10), by an e-auction
+   tender published in the same second — and only while that second holds at least as many
+   e-auction tenders as notices, so the match fails toward "not held".
 6. Enqueue one job per notice whose fingerprint changed — `tender.detail` for e-auction,
    `armeps.detail` / `paper.invitation` for gnumner — **before** recording the fingerprint. The
    listing writes no domain rows; the detail page is the single writer.
@@ -338,7 +352,8 @@ ARMEPS link on it is counted and not read (PPCM owns those results). Uploads bec
    contract notices are of quotations sent straight to invited suppliers, or of single-source
    purchases: there was never an invitation to miss. `resolution.service.js#wasPublic` decides
    from facts only:
-   - an invitation of the code was ever listed on `open` or `quotation` — `listing_notices`, by
+   - an invitation of the code was ever listed on `open` or `quotation` (never the e-auction
+     listing's rows, which are a coverage count) — `listing_notices`, by
      the title's code or, for a title naming none, the code of the tender its link created —
      → **public** (a `no_candidate` here is a tender Tendra missed: the operator alert's row);
    - a single-source procedure (the code's method marker `ՄԱ`, or the notice's procedure row

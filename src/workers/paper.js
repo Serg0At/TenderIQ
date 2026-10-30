@@ -578,6 +578,7 @@ export const recordFailedNotice = async ({ externalId, notice, priority = PRIORI
     key: normalizeCode(observation.procedureCode),
     from: null,
     to: null,
+    listings: publicityListings(),
   });
   const decision = resolve(observation, { ...(await tenders.findCandidates(lookupsFor(observation))), publicity });
 
@@ -647,6 +648,9 @@ export const recordFailedNotice = async ({ externalId, notice, priority = PRIORI
   };
 };
 
+/** The listings `wasPublic`'s facts are read from: the invitation listings, never a coverage listing. */
+const publicityListings = () => invitationListings().map((l) => l.slug);
+
 /**
  * The window gnumner's invitation listings are all read without a gap, as
  * `{ from, to }` in ms: the newest floor to the oldest watermark
@@ -675,6 +679,7 @@ export const publicityOf = async (observation) => {
     key: normalizeCode(observation.procedureCode),
     from: span?.from ?? null,
     to: span?.to ?? null,
+    listings: publicityListings(),
   });
   return { window: await coveredWindow(), ...shown };
 };

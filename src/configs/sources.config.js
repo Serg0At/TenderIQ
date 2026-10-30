@@ -54,12 +54,29 @@ const sources = {
     // the failed-procedure notices (ticket 09): the ARMEPS and paper
     // channels' cancellation source. Uploads only, e-auctions' among them —
     // about 10 a day (180 over 10-05 → 10-23), 6 a page.
+    //
+    // `kind: 'eauction'` is «Էլեկտրոնային աճուրդի հայտարարություն և հրավեր»,
+    // where every link is an e-auction's `tmid` page (ticket 34). Indexed in
+    // `listing_notices` and never ingested: eauction.armeps.am is the only
+    // source of an e-auction tender, and this listing is the one check on its
+    // sweep that does not come from that site. Nothing waits on it, so it has
+    // its own `cron` and sweeps hourly, at `priority` behind live discovery —
+    // the chain walks to the watermark however rarely it runs. 10 notices a
+    // page and ~30 a day (50 over 10-28 → 10-30), so an hour costs one or two
+    // requests, and a cold start's 5 pages reach back under two days.
     listingPaths: [
       { slug: 'open', path: '/hy/page/bac_mrcuyti_haytararutyun_ev_hraver/', procedureType: 'open' },
       { slug: 'quotation', path: '/hy/page/gnanshman_harcman_haytararutyun_ev_hraver/', procedureType: 'quotation' },
       { slug: 'amendment', path: '/hy/page/hraverum_katarvats_popokhutyunner/', kind: 'amendment' },
       { slug: 'contract', path: '/hy/page/knqvats_paymanagri_masin_haytararutyun/', kind: 'contract' },
       { slug: 'failed', path: '/hy/page/chkayacats_gnman_yntacakargi_masin_haytararutyunner/', kind: 'failed' },
+      {
+        slug: 'eauction',
+        path: '/hy/page/elektronayin_achurdi_haytararutyun_ev_hraver/',
+        kind: 'eauction',
+        cron: process.env.SOURCE_GNUMNER_EAUCTION_CRON || '23 * * * *',
+        priority: 'RESULTS',
+      },
     ],
     /**
      * A paper tender's file never changes, so nothing re-reads it — and its

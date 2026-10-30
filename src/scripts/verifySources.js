@@ -222,13 +222,18 @@ const printPaperFiles = async (window) => {
 };
 
 const printEauctionCoverage = async (window) => {
-  const coverage = await verification.eauctionNoticeCoverage(window);
+  const listings = getSourceConfig('gnumner').listingPaths.filter((l) => l.kind === 'eauction').map((l) => l.slug);
+  const coverage = await verification.eauctionNoticeCoverage(window, { listings });
   console.log('— gnumner e-auction notices against e-auction tenders held —');
   console.log(
-    `  ${coverage.notices} notices: ${coverage.held} held, ${coverage.missing.length} not held, ` +
-      `${coverage.uncoded} with no code (cannot be checked)`
+    `  ${coverage.notices} notices: ${coverage.heldByCode + coverage.heldByTime} held, ` +
+      `${coverage.missing.length} not held`
   );
-  if (coverage.missing.length) console.log(`  not held: ${coverage.missing.join(', ')}`);
+  console.log(`  with a code in the title:  ${coverage.heldByCode} of ${coverage.coded} held by code`);
+  console.log(`  with no code (by publication second): ${coverage.heldByTime} of ${coverage.uncoded} held`);
+  for (const notice of coverage.missing) {
+    console.log(`  not held: ${notice.externalId} ${notice.code ?? '(no code)'} published ${notice.publishedAt.toISOString()}`);
+  }
   console.log('');
 };
 

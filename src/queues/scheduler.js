@@ -24,6 +24,29 @@ const register = async () => {
         { name: JOB.SOURCE_SWEEP, data: { source } }
       );
       logger.info(`[scheduler] ${displayName}: sweep scheduled "${listingCron}"`);
+
+      // A listing nothing waits on runs on a clock of its own (gnumner's
+      // e-auction listing, ticket 34), and the source's sweep leaves it out
+      // (listingChain.js#listingsToSweep).
+      const ownClock = getSourceConfig(source).listingPaths.filter((l) => l.cron);
+      for (const listing of ownClock) {
+        await ingestFetchQueue.upsertJobScheduler(
+          `sweep-${source}-${listing.slug}`,
+          { pattern: listing.cron },
+          { name: JOB.SOURCE_SWEEP, data: { source, slug: listing.slug } }
+        );
+        logger.info(`[scheduler] ${displayName}: "${listing.slug}" sweep scheduled "${listing.cron}"`);
+      }
+      // A listing that lost its `cron`, or left the config, keeps no schedule
+      // of its own: it would sweep beside the source's sweep under another
+      // lock, or throw on every firing.
+      const keep = new Set(ownClock.map((l) => `sweep-${source}-${l.slug}`));
+      for (const { key } of await ingestFetchQueue.getJobSchedulers()) {
+        if (key.startsWith(`sweep-${source}-`) && !keep.has(key)) {
+          await ingestFetchQueue.removeJobScheduler(key);
+          logger.info(`[scheduler] ${displayName}: removed the stale "${key}" schedule`);
+        }
+      }
     } else {
       // A source with no listing (armeps.am) is reached only by id. Removing
       // the id rather than skipping it matters: until 2026-10-19 `armeps` was

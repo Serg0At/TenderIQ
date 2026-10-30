@@ -181,37 +181,58 @@ export default class SourceVerificationRepository {
   }
 
   /**
-   * gnumner's notices that link to an e-auction, against the e-auction
-   * tenders Tendra holds — an independent coverage check, since the eauction
-   * board finds them on its own. A `tmid` cannot be mapped to a tid, so a
-   * notice is held when an e-auction tender has its code; one with no code
-   * cannot be checked and is counted apart. Only the invitation listings are
-   * indexed (`listing_notices`), so this sees what those listings show. The
-   * code comparison takes no index; it is a hand-run count.
-   * Returns the counts and the codes not held.
+   * gnumner's e-auction notices (the e-auction listing, ticket 34: `listings`,
+   * its slugs) against the e-auction tenders Tendra holds — an independent
+   * coverage check, since the eauction board finds them on its own. A `tmid`
+   * cannot be mapped to a tid, so a notice is held when an e-auction tender
+   * has its code, or — a title naming none, about 7 in 10 — was published in
+   * the same second: gnumner states an e-auction's publication to the second,
+   * as eauction's own page does (8 of 8 code-less notices on 2026-10-29
+   * matched one tender exactly). The time match fails toward "not held": a
+   * second's code-less notices are held only while that second holds at least
+   * as many e-auction tenders as notices of the listing, so two notices
+   * cannot both lean on one tender. Any version, any status, a superseded
+   * run's included: the question is whether Tendra ever had it. The
+   * comparisons take no index; it is a hand-run count.
+   * Returns the counts and the notices not held.
    */
-  static async eauctionNoticeCoverage(window, trx = db) {
+  static async eauctionNoticeCoverage(window, { listings }, trx = db) {
     const rows = await within(
       trx('listing_notices as n')
         .where('n.source', 'gnumner')
-        .andWhere('n.external_id', 'like', 'eauction:%')
+        .whereIn('n.listing', listings)
+        .orderBy('n.published_at')
         .select(
+          'n.external_id',
           'n.procedure_code',
+          'n.published_at',
           trx.raw(`exists (
             select 1 from tenders t
              where t.submission_channel = 'eauction'
                and ${codeKeySql('t.reference_code')} = ${codeKeySql('n.procedure_code')}
-          ) as held`)
+          ) as held_by_code`),
+          trx.raw(
+            `(select count(distinct t.source_id) from tenders t
+               where t.submission_channel = 'eauction' and t.published_at = n.published_at)
+             >= (select count(*) from listing_notices m
+                  where m.source = n.source and m.listing = n.listing and m.published_at = n.published_at)
+             as held_by_time`
+          )
         ),
       'n.first_seen_at',
       window
     );
     const coded = rows.filter((row) => row.procedure_code);
+    const uncoded = rows.filter((row) => !row.procedure_code);
     return {
       notices: rows.length,
-      uncoded: rows.length - coded.length,
-      held: coded.filter((row) => row.held).length,
-      missing: coded.filter((row) => !row.held).map((row) => row.procedure_code),
+      coded: coded.length,
+      uncoded: uncoded.length,
+      heldByCode: coded.filter((row) => row.held_by_code).length,
+      heldByTime: uncoded.filter((row) => row.held_by_time).length,
+      missing: rows
+        .filter((row) => (row.procedure_code ? !row.held_by_code : !row.held_by_time))
+        .map((row) => ({ externalId: row.external_id, code: row.procedure_code, publishedAt: row.published_at })),
     };
   }
 
