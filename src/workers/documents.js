@@ -13,7 +13,7 @@ import { sha256 } from '../utils/hash.js';
 import { JOB } from '../queues/names.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
-import { isFinalAttempt } from '../utils/attempts.js';
+import { endsJob } from '../utils/attempts.js';
 
 /**
  * Invitation archive -> CPV code, buyer tax ID, per-lot item descriptions.
@@ -71,8 +71,7 @@ export const handleTenderDocuments = async (job, token) => {
   try {
     result = await storeInvitation(job, token);
   } catch (error) {
-    const ends = !(error instanceof DelayedError) && (error instanceof UnrecoverableError || isFinalAttempt(job));
-    if (amendment && ends) await owed();
+    if (amendment && endsJob(job, error)) await owed();
     throw error;
   }
   if (amendment && !result.amendmentRaised) await owed();

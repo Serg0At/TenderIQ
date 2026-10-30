@@ -157,6 +157,10 @@ What matters when touching it:
   a pager that did not advance (ties are legal — publish times are minute-precision), and a base
   URL that already contains the listing path produces exactly that (the site answers the
   malformed URL with page 1). Loading history is a deliberate backfill with its own page range.
+  **One chain per listing at a time** (ticket 38): the sweep claims `{watermark key}:chain` before
+  queuing page 1, every page re-arms its 60-minute TTL, and the page that ends the chain (or throws
+  for the last time) deletes it; a sweep that finds it skips the listing and writes nothing. Only
+  the holder may refresh or delete it, so a newer chain's marker is never released by an older one.
 - **Never filter rows by deadline in a parser.** Expired tenders are the *most* valuable ones — prices,
   suppliers and awards exist only on finished pages. Filtering also puts a clock in a file that must
   stay pure, which breaks replay-from-storage and makes fixture tests rot. Filter in the query

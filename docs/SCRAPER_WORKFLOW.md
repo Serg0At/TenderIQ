@@ -139,6 +139,13 @@ Pagination is *chained*: each page's handler decides whether to enqueue the next
    - `maxListingPages` bounds a **cold start only** (no watermark yet). With a watermark the chain
      walks until it reaches it — after an outage that is the gap to re-read — bounded only by
      `SCRAPER_MAX_LISTING_PAGES`, and logs a warning naming how far it got if it stops short.
+   - **One chain per listing at a time** (ticket 38). The sweep claims a marker beside the
+     watermark (`{watermark key}:chain`, the chain's id) before it queues page 1; every page
+     re-arms it, and the page that ends the chain — or throws for the last time — deletes it. A
+     sweep that finds it skips that listing, logs it and writes nothing, freshness included. The
+     marker's TTL (60 min, the longest a queued page was measured to wait, plus margin) is all
+     that a chain which vanished without ending costs: the sweep after it re-walks the gap.
+     Backfills never take it.
    - "A next page exists" comes from the pager (e-auction's `→` arrow, gnumner's `a.e` link), never
      from the reported page total.
    - A page holding a mark newer than the previous page's oldest throws before it stores, enqueues
@@ -670,7 +677,7 @@ Every stage is safe to re-run, which is what makes at-least-once queue delivery 
 
 | Stage | Idempotency key | Effect of a repeat |
 |---|---|---|
-| `source.sweep` | cron job ID | overlapping sweep is skipped by a Redis lock |
+| `source.sweep` | cron job ID; chain marker per listing | overlapping sweep is skipped by a Redis lock; a listing whose chain is still queued or running starts no second one |
 | `listing.page` | `(source, page, etag)` | `304` → no work |
 | `tender.detail` | `(source, ref, hash)` | known hash → no storage write, no enqueue |
 | `document.download` | content hash | same object key → overwrite-in-place, one DB row |

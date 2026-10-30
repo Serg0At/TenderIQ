@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DelayedError, UnrecoverableError } from 'bullmq';
 import config from '../configs/variables.config.js';
 import { getSourceConfig } from '../configs/sources.config.js';
@@ -8,10 +9,34 @@ import { ingestFetchQueue } from '../queues/index.js';
 import { JOB, PRIORITY } from '../queues/names.js';
 import { sha256 } from '../utils/hash.js';
 import { withLock, RateLimitedError } from '../utils/rateLimiter.js';
-import { markSweepHealthy, readHighWater, advanceHighWater, floorKey, setFloor, raiseFloor } from '../utils/sweepState.js';
+import {
+  markSweepHealthy,
+  readHighWater,
+  advanceHighWater,
+  floorKey,
+  setFloor,
+  raiseFloor,
+  chainKey,
+  claimChain,
+  holdChain,
+  releaseChain,
+} from '../utils/sweepState.js';
+import { endsJob } from '../utils/attempts.js';
 import { logger } from '../utils/logger.js';
 
 const { SCRAPER } = config;
+
+/**
+ * How long a listing's chain marker outlives the last page that touched it
+ * (sweepState.js#chainKey). It has to cover the longest a queued page waits
+ * for a worker: measured locally on 2026-10-30, with the worker up and ~48
+ * stacked chains swelling the queue, first-attempt waits were p50 15 min,
+ * p95 34, max 49. Too short only brings back the duplicate chain this
+ * replaces; too long only delays the next chain after one that vanished. A
+ * killed worker does not make one vanish — BullMQ hands its active page to
+ * the next worker as stalled.
+ */
+const CHAIN_TTL_MS = 60 * 60 * 1000;
 
 /**
  * The listing chain every board is swept by: fetch a page, store it, turn each
@@ -92,6 +117,11 @@ export const listingsToSweep = (listingPaths, slug) =>
  * Enqueue page 1 of every listing the sweep covers. The watermark is read
  * once, here at the top of the chain, so a notice published mid-sweep cannot
  * move the goalposts under the pages still in flight.
+ *
+ * A listing whose previous chain is still queued or running is skipped: one
+ * chain per listing at a time (ticket 38). Skipping is not a failure — the
+ * running chain will commit the watermark — so it writes nothing, freshness
+ * included.
  */
 export const sweepBoard = async (job, board) => {
   const { source } = board;
@@ -102,26 +132,71 @@ export const sweepBoard = async (job, board) => {
   if (slug && !listings.length) throw new UnrecoverableError(`[${source}] no listing "${slug}" to sweep`);
 
   // A listing on its own schedule has its own lock, so the two never skip each other.
+  const busy = [];
   const { skipped } = await withLock(slug ? `sweep:${source}:${slug}` : `sweep:${source}`, 10 * 60 * 1000, async () => {
     for (const listing of listings) {
-      const since = await readHighWater(board.watermarkKey(listing.slug));
+      const marker = chainKey(board.watermarkKey(listing.slug));
+      const chain = randomUUID();
+      if (!(await claimChain(marker, chain, CHAIN_TTL_MS))) {
+        busy.push(listing.slug);
+        log.info(`"${listing.slug}" still has a chain queued or running — not starting another`);
+        continue;
+      }
 
-      await ingestFetchQueue.add(
-        JOB.LISTING_PAGE,
-        { source, slug: listing.slug, listingPath: listing.path, page: 1, since },
-        { priority: priorityOf(listing) }
-      );
+      let since;
+      try {
+        // Read after the claim: the chain that released the marker has already
+        // committed its watermark.
+        since = await readHighWater(board.watermarkKey(listing.slug));
+        await ingestFetchQueue.add(
+          JOB.LISTING_PAGE,
+          { source, slug: listing.slug, listingPath: listing.path, page: 1, since, chain },
+          { priority: priorityOf(listing) }
+        );
+      } catch (error) {
+        await releaseChain(marker, chain);
+        throw error;
+      }
       log.info(`enqueued page 1 of "${listing.slug}" (since ${since ? board.formatMark(since) : 'never'})`);
     }
   });
 
   if (skipped) log.warn('previous sweep still running — skipped');
-  return { skipped };
+  return { skipped, busy };
 };
 
+/**
+ * One page of a chain, holding the listing's chain marker while it runs and
+ * releasing it when the chain ends: the page committed the watermark, or it
+ * threw for the last time. A throw BullMQ will retry, or a rate-limit delay,
+ * is the same chain still going.
+ *
+ * A page with no `chain` was queued before the marker existed and touches
+ * none.
+ */
 export const readListingPage = async (job, token, board) => {
+  const { chain, slug } = job.data;
+  const marker = chain && chainKey(board.watermarkKey(slug));
+  // False when a newer chain took a lapsed marker; this one still runs to its
+  // end, it just no longer speaks for the listing.
+  if (marker) await holdChain(marker, chain, CHAIN_TTL_MS);
+
+  let outcome;
+  try {
+    outcome = await readPage(job, token, board);
+  } catch (error) {
+    if (marker && endsJob(job, error)) await releaseChain(marker, chain);
+    throw error;
+  }
+  // Re-armed once the next page is queued as well, so the TTL has to cover
+  // only that page's wait for a worker, not this page's run too.
+  if (marker) await (outcome.continued ? holdChain(marker, chain, CHAIN_TTL_MS) : releaseChain(marker, chain));
+  return outcome;
+};
+
+const readPage = async (job, token, board) => {
   const { source } = board;
-  const { slug, listingPath, page } = job.data;
+  const { slug, listingPath, page, chain } = job.data;
   // `sinceTid`/`highTid` and `sincePublished`/`highPublished` are the names
   // pages queued before the chain was shared carry. Drop them once no such
   // job is left in ingest.fetch.
@@ -145,7 +220,7 @@ export const readListingPage = async (job, token, board) => {
   if (result.notModified) {
     await markSweepHealthy(source);
     log.info('304 not modified — stopping pagination');
-    return { notModified: true };
+    return { notModified: true, continued: false };
   }
 
   // A "successful" page that ingests nothing is the #1 silent failure.
@@ -254,6 +329,7 @@ export const readListingPage = async (job, token, board) => {
         since,
         high,
         low: Number.isFinite(pageLow) ? pageLow : prevLow,
+        chain,
       },
       { priority: priorityOf(sourceConfig.listingPaths.find((l) => l.slug === slug)) }
     );

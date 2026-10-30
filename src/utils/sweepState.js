@@ -31,8 +31,9 @@ export const readHighWater = async (key) => {
  * dies mid-chain leaves the old value, so the next run re-walks the gap rather
  * than skipping over notices it never actually ingested.
  *
- * Compare-and-set in one round trip. The sweep lock is released as soon as
- * page 1 is enqueued, so two chains can be in flight at once; a read-then-
+ * Compare-and-set in one round trip. The chain marker (`chainKey`) keeps one
+ * chain per listing, but a chain whose marker lapsed still runs beside its
+ * successor, so two chains can be in flight at once; a read-then-
  * write would let a slower chain's lower value overwrite a higher one and
  * regress the watermark, causing pages to be re-walked indefinitely.
  */
@@ -83,6 +84,52 @@ export const raiseFloor = async (key, value) => {
 };
 
 /**
+ * The in-flight marker of a watermark's chain (ticket 38): the id of the one
+ * chain walking that listing, so a sweep that finds it starts none. Without
+ * it a five-minute cron stacked a new chain on every slow one — 48 e-auction
+ * listing pages queued at once — and each re-read the same pages exactly when
+ * the rate budget was needed for detail pages.
+ *
+ * Set by the sweep when it queues page 1, re-set by every page, deleted by the
+ * page that ends the chain. Only the holder may refresh or delete it, so a
+ * chain whose marker lapsed and was taken by a newer one cannot release the
+ * newer one's. The TTL is what keeps a chain that vanished without ending
+ * (a job lost, a stall past BullMQ's limit) from closing the listing forever.
+ */
+export const chainKey = (watermarkKey) => `${watermarkKey}:chain`;
+
+/** `SET NX`: true when no chain holds the listing and `chain` now does. */
+export const claimChain = async (key, chain, ttlMs) =>
+  (await redis.getRedis().set(key, chain, 'PX', ttlMs, 'NX')) === 'OK';
+
+/**
+ * Re-arm the TTL while the marker is ours, or take it back if it lapsed and
+ * nobody else has: a chain that outlived its TTL is still the one walking.
+ * False when another chain holds it.
+ */
+export const holdChain = async (key, chain, ttlMs) =>
+  (await redis
+    .getRedis()
+    .eval(
+      'local c = redis.call("GET", KEYS[1]) if (not c) or c == ARGV[1] then redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2]) return 1 end return 0',
+      1,
+      key,
+      chain,
+      String(ttlMs)
+    )) === 1;
+
+/** Delete the marker only if `chain` holds it. */
+export const releaseChain = (key, chain) =>
+  redis
+    .getRedis()
+    .eval(
+      'if redis.call("GET", KEYS[1]) == ARGV[1] then redis.call("DEL", KEYS[1]) end return 1',
+      1,
+      key,
+      chain
+    );
+
+/**
  * `{ from, to }`, the floor and the watermark of one listing, or null when
  * either is missing — a listing swept before floors were kept covers nothing
  * Tendra can vouch for.
@@ -113,5 +160,9 @@ export default {
   floorKey,
   setFloor,
   raiseFloor,
+  chainKey,
+  claimChain,
+  holdChain,
+  releaseChain,
   readCoverage,
 };
