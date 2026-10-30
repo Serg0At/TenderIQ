@@ -60,7 +60,8 @@ const sources = {
     // `listing_notices` and never ingested: eauction.armeps.am is the only
     // source of an e-auction tender, and this listing is the one check on its
     // sweep that does not come from that site. Nothing waits on it, so it has
-    // its own `cron` and sweeps hourly, at `priority` behind live discovery —
+    // its own `cron` and sweeps hourly, its page 1 at `priority` behind live
+    // discovery (later pages go at CHAIN, like every chain's: ticket 39) —
     // the chain walks to the watermark however rarely it runs. 10 notices a
     // page and ~30 a day (50 over 10-28 → 10-30), so an hour costs one or two
     // requests, and a cold start's 5 pages reach back under two days.

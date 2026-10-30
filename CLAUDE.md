@@ -152,11 +152,17 @@ What matters when touching it:
   (no watermark); with one, the chain walks until it reaches it, bounded only by
   `SCRAPER.MAX_LISTING_PAGES`, and warns if it stops short. e-auction once capped every chain at 40
   pages, which after a long outage committed the high mark over pages it never read — a permanent,
-  silent hole. Because the walk is now unbounded by source, a page holding a mark newer than the
-  previous page's oldest **throws** before storing anything or marking the source healthy: that is
-  a pager that did not advance (ties are legal — publish times are minute-precision), and a base
-  URL that already contains the listing path produces exactly that (the site answers the
-  malformed URL with page 1). Loading history is a deliberate backfill with its own page range.
+  silent hole. Because the walk is now unbounded by source, a page holding **nothing the chain
+  has not read** throws before storing anything or marking the source healthy: that is a pager
+  that did not advance, and a base URL that already contains the listing path produces exactly
+  that (the site answers the malformed URL with page 1). **The board moves under a chain**
+  (ticket 39): pages after the first go at `PRIORITY.CHAIN`, ahead of everything else on
+  `ingest.fetch`, so a chain runs in seconds; a page repeating the previous page's tail (rows
+  published meanwhile) skips it as read — newer than the oldest mark read, or tied with it
+  (publish times are minute-precision) and named in `lowKeys` — and is no stall; and every page
+  after the first re-reads the previous page *after* its own, so a row pulled up by another
+  leaving the board (an amended e-auction) is still read. The reverse order loses that row, and
+  before this the walk lost it with the watermark committed over it. Loading history is a deliberate backfill with its own page range.
   **One chain per listing at a time** (ticket 38): the sweep claims `{watermark key}:chain` before
   queuing page 1, every page re-arms its 60-minute TTL, and the page that ends the chain (or throws
   for the last time) deletes it; a sweep that finds it skips the listing and writes nothing. Only

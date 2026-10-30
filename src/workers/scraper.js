@@ -80,6 +80,7 @@ const eauctionBoard = {
   },
 
   markOf: (row) => Number(row.sourceId),
+  keyOf: (row) => row.sourceId,
 
   // Discovery only: the listing knows no buyer, no publish date and no
   // prices, so it must not write tenders. Detail is the single writer;

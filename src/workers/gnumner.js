@@ -145,6 +145,8 @@ export const gnumnerBoard = {
   },
 
   markOf: (item) => item.publishedAt.getTime(),
+  // The parser's own identity for a notice, by which it drops a repeat.
+  keyOf: (item) => `${item.kind}:${item.externalId ?? item.url}`,
 
   toNotice: (item, { slug, log }) => {
     const index = noticeIndex(item, slug);

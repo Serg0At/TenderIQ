@@ -32,7 +32,7 @@ Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit
 `maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`; per listing in
 `listingPaths`, an optional `cron` (the listing is swept only on its own schedule,
 `sweep-{source}-{slug}`, and the source's sweep leaves it out) and `priority` (a `PRIORITY` key
-for its page jobs, default `LIVE`); for `ppcm`,
+for its page 1, default `LIVE`; every later page goes at `CHAIN`); for `ppcm`,
 `rateLimitSource` (whose budget it spends), `pollIntervalHours`, the report's ids and columns,
 `missedSweep` (the sweep's cron, window and forms) and `bidReport` (`repairPollHours`).
 
@@ -148,16 +148,27 @@ Pagination is *chained*: each page's handler decides whether to enqueue the next
      Backfills never take it.
    - "A next page exists" comes from the pager (e-auction's `→` arrow, gnumner's `a.e` link), never
      from the reported page total.
-   - A page holding a mark newer than the previous page's oldest throws before it stores, enqueues
-     or marks anything healthy (ties are legal): the pager did not advance (a base URL that already contains the listing path does this — the
-     site answers with page 1 for every N).
+   - **The board moves while a chain walks it, and the chain reads every notice anyway** (ticket
+     39). Pages after the first are queued at `PRIORITY.CHAIN`, ahead of every detail, document and
+     refresh job, so a chain runs in seconds rather than the 15–30 minutes a page waited at `LIVE`.
+     Rows published meanwhile push the board down and a page repeats the previous page's tail:
+     those entries are skipped as already read (newer than the oldest mark read, or at it and
+     named in the job's `lowKeys` — ties straddle a page break). A row leaving the board (an
+     amended e-auction) pulls it up and moves a row onto a page already read: so every page after
+     the first re-reads the previous page **after** reading its own, which covers one insertion or
+     removal at any moment of the chain. The cost is one request per page after the first; a chain
+     that stops on page 1 pays nothing. Not covered: a removal and then an insertion within the
+     two requests of one page job, or a page's worth of rows moving at once.
+   - A page holding nothing the chain has not read throws before it stores, enqueues or marks
+     anything healthy: the pager did not advance (a base URL that already contains the listing
+     path does this — the site answers with page 1 for every N).
 
    A routine sweep touches 1–2 pages. Loading history is a deliberate backfill with its own page
    range.
 
    A listing nothing waits on can run on its own clock: gnumner's **e-auction listing** (ticket
-   34) has a `cron` of its own (hourly) and pages at `PRIORITY.RESULTS`, behind live discovery on
-   the same rate budget. Its notices are written to `listing_notices` under ids of their own
+   34) has a `cron` of its own (hourly) and its page 1 at `PRIORITY.RESULTS`, behind live
+   discovery on the same rate budget. Its notices are written to `listing_notices` under ids of their own
    (`listing:eauction:eauction:{tmid}`, so a row never counts for whichever listing saw it first) and
    nothing on it is ingested — eauction.armeps.am stays the only source of an e-auction tender.
    It exists for `sources:verify`'s count of gnumner's e-auction notices against the e-auction

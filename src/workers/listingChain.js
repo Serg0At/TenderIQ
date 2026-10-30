@@ -31,10 +31,11 @@ const { SCRAPER } = config;
  * (sweepState.js#chainKey). It has to cover the longest a queued page waits
  * for a worker: measured locally on 2026-10-30, with the worker up and ~48
  * stacked chains swelling the queue, first-attempt waits were p50 15 min,
- * p95 34, max 49. Too short only brings back the duplicate chain this
- * replaces; too long only delays the next chain after one that vanished. A
- * killed worker does not make one vanish — BullMQ hands its active page to
- * the next worker as stalled.
+ * p95 34, max 49. Later pages now jump that queue (`PRIORITY.CHAIN`), but
+ * page 1 still waits at its listing's priority. Too short only brings back
+ * the duplicate chain this replaces; too long only delays the next chain
+ * after one that vanished. A killed worker does not make one vanish — BullMQ
+ * hands its active page to the next worker as stalled.
  */
 const CHAIN_TTL_MS = 60 * 60 * 1000;
 
@@ -50,6 +51,8 @@ const CHAIN_TTL_MS = 60 * 60 * 1000;
  *   formatMark(value)      a mark as a log reader wants to see it
  *   read(path, page)       { notModified?, blocksSeen, entries, hasNextPage, response }
  *   markOf(entry)          the entry's watermark value, a number
+ *   keyOf(entry)           the entry's identity on the board, a string — what
+ *                          tells two entries of one mark apart
  *   toNotice(entry, ctx)   { tally?, index?, notice?: { ref, hash, job: { name, data, opts } } }
  *                          — no notice means counted and skipped; `index` is the
  *                          entry's `listing_notices` row, for a board whose
@@ -73,17 +76,16 @@ const CHAIN_TTL_MS = 60 * 60 * 1000;
  * A page with no usable marks (`pageLow` Infinity) cannot conclude anything
  * and keeps going, bounded by the cap.
  *
- * Every board is newest-first, so no page holds anything newer than the
- * previous page's oldest mark (`prevLow`). Ties are legal — gnumner's publish
- * times are minute-precision and can straddle a page break. A page that does
- * hold something newer is a pager that did not advance —
- * a malformed page URL the site answers with page 1 does exactly this — and
- * nothing it says about the watermark can be trusted. With a watermark the
- * walk is bounded only by the global ceiling, so such a chain would otherwise
- * re-read one page up to that ceiling every sweep.
+ * A page that holds nothing the chain has not already read (`unread` 0) is a
+ * pager that did not advance — a malformed page URL the site answers with
+ * page 1 does exactly this — and nothing it says about the watermark can be
+ * trusted. With a watermark the walk is bounded only by the global ceiling,
+ * so such a chain would otherwise re-read one page up to that ceiling every
+ * sweep. A page that merely repeats some of the previous page is not one:
+ * rows published while the chain walked pushed the board down (`isRead`).
  */
-export const nextStep = ({ page, since, pageLow, pageHigh, prevLow, hasNextPage, coldStartPages, maxPages }) => {
-  if (prevLow !== undefined && pageHigh > prevLow) {
+export const nextStep = ({ page, since, pageLow, unread, prevLow, hasNextPage, coldStartPages, maxPages }) => {
+  if (prevLow !== undefined && Number.isFinite(pageLow) && unread === 0) {
     return { more: false, stalled: true, reachedWatermark: false, reason: 'page did not advance' };
   }
   const cap = since ? maxPages : Math.min(coldStartPages, maxPages);
@@ -94,9 +96,10 @@ export const nextStep = ({ page, since, pageLow, pageHigh, prevLow, hasNextPage,
 };
 
 /**
- * A listing's queue priority: live discovery unless its config names another
- * (`priority`, a PRIORITY key) — a listing nothing waits on goes behind the
- * ones that find tenders, on the same rate budget. A name that is not a key
+ * A listing's page-1 priority, which decides when its chain starts — the
+ * pages after it all go at `PRIORITY.CHAIN`: live discovery unless its config
+ * names another (`priority`, a PRIORITY key) — a listing nothing waits on goes
+ * behind the ones that find tenders, on the same rate budget. A name that is not a key
  * throws rather than falling back to live: a typo is not a choice.
  */
 const priorityOf = (listing) => {
@@ -194,18 +197,21 @@ export const readListingPage = async (job, token, board) => {
   return outcome;
 };
 
-const readPage = async (job, token, board) => {
-  const { source } = board;
-  const { slug, listingPath, page, chain } = job.data;
-  // `sinceTid`/`highTid` and `sincePublished`/`highPublished` are the names
-  // pages queued before the chain was shared carry. Drop them once no such
-  // job is left in ingest.fetch.
-  const since = job.data.since ?? job.data.sinceTid ?? job.data.sincePublished ?? 0;
-  const carriedHigh = job.data.high ?? job.data.highTid ?? job.data.highPublished;
-  const prevLow = job.data.low;
-  const sourceConfig = getSourceConfig(source);
-  const log = logger.child({ job: JOB.LISTING_PAGE, source, slug, page });
+/**
+ * Whether the chain has already read an entry. Every board is newest-first and
+ * the chain walks down it, so an entry newer than the oldest mark read so far
+ * (`low`) was read on an earlier page — or was published after page 1, and is
+ * the next chain's: its mark is at or above the watermark this one commits,
+ * and a chain reads the whole of every page it reaches. At `low` itself marks tie (gnumner's publish times are minute-precision and
+ * can straddle a page break), so only the entries named in `lowKeys` were.
+ */
+export const isRead = (mark, key, { low, lowKeys }) =>
+  low !== undefined && (mark > low || (mark === low && lowKeys.includes(key)));
 
+/** One request for a listing page; being throttled delays the job, never fails it. */
+const fetchListingPage = async (job, token, board, page) => {
+  const { source } = board;
+  const { slug, listingPath } = job.data;
   let result;
   try {
     result = await board.read(listingPath, page);
@@ -216,18 +222,70 @@ const readPage = async (job, token, board) => {
     }
     throw error;
   }
+  // A "successful" page that ingests nothing is the #1 silent failure.
+  if (!result.notModified && result.blocksSeen === 0) {
+    throw new Error(
+      `[${source}] "${slug}" page ${page} returned 200 with 0 blocks — parser likely broken`
+    );
+  }
+  return result;
+};
+
+/** Stores a listing page as fetched, and returns its key. */
+const storeListingPage = async (board, slug, page, result) => {
+  const { source } = board;
+  const pageHash = sha256(result.response.body);
+  const pageRef = `listing:${slug}:p${page}`;
+  const pageKey = rawKey({ source, ref: pageRef, hash: pageHash, ext: 'html' });
+  if (!(await sourcePayloads.existsWithHash(source, pageRef, pageHash))) {
+    await (await getStorage()).put(pageKey, result.response.body, { contentType: 'text/html' });
+    await sourcePayloads.record({ source, ref: pageRef, storageKey: pageKey, hash: pageHash });
+  }
+  return pageKey;
+};
+
+/**
+ * One page of a chain, read so that the board moving while the chain walks
+ * loses nothing (ticket 39):
+ *
+ * - **Rows published meanwhile** push the board down, so this page repeats the
+ *   previous page's tail. Those entries were read; they are skipped (`isRead`)
+ *   and are not a stalled pager.
+ * - **A row leaving the board** (an amended e-auction, ticket 29) pulls it up,
+ *   so this page's first row moves onto the previous page, already read. So
+ *   every page after the first reads the previous page again, *after* reading
+ *   its own: a row that moved up before this page was read is on that re-read,
+ *   and one that moves up after was on this page. Reading the other way round
+ *   loses a row leaving between the two requests; this order covers one
+ *   insertion or removal at any moment of the chain. What it does not cover is
+ *   a removal before this page's request followed by an insertion between the
+ *   two (the row moves up and back down unseen), or a page's worth of rows
+ *   moving at once — both need several events within the seconds a chain runs.
+ *
+ * The cost is one request per page after the first; a chain that reaches its
+ * watermark on page 1, the steady state, pays nothing. Throttled on the second
+ * request, the job is delayed and asks for both again.
+ */
+const readPage = async (job, token, board) => {
+  const { source } = board;
+  const { slug, listingPath, page, chain } = job.data;
+  // `sinceTid`/`highTid` and `sincePublished`/`highPublished` are the names
+  // pages queued before the chain was shared carry. Drop them once no such
+  // job is left in ingest.fetch.
+  const since = job.data.since ?? job.data.sinceTid ?? job.data.sincePublished ?? 0;
+  const carriedHigh = job.data.high ?? job.data.highTid ?? job.data.highPublished;
+  const prevLow = job.data.low;
+  const readSoFar = { low: prevLow, lowKeys: job.data.lowKeys ?? [] };
+  const unread = (entry) => !isRead(board.markOf(entry), board.keyOf(entry), readSoFar);
+  const sourceConfig = getSourceConfig(source);
+  const log = logger.child({ job: JOB.LISTING_PAGE, source, slug, page });
+
+  const result = await fetchListingPage(job, token, board, page);
 
   if (result.notModified) {
     await markSweepHealthy(source);
     log.info('304 not modified — stopping pagination');
     return { notModified: true, continued: false };
-  }
-
-  // A "successful" page that ingests nothing is the #1 silent failure.
-  if (result.blocksSeen === 0) {
-    throw new Error(
-      `[${source}] "${slug}" page ${page} returned 200 with 0 blocks — parser likely broken`
-    );
   }
 
   // Page 1 observes the highest mark on the board and carries it down the
@@ -236,13 +294,14 @@ const readPage = async (job, token, board) => {
   const marks = result.entries.map(board.markOf).filter(Number.isFinite);
   const high = carriedHigh ?? (marks.length ? Math.max(...marks) : 0);
   const pageLow = marks.length ? Math.min(...marks) : Infinity;
-  const pageHigh = marks.length ? Math.max(...marks) : -Infinity;
+  const fresh = result.entries.filter(unread);
 
   const step = nextStep({
     page,
     since,
     pageLow,
-    pageHigh,
+    // An entry with no usable mark says nothing about whether the pager moved.
+    unread: fresh.filter((entry) => Number.isFinite(board.markOf(entry))).length,
     prevLow,
     hasNextPage: result.hasNextPage,
     coldStartPages: sourceConfig.maxListingPages,
@@ -254,58 +313,69 @@ const readPage = async (job, token, board) => {
     // watermark must not be committed, and freshness must not report a
     // source whose every sweep re-reads one page.
     throw new Error(
-      `[${source}] "${slug}" page ${page} holds ${board.markName} up to ${board.formatMark(pageHigh)}, ` +
-        `newer than page ${page - 1}'s oldest ${board.formatMark(prevLow)} — pager did not advance`
+      `[${source}] "${slug}" page ${page} holds only ${board.markName} already read ` +
+        `(${board.formatMark(pageLow)}..${board.formatMark(Math.max(...marks))}, page ${page - 1}'s oldest ` +
+        `${board.formatMark(prevLow)}) — pager did not advance`
     );
   }
 
-  const storage = await getStorage();
-  const pageHash = sha256(result.response.body);
-  const pageRef = `listing:${slug}:p${page}`;
-  const pageKey = rawKey({ source, ref: pageRef, hash: pageHash, ext: 'html' });
+  // The previous page again, now that this one is read (see the header).
+  // Whatever is on it that the chain had not read moved up from this page or
+  // below; an entry this page already showed is not read twice.
+  // Unchanged since it was read (a 304) means nothing moved onto it.
+  let previous = page > 1 ? await fetchListingPage(job, token, board, page - 1) : null;
+  if (previous?.notModified) previous = null;
+  const onThisPage = new Set(result.entries.map(board.keyOf));
+  const movedUp = previous ? previous.entries.filter((entry) => unread(entry) && !onThisPage.has(board.keyOf(entry))) : [];
 
-  if (!(await sourcePayloads.existsWithHash(source, pageRef, pageHash))) {
-    await storage.put(pageKey, result.response.body, { contentType: 'text/html' });
-    await sourcePayloads.record({ source, ref: pageRef, storageKey: pageKey, hash: pageHash });
-  }
+  const pageKey = await storeListingPage(board, slug, page, result);
+  const previousKey = previous && (await storeListingPage(board, slug, page - 1, previous));
 
   const tally = {};
   let changed = 0;
 
-  for (const entry of result.entries) {
-    const { tally: bucket, index, notice } = board.toNotice(entry, { slug, log });
-    if (bucket) tally[bucket] = (tally[bucket] ?? 0) + 1;
-    // Not a domain row: the ingestion's own record of what was published —
-    // every entry, ingested or skipped, on every read, so an entry whose
-    // notice is unchanged is still recorded once. An upsert, so a re-read is
-    // a no-op.
-    if (index) await listingNotices.record({ source, ...index });
-    if (!notice) continue;
+  const ingest = async (entries, storageKey) => {
+    for (const entry of entries) {
+      const { tally: bucket, index, notice } = board.toNotice(entry, { slug, log });
+      if (bucket) tally[bucket] = (tally[bucket] ?? 0) + 1;
+      // Not a domain row: the ingestion's own record of what was published —
+      // every entry, ingested or skipped, on every read, so an entry whose
+      // notice is unchanged is still recorded once. An upsert, so a re-read is
+      // a no-op.
+      if (index) await listingNotices.record({ source, ...index });
+      if (!notice) continue;
 
-    if (await sourcePayloads.existsWithHash(source, notice.ref, notice.hash)) continue;
+      if (await sourcePayloads.existsWithHash(source, notice.ref, notice.hash)) continue;
 
-    // Discovery only: the listing writes no domain rows.
-    //
-    // Enqueue BEFORE recording the fingerprint. Recording first meant a crash
-    // between the two left the notice marked as seen with no job ever created
-    // — the next sweep finds an unchanged hash and skips it forever, a silent
-    // permanent coverage hole. This order can only ever duplicate work, and
-    // the jobId already dedupes that.
-    await ingestFetchQueue.add(notice.job.name, notice.job.data, notice.job.opts);
+      // Discovery only: the listing writes no domain rows.
+      //
+      // Enqueue BEFORE recording the fingerprint. Recording first meant a crash
+      // between the two left the notice marked as seen with no job ever created
+      // — the next sweep finds an unchanged hash and skips it forever, a silent
+      // permanent coverage hole. This order can only ever duplicate work, and
+      // the jobId already dedupes that.
+      await ingestFetchQueue.add(notice.job.name, notice.job.data, notice.job.opts);
 
-    // A concurrent worker won the race and already recorded it.
-    if (!(await sourcePayloads.record({ source, ref: notice.ref, storageKey: pageKey, hash: notice.hash }))) {
-      continue;
+      // A concurrent worker won the race and already recorded it.
+      if (!(await sourcePayloads.record({ source, ref: notice.ref, storageKey, hash: notice.hash }))) {
+        continue;
+      }
+      changed += 1;
     }
-    changed += 1;
-  }
+  };
+
+  await ingest(fresh, pageKey);
+  await ingest(movedUp, previousKey);
 
   await markSweepHealthy(source);
 
   const range = marks.length ? `${board.formatMark(pageLow)}..${board.formatMark(high)}` : 'none';
+  const overlap = result.entries.length - fresh.length;
   log.info(
-    `${board.summarize({ result, tally, changed })}; ${board.markName} ${range} ` +
-      `vs watermark ${since ? board.formatMark(since) : 'none'} — ` +
+    `${board.summarize({ result, tally, changed })}` +
+      `${overlap ? `; ${overlap} already read` : ''}` +
+      `${page > 1 ? `; page ${page - 1} again: ${movedUp.length} moved up onto it` : ''}; ` +
+      `${board.markName} ${range} vs watermark ${since ? board.formatMark(since) : 'none'} — ` +
       `${step.more ? `continuing to page ${page + 1}` : `stopping (${step.reason})`}`
   );
 
@@ -318,31 +388,31 @@ const readPage = async (job, token, board) => {
     );
   }
 
+  const low = Number.isFinite(pageLow) ? pageLow : prevLow;
   if (step.more) {
+    // Every entry of both responses is read by now, so the keys at the new
+    // oldest mark are whichever of them hold it.
+    const atLow = [...result.entries, ...(previous?.entries ?? [])]
+      .filter((entry) => board.markOf(entry) === low)
+      .map(board.keyOf);
+    const lowKeys = [...new Set([...(low === prevLow ? readSoFar.lowKeys : []), ...atLow])];
+    // Ahead of everything else on the queue, whatever the listing's own
+    // priority: that decides when a chain starts, and once one has, every
+    // minute it waits is a minute for the board to move under it.
     await ingestFetchQueue.add(
       JOB.LISTING_PAGE,
-      {
-        source,
-        slug,
-        listingPath,
-        page: page + 1,
-        since,
-        high,
-        low: Number.isFinite(pageLow) ? pageLow : prevLow,
-        chain,
-      },
-      { priority: priorityOf(sourceConfig.listingPaths.find((l) => l.slug === slug)) }
+      { source, slug, listingPath, page: page + 1, since, high, low, lowKeys, chain },
+      { priority: PRIORITY.CHAIN }
     );
   } else {
     // The floor first (sweepState.js#floorKey): a crash before the watermark
     // moves can only leave the covered window narrower than it is.
-    const oldest = Number.isFinite(pageLow) ? pageLow : prevLow;
-    if (!since) await setFloor(floorKey(board.watermarkKey(slug)), oldest);
-    else if (step.capped) await raiseFloor(floorKey(board.watermarkKey(slug)), oldest);
+    if (!since) await setFloor(floorKey(board.watermarkKey(slug)), low);
+    else if (step.capped) await raiseFloor(floorKey(board.watermarkKey(slug)), low);
     await advanceHighWater(board.watermarkKey(slug), high);
   }
 
-  return { entries: result.entries.length, tally, changed, continued: step.more };
+  return { entries: result.entries.length, tally, changed, alreadyRead: overlap, movedUp: movedUp.length, continued: step.more };
 };
 
-export default { nextStep, listingsToSweep, sweepBoard, readListingPage };
+export default { nextStep, isRead, listingsToSweep, sweepBoard, readListingPage };

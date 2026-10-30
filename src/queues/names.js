@@ -217,7 +217,20 @@ export const JOB = {
  * a sweep that re-filled the wait list every five minutes.
  */
 export const PRIORITY = {
-  LIVE: 1,
+  /**
+   * A listing chain's next page (ticket 39), and nothing else: ahead of every
+   * detail, document and refresh job, so a chain finishes in seconds. At LIVE
+   * it waited 15–30 minutes per page behind them while the board shifted
+   * under it — new rows repeated the previous page's tail, and a row leaving
+   * the board moved one up onto a page already read. 1 is BullMQ's highest
+   * explicit priority; the wait list above it is the starvation trap described
+   * above, and holds only the scheduler's dispatchers. Bounded by itself: one
+   * chain per listing at a time (ticket 38). Not a queue of its own: the rate
+   * budget is per source either way, so a second queue would add a worker and
+   * concurrency pointed at the source, not throughput.
+   */
+  CHAIN: 1,
+  LIVE: 2,
   /**
    * Results asked of a source that shares a host with live discovery (PPCM
    * on armeps.am): behind every discovery fetch on the one rate budget, since
