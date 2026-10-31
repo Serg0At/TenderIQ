@@ -8,7 +8,7 @@ through the API yet; this is the foundation the trial and promo codes stand on (
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] `subscriptions` holds one row per period: organization, plan, `kind` (`trial` | `promo` |
       `paid`, CHECK), period start and end, nullable promo code and trial-creator references, and
