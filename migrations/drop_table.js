@@ -47,6 +47,9 @@ async function down(pg) {
   for (const table of tables) {
     await pg.schema.dropTableIfExists(table);
   }
+
+  // Only subscriptions_no_overlap_excl needed it, and that went with its table.
+  await pg.raw('DROP EXTENSION IF EXISTS btree_gist');
 }
 
 async function init() {

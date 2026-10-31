@@ -671,13 +671,31 @@ function up(pg) {
       table.unique(['code'], { indexName: 'promo_codes_code_uq' });
     })
 
-    // subscriptions — Which plan an organisation is on, and when it renews.
+    // subscriptions — One period during which an organisation holds one plan (ADR 0005). An
+    // organisation accumulates them — a trial, then promo periods, then paid ones — and its plan
+    // is the non-voided row covering now, else free. Current or lapsed is read from the dates;
+    // there is no status, because a stored one needs a sweep to flip it, and a missed sweep
+    // leaves an organisation on Pro forever. No overlap: subscriptions_no_overlap_excl.
     .createTable('subscriptions', table => {
       table.string('id').primary();
-      table.string('organization_id').notNullable().unique().references('id').inTable('organizations').onDelete('CASCADE');
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
       table.string('plan_id').notNullable().references('id').inTable('plans').onDelete('RESTRICT');
-      table.string('status').notNullable();
-      table.timestamp('renews_at');
+      table.string('kind').notNullable(); // trial | promo | paid
+      // Half-open: a period starting the moment another ends follows it, never overlaps it.
+      table.timestamp('period_start').notNullable();
+      table.timestamp('period_end').notNullable();
+      // The code a promo period was redeemed with. RESTRICT: a redeemed code is disabled, never
+      // deleted, and this is the database holding that.
+      table.string('promo_code_id').references('id').inTable('promo_codes').onDelete('RESTRICT');
+      // A trial copies its organisation's created_by here, so one trial per creator can be an
+      // index rather than a join (ticket 02).
+      table.string('trial_creator_id').references('id').inTable('users').onDelete('SET NULL');
+      // Voiding is what an operator does to a grant made in error. A voided row grants nothing
+      // and is left out of the overlap rule, but stays as the record that it was granted.
+      table.timestamp('voided_at');
+      table.string('voided_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['organization_id', 'period_start'], 'subscriptions_org_start_idx');
     })
 
     // invoices — Billing history per organisation.
@@ -954,6 +972,26 @@ async function indexes(pg) {
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_uq
      ON notifications (organization_id, type, tender_id, subject_id) NULLS NOT DISTINCT`);
 
+  await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_kind_chk
+     CHECK (kind IN ('trial','promo','paid'))`);
+  // An empty range overlaps nothing, so a zero-length period would slip past the rule below.
+  await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_period_chk
+     CHECK (period_end > period_start)`);
+
+  /**
+   * One plan at a time: no two non-voided periods of one organization overlap.
+   *
+   * `planFor` reads "the period covering now" and takes one row; that is only an answer if
+   * there can be at most one. Checking for overlap in the service is check-then-act, the same
+   * race as the owner seat, so the database arbitrates it. `tstzrange` defaults to half-open
+   * `[)`, which is what lets a promo start at the exact moment a trial ends. Voided rows are
+   * left out, so voiding a grant frees its time for another. btree_gist supplies the `=` on
+   * organization_id inside a GiST index.
+   */
+  await pg.raw('CREATE EXTENSION IF NOT EXISTS btree_gist');
+  await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_no_overlap_excl
+     EXCLUDE USING gist (organization_id WITH =, tstzrange(period_start, period_end) WITH &&)
+     WHERE (voided_at IS NULL)`);
 }
 
 async function init() {

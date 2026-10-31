@@ -78,6 +78,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Create organization](#create-organization) — `POST /organizations`
 - [Get organization](#get-organization) — `GET /organization`
 - [Update organization](#update-organization) — `PATCH /organization`
+- [Get subscription](#get-subscription) — `GET /organization/subscription`
 - [List members](#list-members) — `GET /organization/members`
 - [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
 - [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
@@ -215,7 +216,10 @@ Four gates run in order ([src/middlewares/authorize.js](src/middlewares/authoriz
    permission → else `403 ROLE_FORBIDDEN`
 3. resource `organization_id` matches the token's org → enforced in repositories; a
    cross-tenant id answers `404 NOT_FOUND` rather than confirming the row exists
-4. plan entitles the feature → else `402 PLAN_UPGRADE_REQUIRED`
+4. plan entitles the feature → else `402 PLAN_UPGRADE_REQUIRED`. The plan is read from the
+   token, which takes it from the subscription covering the moment the session was minted or
+   refreshed (see [Get subscription](#get-subscription)) — so a plan that starts or lapses
+   reaches a session at its next refresh.
 
 | Role | Permissions |
 |---|---|
@@ -1072,8 +1076,8 @@ and tuning this ranking cannot change which alerts fire.
 `GET /api/v1/tenders/relevant`
 
 **Authentication:** required (Bearer). Permission: `tender:read` (all roles). **Plan-gated** on
-the `relevance` feature: `pro`, `business`, `enterprise`. No subscription writer exists yet, so
-every organization currently reads `free` and this answers `402` for everyone.
+the `relevance` feature: `pro`, `business`, `enterprise` — the plan of the organization's
+current [subscription](#get-subscription), else `free`.
 
 **Request data:**
 
@@ -2699,6 +2703,70 @@ session's own organization only — there is no id in the path to point elsewher
 
 ---
 
+## Get subscription
+
+Which plan the organization is on and until when, what follows it, and whether a trial could be
+started. Every member reads it, a viewer included — it is why a feature is or is not available
+to them — and it is not plan-gated, so a lapsed organization can see that it lapsed.
+
+An organization's plan is held by **subscriptions**: dated periods, one each, that never overlap
+(a trial, then promo periods, later paid ones). Its plan is the plan of the period covering now,
+else `free`. Whether a period is current or lapsed is read from its dates; nothing flips it.
+
+**API:**
+`GET /api/v1/organization/subscription`
+
+**Authentication:** required (Bearer). Permission: `tender:read` (every member).
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "current": {
+      "id": "cm3k8q2v70004ab1c9x7r5t2e",
+      "kind": "trial",
+      "plan": "pro",
+      "periodStart": "2026-11-01T09:12:44.120Z",
+      "periodEnd": "2026-12-01T09:12:44.120Z"
+    },
+    "next": {
+      "id": "cm3k9a1b20007ab1cq4w8z3m1",
+      "kind": "promo",
+      "plan": "pro",
+      "periodStart": "2026-12-01T09:12:44.120Z",
+      "periodEnd": "2027-06-01T09:12:44.120Z"
+    },
+    "trialAvailable": false
+  }
+}
+```
+
+- `current`: the period covering now, or `null` — the organization is on `free`.
+- `next`: the earliest period that has not started yet, or `null`. When it starts exactly where
+  `current` ends, there is no gap in which the organization falls to `free`.
+- `kind`: `trial`, `promo` or `paid`. `plan`: the plan's name.
+- Periods are half-open: `periodStart` is inside the period, `periodEnd` is not.
+- `trialAvailable`: `true` exactly when the organization has never had a subscription and the
+  person who created it has never had a trial, in this organization or any other.
+- An operator-voided period never appears here and grants nothing, but still counts as having
+  had a subscription.
+
+The plan in a session's token is what gates features, and it is re-read at every refresh, so a
+period that starts or lapses reaches each member within one access-token lifetime (15 minutes).
+This endpoint reads the database and is always current.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`: orgless session.
+
+---
+
 ## List members
 
 The roster: who is on this organization's team now, and at what role. Every member reads it, a
@@ -3108,8 +3176,8 @@ when that address registers and verifies.
 `POST /api/v1/organization/invitations`
 
 **Authentication:** required (Bearer). Permission: `user:manage`. **Plan:** `pro`, `business` or
-`enterprise` — until a subscription writer exists, every organization reads as `free` and this
-answers `402`.
+`enterprise`, read from the organization's current [subscription](#get-subscription). A lapsed
+organization keeps its members but cannot invite more.
 
 **Request data:**
 

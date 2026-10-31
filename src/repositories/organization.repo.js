@@ -1,6 +1,7 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 import { PERMISSIONS } from '../libs/permissions.js';
+import subscriptions from './subscription.repo.js';
 
 /**
  * Roster cursor: which group the last row belonged to (members, then pending
@@ -406,13 +407,6 @@ export default class OrganizationRepository {
   }
 
   /**
-   * Plan name for entitlement checks, defaulting to 'free'.
-   *
-   * An organization with no subscription row is on the free tier, not
-   * unentitled-and-broken — the plan gate must fail closed to paid features
-   * while still letting the account work.
-   */
-  /**
    * One organization by id. Used by the Telegram link flow to name the org in
    * the confirmation the user sees — without it the bot can only say "your
    * organization", which is unhelpful for a consultant linked to several.
@@ -422,13 +416,19 @@ export default class OrganizationRepository {
     return trx('organizations').where({ id }).first();
   }
 
+  /**
+   * Plan name for entitlement checks: the plan of the non-voided subscription
+   * covering now, else 'free'.
+   *
+   * Read from the period's dates, never a status (ADR 0005) — it once checked
+   * `status = 'active'` and no date, so a period nothing remembered to flip
+   * would have granted its plan forever. No subscription is the free tier, not
+   * unentitled-and-broken: the plan gate fails closed to paid features while
+   * the account still works. Runs at session mint and refresh only; gate 4
+   * reads the plan from the token.
+   */
   static async planFor(organizationId, trx = db) {
-    const row = await trx('subscriptions as s')
-      .join('plans as p', 'p.id', 's.plan_id')
-      .where('s.organization_id', organizationId)
-      .andWhere('s.status', 'active')
-      .select('p.name')
-      .first();
-    return row?.name ?? 'free';
+    const row = await subscriptions.current(organizationId, trx);
+    return row?.plan ?? 'free';
   }
 }

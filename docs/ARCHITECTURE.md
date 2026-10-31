@@ -198,7 +198,7 @@ Tendra/
     │   └── adapters/                # everything external lives behind a port
     │       ├── ai/                  # Claude client, prompt templates, output schemas
     │       ├── notify/              # telegram, email, sms
-    │       ├── payment/             # bank transfer, card link
+    │       ├── payment/             # card payments through a bank vPOS (ADR 0005)
     │       └── source/              # one adapter per procurement source
     │           ├── eauction/        # client.js · listing.parser.js · detail.parser.js
     │           ├── ppcm/            # client.js · csv.parser.js

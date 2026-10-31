@@ -24,6 +24,7 @@ import {
 } from './invitations/invitation.routes.js';
 import unsubscribeRoutes from './unsubscribe/unsubscribe.routes.js';
 import operatorRoutes from './operator/operator.routes.js';
+import subscriptionRoutes from './subscriptions/subscription.routes.js';
 import { checkHealth, publicReport } from '../workers/health.js';
 import { ok } from '../utils/respond.js';
 
@@ -58,6 +59,7 @@ router.use('/tracked-tenders', trackedTenderRoutes);
 router.use('/organization', supplierIdentityRoutes);
 router.use('/organization', currentOrganizationRoutes);
 router.use('/organization/invitations', organizationInvitationRoutes);
+router.use('/organization/subscription', subscriptionRoutes);
 router.use('/invitations', myInvitationRoutes);
 router.use('/vault-documents', vaultRoutes);
 router.use('/notifications', notificationRoutes);

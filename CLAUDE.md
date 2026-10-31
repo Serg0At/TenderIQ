@@ -368,18 +368,18 @@ POST   /invitations/:id/{accept,decline}
   rather than personal messages is what makes that honest; a personally-addressed alert would need
   per-user delivery built first, and that is phase 5's problem (a declined card is not a company
   announcement).
-- **`organizations.tax_id` is the ՀՎՀՀ: unique, NULLABLE, collected only when the customer chooses to
-  pay by invoice.** It is unverifiable — no source ingested today carries a *supplier's* tax number
-  — so it was never evidence, only a consistently-claimed identifier. Its one hard requirement is the
-  Armenian VAT invoice, which is a property of the payment method rather than of the sale, so a card
-  payer is never asked for it. This wants a plain `UNIQUE`, whose default `NULLS DISTINCT` lets any
+- **`organizations.tax_id` is the ՀՎՀՀ: unique, NULLABLE, and nothing collects it today.** It was
+  to be asked only of a customer paying by invoice, and bank transfer against a VAT invoice is not a
+  payment method (ADR 0005). Its one hard requirement is the Armenian VAT invoice, and a legal entity
+  paying by card probably still needs one, so when to ask for it is decided with the vPOS slice. It
+  is unverifiable — no source ingested today carries a *supplier's* tax number — so it was never
+  evidence, only a consistently-claimed identifier. This wants a plain `UNIQUE`, whose default `NULLS DISTINCT` lets any
   number of orgs hold NULL — the exact opposite of `notifications_dedupe_uq`, and getting it backwards
   means the second TIN-less organization fails to insert.
-- **De-duplication is therefore best-effort, and that is a knowing trade.** The constraint still turns
-  a collision into "Shinarar LLC already uses Tendra — ask an admin there to invite you", but it
-  only fires between two orgs that both reached invoice payment, so two tenants for one company can
-  exist. What makes that survivable is that the expensive case is two *teams*, and invoice payment is
-  the dominant B2B method here, so teams mostly do collide. Merging two tenants by hand is not an
+- **De-duplication is therefore best-effort, and today it never fires.** The constraint turns a
+  collision into "Shinarar LLC already uses Tendra — ask an admin there to invite you", but only
+  between two orgs that both gave a ՀՎՀՀ, and nothing asks for one until the vPOS slice decides
+  when to — so two tenants for one company can exist, and nothing stops them yet. Merging two tenants by hand is not an
   `UPDATE organization_id`: children carry composite `(parent_id, organization_id)` keys, and
   `vault_documents` have objects in a bucket.
 - **The ՀՎՀՀ does NOT link an org to its supplier party today.** PPCM publishes every bidder's ՀՎՀՀ
@@ -447,7 +447,8 @@ POST   /invitations/:id/{accept,decline}
   corrupting the audit trail phase 5 needs. Removal, role change, leaving and transfer stay
   **role-gated only**: gating the growth direction sells the plan, while gating the shrink direction
   means a downgraded customer's only route to removing an ex-employee is to pay again.
-- **A subscription belongs to an organization, and there is only one kind.** Gate 4 reads the plan of
+- **A subscription belongs to an organization, never to a user.** (Its `kind` — trial, promo, paid —
+  says how a period was granted, not whom it is for.) Gate 4 reads the plan of
   the session's organization (`sessionFor` → `planFor(membership.organization_id)`), so a user-level
   subscription would be invisible in the only place a consultant works — inside a client's tenant. A
   consultancy is itself an organization: it registers, buys a plan and works in its own tenant, which
@@ -506,13 +507,13 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
 
 Enum values constrained at the DB level by a CHECK: `tender.submission_channel ∈ {eauction, armeps,
 paper}`; `tender_sources.role ∈ {discovery, detail, results}`; `tracked_tender.status ∈ {considering,
-preparing, submitted, won, lost, dropped}`; `invitation.status ∈ {pending, accepted, declined}`.
+preparing, submitted, won, lost, dropped}`; `invitation.status ∈ {pending, accepted, declined}`; `subscription.kind ∈ {trial, promo, paid}`.
 `tender.procedure_type ∈ {open, quotation, single_source, e_auction, restricted}` and `tender.status ∈
 {planned, active, amended, closed, awarded, cancelled}` are pinned only by the Joi schema at the
 normalizer boundary (`validations/schemas/tender.schema.js`) — there is no CHECK on either yet.
 Nullable on purpose: `tenders.deadline_at` (some notices lack it), `awards.supplier_id` (void or
-undisclosed), `vault_documents.valid_until` (non-expiring docs), `organizations.tax_id` (no ՀՎՀՀ
-until invoice payment) — features degrade rather than break.
+undisclosed), `vault_documents.valid_until` (non-expiring docs), `organizations.tax_id` (nothing
+collects a ՀՎՀՀ yet) — features degrade rather than break.
 
 ## AI layer
 
@@ -578,8 +579,30 @@ Where reference docs say "Prisma client", read "Knex instance"; where they say "
 
 Ingestion, the HTTP API, discovery, the intelligence layer, the **bid pipeline**, the **AI
 checklist** and the **document vault** all run, and so do **multi-user organizations** (F-05)
-and **relevance ranking** (FR-DISC-4). Billing — the rest of phase 5 — and phase 6 (post-award)
-do not exist.
+and **relevance ranking** (FR-DISC-4). **Subscriptions** (F-02) are being built; card payments —
+the rest of phase 5 — and phase 6 (post-award) do not exist.
+
+**Subscriptions** (spec and tickets in `.scratch/subscriptions/`, ADR 0005, CONTEXT.md § *Plans and
+subscriptions*):
+
+- **A subscription is a dated period, one row each** — a trial, then promo periods, later paid ones.
+  `planFor` answers with the plan of the non-voided row covering now (`subscription.repo.js#current`,
+  the half-open `tstzrange(period_start, period_end) @> now()`), else `free`. **There is no status
+  column and no sweep**: a lapsed period stops granting its plan by the clock alone. The lookup it
+  replaced checked `status = 'active'` and never a date, so a period nothing flipped was Pro forever.
+- **No copy of the plan lives on `organizations`.** Gate 4 reads the plan from the token and
+  `planFor` runs only at mint and refresh, so a copy would buy nothing and be a second answer. The
+  honest cost: a lapse reaches a session at its next refresh, up to one access-token lifetime late.
+- **Periods never overlap, and the database says so**: `subscriptions_no_overlap_excl` (`btree_gist`)
+  over `(organization_id, tstzrange)` on non-voided rows, so a promo starting the instant a trial
+  ends is accepted and `current` is at most one row. `period_end > period_start` is a CHECK, because
+  an empty range overlaps nothing and would slip past the exclusion. A voided row grants nothing and
+  frees its time, but stays as the record of the grant — and still counts as "had a subscription".
+- **Payment is by card through a bank vPOS once one is contracted. Bank transfer against a VAT
+  invoice is not a payment method**, though the reference spec's `technical/Payments
+  Architecture.md` makes it the backbone (ADR 0005). Until card payments exist, launch runs on a
+  trial and 100% promo codes; `invoices` may never get a writer.
+- `GET /organization/subscription` answers `{ current, next, trialAvailable }` to every member.
 
 **Relevance ranking** (`GET /tenders/relevant`, spec and tickets in `.scratch/relevance-ranking/`,
 ADR 0003) — what building it decided, beyond the spec:
@@ -884,7 +907,9 @@ decision that has already been made.
   said (ticket 25). Open is the whole guard: backfills store closed tenders.
   `npm run cpv:backfill` fills old rows from storage, writes the column only and raises no alert
   (dry run by default; it reports the alerts the codes would have raised).
-- **Still no writer:** `contracts`, `subscriptions`, `invoices`, `audit_logs` — all phase 5/6.
+- **Still no writer:** `contracts`, `invoices`, `audit_logs` — phase 5/6, and `invoices` perhaps
+  never (ADR 0005). `subscriptions` is read by `planFor`; the trial and promo redemption (F-02) write
+  it.
 - **Telegram and email are the two live delivery channels**, driven by one policy engine.
   `services/notifier.service.js` owns recipient resolution, outcome mapping and delivery
   recording for both; `TRANSPORTS` in that file holds the only per-channel differences, and it
@@ -1017,8 +1042,8 @@ decision that has already been made.
     TTL, and locks the organization row `FOR UPDATE` before re-checking vault keys and membership, so
     nothing registered concurrently is cascaded away with its object left in the bucket.
   - **Plan gating on invitations** uses `authorize('user:manage', { planGate: 'invitations' })`; every
-    other `user:manage` action stays role-gated. No subscription writer exists yet, so every
-    organization reads `free` and sending an invitation answers 402 for everyone until F-02.
+    other `user:manage` action stays role-gated. A trial or promo organization can therefore
+    invite; a lapsed one keeps its members but cannot invite more — growth-gated, shrink-free.
 - **Reset codes have an attempt ceiling, and that is the actual lock.** Six digits is a million
   possibilities — roughly a minute of scripted guessing — so a code that merely waits out its TTL
   under unlimited tries is a delay, not a factor. `authStore.js` burns the code on the fifth failure;
@@ -1228,8 +1253,10 @@ sheet. Consult it before designing anything new; it almost certainly already spe
 | `frontend/`, `ux/` | The planned Next.js client — not started |
 | `business/`, `research/` | Why a decision was made; market and pricing context |
 
-Two caveats when reading it: it assumes Prisma/Zod/feature-folders (see *Deliberate deviations*), and
-its AI model IDs predate the current Claude generation (see *AI layer*). Everything else transfers.
+Three caveats when reading it: it assumes Prisma/Zod/feature-folders (see *Deliberate deviations*),
+its AI model IDs predate the current Claude generation (see *AI layer*), and its payments
+architecture rests on bank transfer and VAT invoices, which are ruled out (ADR 0005 — card through a
+bank vPOS). Everything else transfers.
 
 ## Agent skills
 
