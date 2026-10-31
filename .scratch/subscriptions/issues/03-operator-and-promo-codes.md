@@ -7,7 +7,7 @@ routes, § *Token*, stories 27–34, 37–39).
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] Users carry an operator flag, false by default and set only by hand (SQL or script).
 - [x] Session mint and refresh read the flag from the database the way they read the role, and

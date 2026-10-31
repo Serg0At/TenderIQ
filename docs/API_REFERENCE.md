@@ -7,7 +7,7 @@
 > frontend-to-server requests.
 >
 > Consequently **every endpoint below is currently uncalled by any frontend in this repo**.
-> Rather than repeat that on all 45 entries, the endpoints are documented normally by
+> Rather than repeat that on all 89 entries, the endpoints are documented normally by
 > feature, and [Backend endpoints not currently used by frontend](#backend-endpoints-not-currently-used-by-frontend)
 > records the situation once. No "Backend endpoint not found" entries exist, because there
 > are no frontend requests to cross-check.
@@ -5803,6 +5803,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
 | GET | `/api/v1/organization` | The session's organization and its fields | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization` | Replace the organization's fields | Yes (`org:manage`) |
+| GET | `/api/v1/organization/subscription` | The current and next subscription period, and whether a trial is available | Yes (`tender:read`) |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |
@@ -5852,4 +5853,4 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | GET | `/api/v1/operator/promo-codes` | Every code with its redemptions, newest first | Yes (operator) |
 | DELETE | `/api/v1/operator/promo-codes/:id` | Delete an unredeemed code, disable a redeemed one | Yes (operator) |
 
-**62 endpoints** across 10 route modules.
+**89 endpoints** across 14 route modules.
