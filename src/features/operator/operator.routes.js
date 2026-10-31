@@ -21,4 +21,7 @@ router.post('/promo-codes', validate(createPromoCodeSchema), OperatorController.
 router.get('/promo-codes', validate(promoCodeQuerySchema, 'query'), OperatorController.listPromoCodes);
 router.delete('/promo-codes/:id', OperatorController.removePromoCode);
 
+router.get('/organizations/:id/subscriptions', OperatorController.listSubscriptions);
+router.post('/subscriptions/:id/void', OperatorController.voidSubscription);
+
 export default router;

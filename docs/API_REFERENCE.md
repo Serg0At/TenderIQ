@@ -7,7 +7,7 @@
 > frontend-to-server requests.
 >
 > Consequently **every endpoint below is currently uncalled by any frontend in this repo**.
-> Rather than repeat that on all 91 entries, the endpoints are documented normally by
+> Rather than repeat that on all 93 entries, the endpoints are documented normally by
 > feature, and [Backend endpoints not currently used by frontend](#backend-endpoints-not-currently-used-by-frontend)
 > records the situation once. No "Backend endpoint not found" entries exist, because there
 > are no frontend requests to cross-check.
@@ -138,6 +138,8 @@ All paths are relative to the base path **`/api/v1`**.
 - [Create a promo code](#create-a-promo-code) — `POST /operator/promo-codes`
 - [List promo codes](#list-promo-codes) — `GET /operator/promo-codes`
 - [Delete or disable a promo code](#delete-or-disable-a-promo-code) — `DELETE /operator/promo-codes/:id`
+- [List an organization's subscriptions](#list-an-organizations-subscriptions) — `GET /operator/organizations/:id/subscriptions`
+- [Void a subscription](#void-a-subscription) — `POST /operator/subscriptions/:id/void`
 
 ### Unsubscribe (no login)
 - [Preview an unsubscribe link](#preview-an-unsubscribe-link) — `GET /unsubscribe`
@@ -5641,7 +5643,8 @@ Being an operator is a property of the **user** (`users.is_operator`), never of 
   so within one access-token lifetime (15 minutes by default). Setting it takes effect the same
   way: refresh, or sign in again.
 - **Orgless sessions are allowed.** Operating Tendra never depends on the operator's own
-  membership, and these routes read no organization's private data.
+  membership, and these routes read no organization's private data. An organization's
+  subscriptions are Tendra's own record of what it granted, not the tenant's.
 - **Everyone else is refused with `403 ROLE_FORBIDDEN`** and `details: { required: "operator" }`
   on every route below, whatever their role in whatever organization, before the body is
   validated.
@@ -5807,6 +5810,127 @@ No request body
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`: the token has no `op` claim.
 - `404 NOT_FOUND`: no such code, including one already deleted.
+
+---
+
+## List an organization's subscriptions
+
+Every period of one organization, oldest first, **voided ones included** — the answer to "why is
+this company on Pro". Each carries its kind, plan and dates, the promo code it was redeemed with,
+and who voided it and when.
+
+`coversNow` is whether this is the period that sets the organization's plan right now: not voided,
+and the moment lies in `[periodStart, periodEnd)`. At most one row has it; none means `free`.
+
+**API:**
+`GET /api/v1/operator/organizations/:id/subscriptions`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+No request body. Not paginated: an organization gets one trial and one period per code, each after
+the last has ended, so the list stays short.
+
+**Response data:**
+
+```json
+{
+  "data": [
+    {
+      "id": "cm9zx4k1p0900qw8f5c1a7e2r",
+      "kind": "trial",
+      "plan": "pro",
+      "periodStart": "2026-11-01T09:30:00.000Z",
+      "periodEnd": "2026-12-01T09:30:00.000Z",
+      "coversNow": true,
+      "promoCode": null,
+      "voidedAt": null,
+      "voidedBy": null,
+      "createdAt": "2026-11-01T09:30:00.000Z"
+    },
+    {
+      "id": "cm9zx4k1p0901qw8f0d4b6h8s",
+      "kind": "promo",
+      "plan": "pro",
+      "periodStart": "2026-12-01T09:30:00.000Z",
+      "periodEnd": "2027-03-01T09:30:00.000Z",
+      "coversNow": false,
+      "promoCode": { "id": "cm9zx4k1p0700qw8f2a6d9k3m", "code": "LAUNCH100" },
+      "voidedAt": "2026-11-03T14:02:11.507Z",
+      "voidedBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+      "createdAt": "2026-11-02T10:15:40.112Z"
+    }
+  ]
+}
+```
+
+- `kind` is `trial`, `promo` or `paid` (nothing writes `paid` yet).
+- `promoCode` is `null` for a trial. A code a period points at can only be disabled, never deleted,
+  so it is always there to name.
+- `voidedBy` is `null` while the period stands, and also once the voiding operator's account no
+  longer exists (`voidedAt` stays).
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `404 NOT_FOUND`: "Organization not found."
+
+---
+
+## Void a subscription
+
+Ends a grant made in error or abused, for that one organization only. A voided period grants
+nothing from then on, current or still to come, but **it is not deleted**, and it still counts:
+
+- a voided trial is still its creator's one trial: `trialAvailable` stays `false` and
+  [Start a trial](#start-a-trial) is still refused, in this organization and in any other the same
+  person creates;
+- a voided promo is still this organization's use of its code: redeeming it again answers
+  `already_redeemed`, and the code's `redemptionCount` does not go down.
+
+The plan reaches the organization's sessions at their next refresh, which reads whatever other
+period covers now, or `free`. Access tokens already issued keep the old plan for up to one
+access-token lifetime (15 minutes by default). Voiding a period that waits behind a kept trial
+leaves the trial running.
+
+**Idempotent.** Voiding an already-voided period is a `200` that changes nothing: the first
+`voidedAt` and `voidedBy` stay.
+
+**API:**
+`POST /api/v1/operator/subscriptions/:id/void`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+No request body
+
+**Response data:** `200 OK` — the period as [List an organization's subscriptions](#list-an-organizations-subscriptions) shows it.
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0901qw8f0d4b6h8s",
+    "kind": "promo",
+    "plan": "pro",
+    "periodStart": "2026-11-02T10:15:40.112Z",
+    "periodEnd": "2027-02-02T10:15:40.112Z",
+    "coversNow": false,
+    "promoCode": { "id": "cm9zx4k1p0700qw8f2a6d9k3m", "code": "LAUNCH100" },
+    "voidedAt": "2026-11-03T14:02:11.507Z",
+    "voidedBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+    "createdAt": "2026-11-02T10:15:40.112Z"
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `404 NOT_FOUND`: "Subscription not found."
 
 ---
 
@@ -6050,5 +6174,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | POST | `/api/v1/operator/promo-codes` | Issue a promo code | Yes (operator) |
 | GET | `/api/v1/operator/promo-codes` | Every code with its redemptions, newest first | Yes (operator) |
 | DELETE | `/api/v1/operator/promo-codes/:id` | Delete an unredeemed code, disable a redeemed one | Yes (operator) |
+| GET | `/api/v1/operator/organizations/:id/subscriptions` | Every period of one organization, voided ones included | Yes (operator) |
+| POST | `/api/v1/operator/subscriptions/:id/void` | Void a period (idempotent); the plan lapses at the next refresh | Yes (operator) |
 
-**91 endpoints** across 14 route modules.
+**93 endpoints** across 14 route modules.

@@ -15,12 +15,32 @@ const COVERS_NOW_SQL = 'tstzrange(s.period_start, s.period_end) @> now()';
 
 const columns = ['s.id', 's.kind', 'p.name as plan', 's.period_start', 's.period_end'];
 
+/** A period with everything the operator console shows beside it. */
+const forOperator = (trx) =>
+  trx(`${TABLE} as s`)
+    .join('plans as p', 'p.id', 's.plan_id')
+    .leftJoin('promo_codes as c', 'c.id', 's.promo_code_id')
+    .leftJoin('users as v', 'v.id', 's.voided_by')
+    .select(
+      ...columns,
+      's.organization_id',
+      's.promo_code_id',
+      'c.code as promo_code',
+      's.voided_at',
+      's.voided_by',
+      'v.display_name as voided_by_name',
+      's.created_at',
+      trx.raw(`(s.voided_at IS NULL AND ${COVERS_NOW_SQL}) as covers_now`)
+    );
+
 /**
  * An organization's subscriptions: dated periods, one row each (ADR 0005).
  *
  * Scoped by organization like every private repository, except
  * `creatorHasTrial`, which asks the one cross-tenant question a trial needs (has
- * this person had one in any organization?) and answers only yes or no.
+ * this person had one in any organization?) and answers only yes or no, and
+ * `findById` and `voidPeriod`, which the operator console reaches by a period's
+ * id: the operator belongs to no organization, and acts on any one.
  */
 export default class SubscriptionRepository {
   /**
@@ -87,6 +107,46 @@ export default class SubscriptionRepository {
   static async hasRedeemed(organizationId, promoCodeId, trx = db) {
     const row = await trx(TABLE).where({ organization_id: organizationId, promo_code_id: promoCodeId }).first('id');
     return Boolean(row);
+  }
+
+  /**
+   * Every period of the organization, voided ones included, as the operator
+   * console shows them: oldest first, with the code each came from, who voided
+   * it, and whether it is the one covering now.
+   *
+   * Unpaginated: an organization gets one trial and one period per code, each
+   * after the last has ended, so the list stays short.
+   */
+  static async listForOrganization(organizationId, trx = db) {
+    return forOperator(trx)
+      .where('s.organization_id', organizationId)
+      .orderBy([{ column: 's.period_start' }, { column: 's.id' }]);
+  }
+
+  /** One period as `listForOrganization` shows it, by id alone (operator only), or null. */
+  static async findById(id, trx = db) {
+    const row = await forOperator(trx).where('s.id', id).first();
+    return row ?? null;
+  }
+
+  /**
+   * Void a period: it grants nothing from now on, and frees its time for the
+   * exclusion constraint. Returns `'voided'`, `'already_voided'`, or null when
+   * there is no such period.
+   *
+   * Only an unvoided row is updated, so a repeat keeps the first `voided_at` and
+   * `voided_by`, and of two concurrent voids the second waits on the row lock
+   * and then matches nothing. The row stays: a voided trial still counts as used
+   * and a voided promo as a use of its code, through the indexes that read it.
+   */
+  static async voidPeriod(id, operatorId, trx = db) {
+    const voided = await trx(TABLE)
+      .where({ id })
+      .whereNull('voided_at')
+      .update({ voided_at: trx.raw('now()'), voided_by: operatorId });
+    if (voided === 1) return 'voided';
+    const row = await trx(TABLE).where({ id }).first('id');
+    return row ? 'already_voided' : null;
   }
 
   /**

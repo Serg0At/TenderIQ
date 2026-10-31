@@ -74,8 +74,9 @@ export const authenticate = (req, _res, next) => verifyBearer(req, next, { allow
  * One entry is here for a different reason: `/operator`, behind
  * `authorizeOperator`. Being an operator is a property of the user, not of any
  * organization, so the console must work whether or not the session is inside
- * one — and these routes read no tenant's private data, so there is no tenant
- * for a membership to scope them to. They are still refused to every session
+ * one — and these routes read no tenant's private data (an organization's
+ * subscriptions are Tendra's record of what it granted, not the tenant's), so
+ * there is no tenant for a membership to scope them to. They are still refused to every session
  * without the `op` claim; orgless here widens nothing.
  */
 export const authenticateOrgless = (req, _res, next) => verifyBearer(req, next, { allowOrgless: true });
