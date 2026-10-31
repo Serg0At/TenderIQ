@@ -11,8 +11,23 @@ const FOREIGN_KEY_VIOLATION = '23503';
  *
  * Not a private table: a code belongs to no organization, so nothing here is
  * scoped by `organization_id`. Only the operator console reads these rows
- * whole; redemption (ticket 04) will look a code up by its text.
+ * whole; redemption looks a code up by its text.
  */
+
+/**
+ * Whether a code is still open: not disabled, not past its deadline. Read
+ * against the database clock.
+ */
+const OPEN_SQL = `disabled_at IS NULL
+  AND (redeemable_until IS NULL OR redeemable_until > now())`;
+
+/**
+ * Whether a code can be redeemed right now: open, and not used up. The one
+ * definition, shared by the lookup and the conditional UPDATE that counts a
+ * redemption.
+ */
+const REDEEMABLE_SQL = `${OPEN_SQL}
+  AND (max_redemptions IS NULL OR redemption_count < max_redemptions)`;
 
 /**
  * The one spelling of a code: trimmed and upper-cased.
@@ -79,6 +94,40 @@ export default class PromoCodeRepository {
 
   static async findById(id, trx = db) {
     return withPlanAndCreator(trx).where('c.id', id).first();
+  }
+
+  /**
+   * A code by the text an owner typed, in any case and with stray spaces, with
+   * `open` and `redeemable` computed as `OPEN_SQL` and `REDEEMABLE_SQL` say.
+   * Null when no such code.
+   */
+  static async findByCode(code, trx = db) {
+    const row = await trx(TABLE)
+      .where({ code: normalizeCode(code) })
+      .select(
+        'id',
+        'plan_id',
+        'percent_off',
+        'duration_months',
+        trx.raw(`(${OPEN_SQL}) as open`),
+        trx.raw(`(${REDEEMABLE_SQL}) as redeemable`)
+      )
+      .first();
+    return row ?? null;
+  }
+
+  /**
+   * Count one redemption, if the code is still redeemable. Returns whether it
+   * was counted.
+   *
+   * The condition is in the UPDATE itself, so the database holds the limit: two
+   * organizations redeeming the last use at once both read it as redeemable,
+   * the second UPDATE waits on the first's row lock, re-evaluates, and matches
+   * nothing. A code disabled in between is refused the same way.
+   */
+  static async countRedemption(id, trx = db) {
+    const updated = await trx(TABLE).where({ id }).whereRaw(REDEEMABLE_SQL).increment('redemption_count', 1);
+    return updated === 1;
   }
 
   /**

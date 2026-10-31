@@ -41,7 +41,7 @@ backbone.
 - **Subscriptions never overlap.** A code redeemed during a trial starts when the trial ends, or
   — the owner chooses — the trial is ended now. Ending it early shortens its `period_end`, the
   only edit a period ever takes; it is not voided, because a voided trial would let its creator
-  start another. No code can be redeemed while a promo is current. Non-overlap is what `planFor`
+  start another. No code can be redeemed while a promo is current or scheduled. Non-overlap is what `planFor`
   relies on, so like every comparable invariant here it belongs to the database; the spec
   decides the constraint.
 - **A promo code at 100% needs no checkout**, so it redeems straight into a period; anything

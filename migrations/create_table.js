@@ -684,7 +684,8 @@ function up(pg) {
       table.timestamp('period_start').notNullable();
       table.timestamp('period_end').notNullable();
       // The code a promo period was redeemed with. RESTRICT: a redeemed code is disabled, never
-      // deleted, and this is the database holding that.
+      // deleted, and this is the database holding that. Once per organization:
+      // subscriptions_promo_code_org_uq.
       table.string('promo_code_id').references('id').inTable('promo_codes').onDelete('RESTRICT');
       // A trial copies its organisation's created_by here, so one trial per creator can be an
       // index rather than a join: subscriptions_trial_creator_uq.
@@ -1002,6 +1003,12 @@ async function indexes(pg) {
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_trial_creator_uq
      ON subscriptions (trial_creator_id) WHERE kind = 'trial'`);
 
+  /**
+   * One redemption of a code per organization. Voided rows are NOT excluded, for the trial
+   * index's reason: a voided promo was still redeemed, or voiding it would hand the code back.
+   */
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_promo_code_org_uq
+     ON subscriptions (promo_code_id, organization_id) WHERE promo_code_id IS NOT NULL`);
 }
 
 async function init() {

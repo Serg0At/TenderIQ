@@ -13,4 +13,12 @@ export default class SubscriptionController {
       await SubscriptionService.startTrial({ userId: req.user.id, organizationId: req.user.organizationId })
     );
   }
+
+  /** 201 for the same reason as the trial: a period now exists. */
+  static async redeem(req, res) {
+    return created(
+      res,
+      await SubscriptionService.redeem({ userId: req.user.id, organizationId: req.user.organizationId, ...req.body })
+    );
+  }
 }

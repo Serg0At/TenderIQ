@@ -7,7 +7,7 @@
 > frontend-to-server requests.
 >
 > Consequently **every endpoint below is currently uncalled by any frontend in this repo**.
-> Rather than repeat that on all 90 entries, the endpoints are documented normally by
+> Rather than repeat that on all 91 entries, the endpoints are documented normally by
 > feature, and [Backend endpoints not currently used by frontend](#backend-endpoints-not-currently-used-by-frontend)
 > records the situation once. No "Backend endpoint not found" entries exist, because there
 > are no frontend requests to cross-check.
@@ -80,6 +80,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Update organization](#update-organization) — `PATCH /organization`
 - [Get subscription](#get-subscription) — `GET /organization/subscription`
 - [Start a trial](#start-a-trial) — `POST /organization/subscription/trial`
+- [Redeem a promo code](#redeem-a-promo-code) — `POST /organization/subscription/redeem`
 - [List members](#list-members) — `GET /organization/members`
 - [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
 - [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
@@ -2851,6 +2852,114 @@ No request body
   of one creator starting a trial at the same instant: one of them gets it, the other is refused
   the same way.
 - `429 RATE_LIMITED`: more than 10 attempts/hour for this user.
+
+---
+
+## Redeem a promo code
+
+Turns a promo code into a `promo` period of the code's plan, lasting the code's length in
+calendar months (on the Yerevan calendar). There is no checkout: only a **100%** code can be
+redeemed today, and anything less is refused before anything is written. The code is matched
+regardless of letter case and surrounding spaces, so `  launch100 ` is `LAUNCH100`.
+
+**During a trial** the owner chooses what happens to the remaining trial days, and must say:
+
+- `keep`: the promo starts the moment the trial ends, so there is no gap on `free`. Until then
+  the organization stays on the trial, and the promo shows as `next`.
+- `end`: the trial ends now and the promo starts now. Shortening a trial this way is the only
+  change a period ever takes.
+
+With no current period the promo starts now. A lapsed organization can redeem a new code it was
+given and picks up where it stopped.
+
+The response carries a fresh session for this organization, as [Start a trial](#start-a-trial)
+does. Its plan is the code's, except after `keep`, when it is the trial's until the trial ends.
+Other members pick the plan up at their next refresh.
+
+**API:**
+`POST /api/v1/organization/subscription/redeem`
+
+**Authentication:** required (Bearer). Permission: `billing:manage` — the **owner** only, re-read
+from the membership as for the trial. Not plan-gated.
+
+**Request data:**
+
+```json
+{ "code": "LAUNCH100", "trial": "keep" }
+```
+
+- `code` (required): the code as typed, up to 100 characters.
+- `trial`: `keep` or `end`. Required only while a trial is current; ignored otherwise.
+
+**Response data:**
+
+`201 Created`, in the shape [Start a trial](#start-a-trial) returns. After `keep` during a trial:
+
+```json
+{
+  "data": {
+    "subscription": {
+      "current": {
+        "id": "cm3k8q2v70004ab1c9x7r5t2e",
+        "kind": "trial",
+        "plan": "pro",
+        "periodStart": "2026-11-01T09:12:44.120Z",
+        "periodEnd": "2026-12-01T09:12:44.120Z"
+      },
+      "next": {
+        "id": "cm3k9a1b20007ab1cq4w8z3m1",
+        "kind": "promo",
+        "plan": "pro",
+        "periodStart": "2026-12-01T09:12:44.120Z",
+        "periodEnd": "2027-06-01T09:12:44.120Z"
+      },
+      "trialAvailable": false
+    },
+    "session": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expiresIn": 900,
+      "user": { "id": "cm9zx4k1p0000qw8f3h2l7d5t", "email": "procurement@shinarar.am", "displayName": "Gevorg Sargsyan", "locale": "hy", "emailVerified": true },
+      "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+      "role": "owner",
+      "plan": "pro",
+      "operator": false,
+      "organizations": [
+        { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
+      ]
+    }
+  }
+}
+```
+
+After `end`, `current` is the promo and `next` is `null`.
+
+**Errors**, in the order they are checked:
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: role lacks `billing:manage`, or the caller is no longer the owner — "Only
+  the owner can redeem a promo code."
+- `403 NO_ORGANIZATION`: orgless session.
+- `429 RATE_LIMITED`: more than 10 attempts/hour for this user, counted before the body is read,
+  so guessing codes is slow.
+- `422 VALIDATION_FAILED`, `details: [{ field, message }]`: `code` missing or longer than 100
+  characters, or `trial` neither `keep` nor `end`. What a code may look like is never checked
+  here: a malformed one is simply unknown.
+- `422 VALIDATION_FAILED`, `details: { reason: "code_invalid" }`: the code is unknown, disabled,
+  past its last redemption date, or used up. **One message and one shape for all four**, so the
+  answer does not tell a guesser which codes exist. A code with one use left that another
+  organization redeems at the same instant answers this too. A used-up code this organization
+  itself redeemed is not one of the four: it answers `already_redeemed` (or `promo_active` while
+  that promo runs), since the organization already knows the code.
+- `422 VALIDATION_FAILED`, `details: { reason: "payments_unavailable", percentOff }`: the code is
+  below 100% and payments are not available yet. Nothing is written and the code is not spent.
+- `409 CONFLICT`, `details: { reason: "promo_active" }`: the organization has a promo period that
+  has not ended, current or still to come. Another code can be redeemed once it ends.
+- `409 CONFLICT`, `details: { reason: "already_redeemed" }`: this organization has redeemed this
+  code before, including a period an operator voided, and even if the code has been used up
+  since.
+- `422 VALIDATION_FAILED`, `details: [{ field: "trial", message }]`: a trial is current and
+  `trial` is missing.
 
 ---
 
@@ -5892,6 +6001,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | PATCH | `/api/v1/organization` | Replace the organization's fields | Yes (`org:manage`) |
 | GET | `/api/v1/organization/subscription` | The current and next subscription period, and whether a trial is available | Yes (`tender:read`) |
 | POST | `/api/v1/organization/subscription/trial` | Start the organization's one Pro trial; returns a session carrying it | Yes (`billing:manage`, owner) |
+| POST | `/api/v1/organization/subscription/redeem` | Redeem a 100% promo code as a period of its plan; keep or end a running trial | Yes (`billing:manage`, owner) |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |
@@ -5941,4 +6051,4 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | GET | `/api/v1/operator/promo-codes` | Every code with its redemptions, newest first | Yes (operator) |
 | DELETE | `/api/v1/operator/promo-codes/:id` | Delete an unredeemed code, disable a redeemed one | Yes (operator) |
 
-**90 endpoints** across 14 route modules.
+**91 endpoints** across 14 route modules.

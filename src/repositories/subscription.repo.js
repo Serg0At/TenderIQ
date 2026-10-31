@@ -67,6 +67,85 @@ export default class SubscriptionRepository {
   }
 
   /**
+   * The non-voided promo or paid period that has not ended — current or still
+   * to come — or null. A scheduled one counts: a second code redeemed beside it
+   * could only overlap it.
+   */
+  static async unendedGrant(organizationId, trx = db) {
+    const row = await trx(`${TABLE} as s`)
+      .join('plans as p', 'p.id', 's.plan_id')
+      .where('s.organization_id', organizationId)
+      .whereIn('s.kind', ['promo', 'paid'])
+      .whereNull('s.voided_at')
+      .whereRaw('s.period_end > now()')
+      .orderBy([{ column: 's.period_start' }, { column: 's.id' }])
+      .first(columns);
+    return row ?? null;
+  }
+
+  /** Whether this organization has redeemed this code, voided periods included. */
+  static async hasRedeemed(organizationId, promoCodeId, trx = db) {
+    const row = await trx(TABLE).where({ organization_id: organizationId, promo_code_id: promoCodeId }).first('id');
+    return Boolean(row);
+  }
+
+  /**
+   * End a current trial now. Returns whether it was ended.
+   *
+   * The only edit a period ever takes, and only a trial's: shortening it is how
+   * an owner who redeems a code takes the promo at once. Never lengthens one
+   * (`period_end > now()`), and never empties one, which the period CHECK would
+   * refuse anyway.
+   */
+  static async endTrialNow(id, organizationId, trx = db) {
+    const updated = await trx(TABLE)
+      .where({ id, organization_id: organizationId, kind: 'trial' })
+      .whereNull('voided_at')
+      .whereRaw('period_start < now() AND period_end > now()')
+      .update({ period_end: trx.raw('now()') });
+    return updated === 1;
+  }
+
+  /**
+   * Insert a promo period of `months` calendar months, redeemed with
+   * `promoCodeId`, and return its id — or null when this organization has
+   * already redeemed that code (`subscriptions_promo_code_org_uq`). As with
+   * `createTrial`, a caller handed null must end the transaction.
+   *
+   * It starts now, or where period `after` ends. That end is read here in SQL,
+   * never passed in: a JavaScript Date holds milliseconds and the column
+   * microseconds, so a start handed back from a fetched row would begin just
+   * before the trial ends and overlap it.
+   *
+   * Months are counted on the Yerevan calendar whatever the session's time
+   * zone, so a database in GMT and one in Asia/Yerevan grant the same period.
+   */
+  static async createPromo({ organizationId, planId, promoCodeId, months, after = null }, trx = db) {
+    const start = after
+      ? trx.raw('(SELECT period_end FROM subscriptions WHERE id = ? AND organization_id = ?)', [after, organizationId])
+      : trx.raw('now()');
+    const id = createId();
+    try {
+      await trx(TABLE).insert({
+        id,
+        organization_id: organizationId,
+        plan_id: planId,
+        kind: 'promo',
+        period_start: start,
+        period_end: trx.raw(
+          `((?::timestamptz AT TIME ZONE 'Asia/Yerevan') + make_interval(months => ?)) AT TIME ZONE 'Asia/Yerevan'`,
+          [start, months]
+        ),
+        promo_code_id: promoCodeId,
+      });
+      return id;
+    } catch (error) {
+      if (error.code === UNIQUE_VIOLATION && error.constraint === 'subscriptions_promo_code_org_uq') return null;
+      throw error;
+    }
+  }
+
+  /**
    * Insert a trial on `planId`, starting now and lasting `days`, and return its
    * id — or null when its creator already has a trial elsewhere.
    *

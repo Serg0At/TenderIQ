@@ -192,12 +192,15 @@ subscription when it was granted in error or abused.
 - `redeem(actor, organizationId, { code, trial })`, all in one transaction:
   - lock the organization row;
   - normalize the code and look it up;
-  - unknown, disabled, past `redeemable_until`, or used up → `VALIDATION_FAILED` with one
-    message and `details.reason` `code_invalid` for all four;
+  - unknown, disabled, past `redeemable_until`, or used up (unless this organization is one of
+    its redeemers) → `VALIDATION_FAILED` with one message and `details.reason` `code_invalid`
+    for all four;
   - `percent_off < 100` → `VALIDATION_FAILED`, `details.reason` `payments_unavailable`, before
     anything is written;
-  - a current `promo` or `paid` period → `CONFLICT`, `details.reason` `promo_active`;
-  - already redeemed by this organization → `CONFLICT`, `details.reason` `already_redeemed`;
+  - a current or scheduled `promo` or `paid` period → `CONFLICT`, `details.reason`
+    `promo_active`;
+  - already redeemed by this organization, even if used up since → `CONFLICT`,
+    `details.reason` `already_redeemed`;
   - a current trial and no `trial` choice → `VALIDATION_FAILED` naming the field;
   - `trial: 'keep'` starts the promo at the trial's `period_end`, and `trial: 'end'` shortens
     the trial's `period_end` to now and starts the promo now. Shortening is the only edit a
