@@ -54,8 +54,8 @@ issues/30-bring-neon-up-to-date.md`) if a database with data ever needs it.
       Otherwise the pager never advances, and the chain's stall check throws on page 2. Fix
       local `.env` too, if it is not already fixed.
 - [ ] `AI_MODEL=anthropic/claude-opus-5` if the gateway is OpenRouter (ticket 16).
-- [ ] The `rateLimit` edits in `sources.config.js` (e-auction 20 → 32, gnumner and armeps
-      10 → 22, uncommitted) are committed or reverted.
+- [x] The `rateLimit` edits in `sources.config.js` (e-auction 20 → 32, gnumner and armeps
+      10 → 22) are committed or reverted. *(Committed 2026-11-01.)*
 
 ## After the code is deployed
 

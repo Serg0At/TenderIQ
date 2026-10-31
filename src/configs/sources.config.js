@@ -4,7 +4,7 @@ const sources = {
     displayName: 'e-auction (reverse auctions)',
     baseUrl: process.env.SOURCE_EAUCTION_BASE || 'https://eauction.armeps.am',
     listingCron: process.env.SOURCE_EAUCTION_CRON || '*/5 * * * *',
-    rateLimit: { requests: 20, perMs: 60000 },
+    rateLimit: { requests: 32, perMs: 60000 },
     concurrency: 2,
     maxListingPages: 40,
     refreshCron: process.env.SOURCE_EAUCTION_REFRESH_CRON || '17 * * * *',
@@ -30,7 +30,7 @@ const sources = {
     listingCron: process.env.SOURCE_GNUMNER_CRON || '*/5 * * * *',
     // Half of eauction's budget: a ministry site we have no relationship
     // with, and steady state needs a fraction of even this.
-    rateLimit: { requests: 10, perMs: 60000 },
+    rateLimit: { requests: 22, perMs: 60000 },
     // Cold-start bound only. ~10 notices a page and ~15 quotations a day, so
     // 5 pages is about three days of each listing on a first sweep. History
     // is a backfill's job.
@@ -124,7 +124,7 @@ const sources = {
     // Same budget as gnumner: a government site we have no relationship with.
     // PPCM is served from this host and draws on this budget too
     // (`ppcm.rateLimitSource`): one host, one allowance.
-    rateLimit: { requests: 10, perMs: 60000 },
+    rateLimit: { requests: 22, perMs: 60000 },
     /**
      * The refresh re-reads every unsettled ARMEPS tender, not only those past
      * their deadline, because what it is for is a deadline armeps.am moves
