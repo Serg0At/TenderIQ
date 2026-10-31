@@ -81,6 +81,9 @@ removed afterwards):
 | same code after the promo lapsed (dates moved back by SQL), and after voiding it | 409 `already_redeemed` both |
 | one-use code: org D redeems, org C tries | 201, then 422 `code_invalid`; `redemption_count` 1 |
 | one-use code, two orgs in parallel | one 201, one 422 `code_invalid`; count 1 |
+| after review: org D re-enters the one-use code it used up, promo running | 409 `promo_active` |
+| the same, after D's promo lapsed (dates moved back by SQL) | 409 `already_redeemed` |
+| the same code from org C, which never redeemed it | 422 `code_invalid`, byte-identical to an unknown code |
 | 50% code | 422 `payments_unavailable`, `percentOff: 50`; 0 periods, count 0 |
 | unknown, disabled, past deadline, used up | 422 `code_invalid`; **one** distinct (status, body) across the four |
 | `business` code, no period | 201; session `business`; `/benchmarks/30000000` with it 200 |
