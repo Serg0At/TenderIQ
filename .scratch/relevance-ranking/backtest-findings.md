@@ -84,6 +84,27 @@ returned over 6 pages with no repeat or gap, ordering held, nothing non-biddable
 a page through the full API on a local Postgres, and the top rows' `won_category` counts matched
 the ledger exactly.
 
+## Third run — 2026-10-31, local live import
+
+Same script and weights (24-month default), against the live import on the local Postgres:
+1,655 tenders published 2026-07-21 → 2026-10-30 (1,514 e-auction, 79 ARMEPS, 62 paper),
+28,860 ledger bids on 1,063 tenders, 886 suppliers. This is the live sweep's cold start
+plus three months of sweeping — **not** the archive: the backfill has no checkpoint in Redis and
+the e-auction tids run 46570 → 48556 only. Default cut-off 2026-09-28, history up to 2026-09-21,
+163 tenders biddable then (7 with no CPV, so the text fallback ran for the first time), 313
+suppliers graded.
+
+| Group | Suppliers | Real bids | In top 10 | In top 20 | Median position | MRR |
+|---|---|---|---|---|---|---|
+| Rankable (≥ 3 lots) | 168 | 585 | **46.0%** (random 6.1%) | **69.4%** (random 12.3%) | **7.1%** (random 50%) | 0.385 |
+| Thin (< 3 lots) | 145 | 200 | 15.5% (random 6.1%) | 21.5% (random 12.3%) | 50.3% (random 50%) | 0.119 |
+
+The lift holds and grows with depth: about 7.5× random for suppliers with history, and the
+rankable group is up from 129 to 168 because a month more of ledger lies behind the cut-off. The
+6/12/24-month sweep is identical for the third time: every lot is under four months old, so
+every window weighs every lot at 1. **Only the archive can answer the recency question**;
+more live sweeping cannot, until a year has passed.
+
 ## Still to do
 
 - Re-run after ticket 10 loads the archive; record the sweep, and whether a longer window lifts

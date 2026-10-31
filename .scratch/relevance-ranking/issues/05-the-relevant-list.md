@@ -59,3 +59,14 @@ supplier identity is told so, in the shape `/tracked-tenders/performance` alread
 > P95 not yet measured where it counts: ~20 ms server-side execution and ~2 ms ranking, but
 > wall-clock from a development machine to Neon us-east-2 was 3–9 s, all network. Measure from
 > the deployed API before ticking.
+
+> 2026-10-31, measured through the full HTTP API against the local Postgres, with no network
+> between them. A throwaway org with three fields, a saved search with keywords and the three
+> heaviest ledger suppliers as its identity (3,305 ledger lots, the worst case in the corpus):
+> the walk returned all 294 biddable tenders over 6 pages, 0 repeats, 0 missing, 0 extra.
+> `page[size]=50`, 40 requests each: page 1 p50 804 / **p95 884 ms**; page 4 p50 785 / p95
+> 838 ms. Inside 1.5 s, but ~700 ms of that is `rankTenders` itself (DB: `signalsFor` ~30 ms,
+> `findRankable` ~45 ms), and it grows with ledger size: 141 ms at 300 ledger lots, 595 ms at
+> 3,305. `categorySignal` compares every unit code with every ledger lot of its division, per
+> candidate. **The archive will multiply the ledger and break this budget**: fix that before
+> ticket 10 lands, or re-measure straight after it.
