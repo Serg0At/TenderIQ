@@ -7,7 +7,7 @@
 > frontend-to-server requests.
 >
 > Consequently **every endpoint below is currently uncalled by any frontend in this repo**.
-> Rather than repeat that on all 89 entries, the endpoints are documented normally by
+> Rather than repeat that on all 90 entries, the endpoints are documented normally by
 > feature, and [Backend endpoints not currently used by frontend](#backend-endpoints-not-currently-used-by-frontend)
 > records the situation once. No "Backend endpoint not found" entries exist, because there
 > are no frontend requests to cross-check.
@@ -79,6 +79,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Get organization](#get-organization) — `GET /organization`
 - [Update organization](#update-organization) — `PATCH /organization`
 - [Get subscription](#get-subscription) — `GET /organization/subscription`
+- [Start a trial](#start-a-trial) — `POST /organization/subscription/trial`
 - [List members](#list-members) — `GET /organization/members`
 - [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
 - [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
@@ -2764,6 +2765,92 @@ This endpoint reads the database and is always current.
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 NO_ORGANIZATION`: orgless session.
+
+---
+
+## Start a trial
+
+Starts the organization's free trial: a `trial` period on `pro`, from now, lasting 30 days (the
+`BILLING_TRIAL_DAYS` setting). It is not automatic — the owner chooses when, so the days are not
+spent while the organization is still being set up — and it happens **once per organization
+creator**: only for an organization that has never had a subscription, and only if the person who
+created it has never had a trial in any organization. A voided trial still counts as used.
+[Get subscription](#get-subscription)'s `trialAvailable` says in advance whether this will succeed.
+
+The response carries a fresh session for this organization with the trial's plan already in its
+token, so intelligence, relevance and invitations work on the very next request. Other members
+pick the plan up at their next refresh (within 15 minutes), without signing out.
+
+**API:**
+`POST /api/v1/organization/subscription/trial`
+
+**Authentication:** required (Bearer). Permission: `billing:manage` — the **owner** only. The role
+is re-read from the membership too, so an owner who has just transferred the seat is refused even
+while their token still says owner. Not plan-gated: it is how an organization on `free` leaves it.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+`201 Created`:
+
+```json
+{
+  "data": {
+    "subscription": {
+      "current": {
+        "id": "cm3k8q2v70004ab1c9x7r5t2e",
+        "kind": "trial",
+        "plan": "pro",
+        "periodStart": "2026-11-01T09:12:44.120Z",
+        "periodEnd": "2026-12-01T09:12:44.120Z"
+      },
+      "next": null,
+      "trialAvailable": false
+    },
+    "session": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expiresIn": 900,
+      "user": {
+        "id": "cm9zx4k1p0000qw8f3h2l7d5t",
+        "email": "procurement@shinarar.am",
+        "displayName": "Gevorg Sargsyan",
+        "locale": "hy",
+        "emailVerified": true
+      },
+      "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+      "role": "owner",
+      "plan": "pro",
+      "operator": false,
+      "organizations": [
+        { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
+      ]
+    }
+  }
+}
+```
+
+- `subscription`: the same view [Get subscription](#get-subscription) returns, read after the trial
+  was written.
+- `session`: the same shape [Create organization](#create-organization) returns, minted for this
+  organization. It starts a new refresh family; the session the request was made with keeps
+  working and picks up `pro` at its next refresh.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: role lacks `billing:manage` (admin, coordinator, viewer, consultant), or
+  the caller is no longer the owner — "Only the owner can start a trial."
+- `403 NO_ORGANIZATION`: orgless session.
+- `409 CONFLICT`: `details: { reason: "trial_unavailable" }` — the organization has had a
+  subscription (a trial, a promo period, or one an operator voided), or its creator has already
+  had a trial in another organization. One answer for every reason, including two organizations
+  of one creator starting a trial at the same instant: one of them gets it, the other is refused
+  the same way.
+- `429 RATE_LIMITED`: more than 10 attempts/hour for this user.
 
 ---
 
@@ -5804,6 +5891,7 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | GET | `/api/v1/organization` | The session's organization and its fields | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization` | Replace the organization's fields | Yes (`org:manage`) |
 | GET | `/api/v1/organization/subscription` | The current and next subscription period, and whether a trial is available | Yes (`tender:read`) |
+| POST | `/api/v1/organization/subscription/trial` | Start the organization's one Pro trial; returns a session carrying it | Yes (`billing:manage`, owner) |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |
@@ -5853,4 +5941,4 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | GET | `/api/v1/operator/promo-codes` | Every code with its redemptions, newest first | Yes (operator) |
 | DELETE | `/api/v1/operator/promo-codes/:id` | Delete an unredeemed code, disable a redeemed one | Yes (operator) |
 
-**89 endpoints** across 14 route modules.
+**90 endpoints** across 14 route modules.

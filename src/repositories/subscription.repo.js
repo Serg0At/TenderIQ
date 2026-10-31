@@ -1,6 +1,9 @@
+import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 
 const TABLE = 'subscriptions';
+
+const UNIQUE_VIOLATION = '23505';
 
 /**
  * "The period covering now", the one definition of it. Half-open like the
@@ -61,5 +64,34 @@ export default class SubscriptionRepository {
   static async creatorHasTrial(userId, trx = db) {
     const row = await trx(TABLE).where({ kind: 'trial', trial_creator_id: userId }).first('id');
     return Boolean(row);
+  }
+
+  /**
+   * Insert a trial on `planId`, starting now and lasting `days`, and return its
+   * id — or null when its creator already has a trial elsewhere.
+   *
+   * `subscriptions_trial_creator_uq` arbitrates that, never a lookup first: two
+   * organizations of one creator each lock only their own row, so both
+   * re-checks can pass. The violation aborts the transaction, so a caller
+   * handed null must end it. Both ends come from the database clock, the one
+   * `current` reads against.
+   */
+  static async createTrial({ organizationId, planId, creatorId, days }, trx = db) {
+    const id = createId();
+    try {
+      await trx(TABLE).insert({
+        id,
+        organization_id: organizationId,
+        plan_id: planId,
+        kind: 'trial',
+        period_start: trx.raw('now()'),
+        period_end: trx.raw('now() + make_interval(days => ?)', [days]),
+        trial_creator_id: creatorId,
+      });
+      return id;
+    } catch (error) {
+      if (error.code === UNIQUE_VIOLATION && error.constraint === 'subscriptions_trial_creator_uq') return null;
+      throw error;
+    }
   }
 }

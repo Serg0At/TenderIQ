@@ -13,12 +13,19 @@ const optional = (key, fallback) => {
   return value === undefined || value === '' ? fallback : value;
 };
 
-const int = (key, fallback) => {
+/**
+ * An integer, optionally range-checked. The bounds are opt-in so every existing
+ * caller keeps exactly the behaviour it had.
+ */
+const int = (key, fallback, { min = -Infinity, max = Infinity } = {}) => {
   const raw = optional(key, undefined);
   if (raw === undefined) return fallback;
   const parsed = Number.parseInt(raw, 10);
   if (Number.isNaN(parsed)) {
     throw new Error(`[config] ${key} must be an integer, received "${raw}"`);
+  }
+  if (parsed < min || parsed > max) {
+    throw new Error(`[config] ${key} must be between ${min} and ${max}, received ${parsed}`);
   }
   return parsed;
 };
@@ -269,6 +276,20 @@ const config = {
     MIN_COMPARABLES: int('INTELLIGENCE_MIN_COMPARABLES', 5),
     /** How far back an award still counts as evidence of today's price. */
     RECENCY_MONTHS: int('INTELLIGENCE_RECENCY_MONTHS', 24),
+  },
+
+  /**
+   * Subscriptions (ADR 0005). Card payments do not exist yet, so this holds only
+   * what the trial needs.
+   */
+  BILLING: {
+    /**
+     * How long a trial lasts, in days, from the moment the owner starts it.
+     * Bounded because nothing else checks it: 0 would be refused by the
+     * period CHECK only when an owner pressed the button, and a stray extra
+     * digit would hand out a free year.
+     */
+    TRIAL_DAYS: int('BILLING_TRIAL_DAYS', 30, { min: 1, max: 365 }),
   },
 
   /**

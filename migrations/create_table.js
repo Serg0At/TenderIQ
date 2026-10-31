@@ -687,7 +687,7 @@ function up(pg) {
       // deleted, and this is the database holding that.
       table.string('promo_code_id').references('id').inTable('promo_codes').onDelete('RESTRICT');
       // A trial copies its organisation's created_by here, so one trial per creator can be an
-      // index rather than a join (ticket 02).
+      // index rather than a join: subscriptions_trial_creator_uq.
       table.string('trial_creator_id').references('id').inTable('users').onDelete('SET NULL');
       // Voiding is what an operator does to a grant made in error. A voided row grants nothing
       // and is left out of the overlap rule, but stays as the record that it was granted.
@@ -991,6 +991,17 @@ async function indexes(pg) {
   await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_no_overlap_excl
      EXCLUDE USING gist (organization_id WITH =, tstzrange(period_start, period_end) WITH &&)
      WHERE (voided_at IS NULL)`);
+
+  /**
+   * One trial per organization creator, in any organization. The trial row copies its
+   * organization's created_by, so this is an index rather than a join. Voided rows are NOT
+   * excluded: a voided trial was still used, or voiding one would hand its creator another.
+   * Two organizations of one creator starting a trial at once each hold only their own row
+   * lock, so this index, not the service's re-check, decides which one gets it.
+   */
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_trial_creator_uq
+     ON subscriptions (trial_creator_id) WHERE kind = 'trial'`);
+
 }
 
 async function init() {
