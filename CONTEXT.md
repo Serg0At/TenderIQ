@@ -60,8 +60,8 @@ _Avoid_: Kick, Ban, Deactivate, Revoke
 
 **ՀՎՀՀ**:
 The Armenian eight-digit taxpayer number, unique across organizations but optional — an
-organization holds one only once it has chosen to pay by invoice. `tax_id` in code, ՀՎՀՀ in
-prose and in anything a user reads.
+organization is never required to state one yet. `tax_id` in code, ՀՎՀՀ in prose and in
+anything a user reads.
 _Avoid_: TIN, VAT number, Company number, Registration number
 
 **Supplier identity**:
@@ -70,6 +70,37 @@ until a ՀՎՀՀ joins them (its e-auction, PPCM and paper bids keyed three ways
 deliberate human claim from a search, never inferred from a name or derived from the ՀՎՀՀ,
 and a party is claimed by one organization at most. Its absence is why win/loss can be unknown.
 _Avoid_: Supplier match, Party link, Company profile
+
+**Operator**:
+A person running Tendra itself, not acting inside any organization — the one who receives
+operator alerts and issues promo codes. A user may be an operator and a member at once; the two
+never grant each other anything.
+_Avoid_: Admin (a role inside an organization), Superuser, Staff
+
+### Plans and subscriptions
+
+**Plan**:
+A named tier of what an organization is entitled to — `free`, `starter`, `pro`, `business`,
+`enterprise`. An organization with no current subscription is on `free`.
+_Avoid_: Tier, Package, Level
+
+**Subscription**:
+One period during which one organization holds one plan, with a start and an end. An
+organization accumulates them over time — a trial, then a promo period, then paid ones — and
+its plan at any moment is the subscription covering that moment. Whether it is current or
+lapsed is read from its dates, never stored. Not an alert destination (those are channel
+subscriptions), and never a saved search.
+_Avoid_: Plan period, Term, Licence, Channel subscription
+
+**Trial**:
+A free subscription an organization's owner starts once, by choice, from the organization's
+settings — at most one per person who has created organizations, however many they create.
+_Avoid_: Pilot, Free period, Demo
+
+**Promo code**:
+A code an owner redeems for a subscription of a stated plan and length at a stated discount.
+One code may be shared by many organizations, up to its redemption limit.
+_Avoid_: Coupon, Voucher, Discount code
 
 ### Tenders and sources
 
