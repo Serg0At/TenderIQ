@@ -20,7 +20,7 @@ function up(pg) {
 
     // party_aliases — The per-source id of a buyer merged into another by ՀՎՀՀ (ticket 19), so
     // the next read of that source resolves to the survivor instead of re-creating the buyer the
-    // merge removed. Mirrored in add_party_aliases.js.
+    // merge removed.
     .createTable('party_aliases', table => {
       table.string('source_id').primary();
       table.string('party_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
@@ -303,7 +303,7 @@ function up(pg) {
     // this". A set (ticket 32): a paper bidder is keyed by its name and an e-auction bidder by
     // its operator id, so one company is several parties until a ՀՎՀՀ joins them, and each is
     // a separate human claim from a search — never matched on name. Replaced
-    // organizations.supplier_party_id. Mirrored in add_supplier_identities.js.
+    // organizations.supplier_party_id.
     .createTable('supplier_identities', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
@@ -527,8 +527,7 @@ function up(pg) {
       // How many distinct TENDERS those awards came from. sample_size counts
       // awards and awards are per lot, so one multi-lot procurement can clear
       // the comparables threshold alone — this is what separates "33 awards
-      // across 33 buys" from "33 lots of one buy". Mirrored in
-      // add_intelligence_indexes.js.
+      // across 33 buys" from "33 lots of one buy".
       table.integer('distinct_tenders');
       table.decimal('min_price', 18, 2);
       table.decimal('median_price', 18, 2);
@@ -538,7 +537,7 @@ function up(pg) {
       table.decimal('avg_discount_pct', 6, 2);
       // Awards with a budget that avg_discount_pct left out because their contract is not the
       // winning offer (a PPCM framework or partial contract): counted, never given a guessed gross.
-      // NULL on a row computed before the count was kept. Mirrored in add_benchmark_discount_excluded.js.
+      // NULL on a row computed before the count was kept.
       table.integer('discount_excluded');
       table.timestamp('computed_at').notNullable();
       // Deliberately not unique: a NULL never collides in a Postgres unique
