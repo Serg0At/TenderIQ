@@ -23,6 +23,7 @@ import {
   myInvitationRoutes,
 } from './invitations/invitation.routes.js';
 import unsubscribeRoutes from './unsubscribe/unsubscribe.routes.js';
+import operatorRoutes from './operator/operator.routes.js';
 import { checkHealth, publicReport } from '../workers/health.js';
 import { ok } from '../utils/respond.js';
 
@@ -61,6 +62,10 @@ router.use('/invitations', myInvitationRoutes);
 router.use('/vault-documents', vaultRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/integrations', integrationRoutes);
+
+// The person running Tendra, not anyone acting inside an organization: every
+// route here is refused without the `op` claim, owners and admins included.
+router.use('/operator', operatorRoutes);
 
 /**
  * Top-level and short, because this URL is printed inside an email and read by

@@ -8,6 +8,7 @@ async function down(pg) {
     'audit_logs',
     'invoices',
     'subscriptions',
+    'promo_codes',
     'plans',
     'channel_subscriptions',
     'alert_deliveries',

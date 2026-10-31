@@ -131,6 +131,11 @@ All paths are relative to the base path **`/api/v1`**.
 - [Switch a destination back on](#switch-a-destination-back-on) — `POST /integrations/{telegram,email}/:id/enable`
 - [Telegram webhook](#telegram-webhook) — `POST /integrations/telegram/webhook`
 
+### Operator
+- [Create a promo code](#create-a-promo-code) — `POST /operator/promo-codes`
+- [List promo codes](#list-promo-codes) — `GET /operator/promo-codes`
+- [Delete or disable a promo code](#delete-or-disable-a-promo-code) — `DELETE /operator/promo-codes/:id`
+
 ### Unsubscribe (no login)
 - [Preview an unsubscribe link](#preview-an-unsubscribe-link) — `GET /unsubscribe`
 - [Confirm unsubscribe](#confirm-unsubscribe) — `POST /unsubscribe`
@@ -195,7 +200,8 @@ Mechanism: **JWT Bearer access token** in the `Authorization` header
 - `Content-Type`: `application/json` — required on requests carrying a body. JSON bodies are
   capped at 1 MB.
 
-Access-token claims (`sub`, `org`, `role`, `plan`, `jti`) become `req.user`. Default lifetime
+Access-token claims (`sub`, `org`, `role`, `plan`, `jti`, and `op` when the user is an
+[operator](#operator)) become `req.user`. Default lifetime
 is 15 minutes (`ACCESS_TOKEN_ACTIVE_TIME`); refresh tokens last 20 days
 (`REFRESH_TOKEN_ACTIVE_TIME`) and are single-use — reusing one revokes the whole family.
 
@@ -243,7 +249,9 @@ the routes mounted on `authenticateOrgless` ([src/middlewares/auth.js](src/middl
 [Create organization](#create-organization), [List fields](#list-fields) (the picker on that
 screen), [the invitations addressed to the caller](#list-my-invitations),
 [Switch organization](#switch-organization) (the way out for a second device still holding an
-orgless session), and [Current user](#current-user). [Refresh](#refresh-session) and
+orgless session), [Current user](#current-user), and the [operator console](#operator) — which
+is there because being an operator belongs to the user, not to any organization, and which still
+refuses every session without the `op` claim. [Refresh](#refresh-session) and
 [Log out](#log-out) take no bearer token. The client's locked screen
 is presentation; the null claims are the enforcement.
 
@@ -263,7 +271,7 @@ From [src/utils/errors.js](src/utils/errors.js). Any of these may surface on any
 | `UNAUTHENTICATED` | 401 | Missing, malformed or invalid Bearer token. |
 | `TOKEN_EXPIRED` | 401 | Access token expired — refresh rather than re-login. |
 | `PLAN_UPGRADE_REQUIRED` | 402 | Role allows it, plan does not. |
-| `ROLE_FORBIDDEN` | 403 | Role lacks the permission. |
+| `ROLE_FORBIDDEN` | 403 | Role lacks the permission, or an [operator route](#operator) was called without the `op` claim (`details.required: "operator"`). |
 | `EMAIL_UNVERIFIED` | 403 | Address not confirmed. |
 | `NO_ORGANIZATION` | 403 | The session is in no organization (see [the orgless state](#the-orgless-state)). `details.permission`. |
 | `TENANT_FORBIDDEN` | 403 | Resource belongs to another organization. |
@@ -461,6 +469,7 @@ error, so the endpoint cannot be used to discover who holds an account.
     },
     "role": "owner",
     "plan": "free",
+    "operator": false,
     "organizations": [
       { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
     ]
@@ -470,7 +479,9 @@ error, so the endpoint cannot be used to discover who holds an account.
 
 `expiresIn` is the access token's lifetime in seconds. `organizations` is every membership the
 user holds, in the order they were joined (oldest first); the session is minted for the first
-one, and the ids are what [Switch organization](#switch-organization) takes.
+one, and the ids are what [Switch organization](#switch-organization) takes. `operator` is
+`users.is_operator`, read at mint; every session response carries it, and only an operator's
+token carries the `op` claim the [operator console](#operator) requires.
 
 A user with **no membership** still signs in successfully, into the
 [orgless state](#the-orgless-state):
@@ -491,6 +502,7 @@ A user with **no membership** still signs in successfully, into the
     "organization": null,
     "role": null,
     "plan": null,
+    "operator": false,
     "organizations": []
   }
 }
@@ -509,8 +521,9 @@ A user with **no membership** still signs in successfully, into the
 
 Exchanges a refresh token for a new pair. Each refresh token is single-use; presenting one that
 verifies but is no longer tracked revokes the entire token family, because a replay and a stolen
-copy are indistinguishable. Role and plan are re-read from the database rather than copied from
-the old token, so a downgrade takes effect within one access-token lifetime.
+copy are indistinguishable. Role, plan and the operator flag are re-read from the database rather
+than copied from the old token, so a downgrade — or a cleared `users.is_operator` — takes effect
+within one access-token lifetime.
 
 **API:**
 `POST /api/v1/auth/refresh`
@@ -536,14 +549,16 @@ the old token, so a downgrade takes effect within one access-token lifetime.
     "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     "expiresIn": 900,
     "role": "owner",
-    "plan": "free"
+    "plan": "free",
+    "operator": false
   }
 }
 ```
 
 Note this response carries **no** `user` or `organization` block, unlike login.
 
-An orgless refresh token refreshes into another orgless pair (`role` and `plan` both `null`).
+An orgless refresh token refreshes into another orgless pair (`role` and `plan` both `null`;
+`operator` is still read, since it belongs to the user).
 It stays orgless even if the user has gained a membership since — moving into a tenant is
 [Switch organization](#switch-organization), never a side effect of a refresh.
 
@@ -859,6 +874,7 @@ Same shape as [Log in](#log-in), minted for the requested organization:
     "organization": { "id": "cm9zx4k1p0301qw8fd8k2m4q6", "name": "Client B LLC" },
     "role": "consultant",
     "plan": "free",
+    "operator": false,
     "organizations": [
       { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Advisory LLC", "role": "owner" },
       { "id": "cm9zx4k1p0301qw8fd8k2m4q6", "name": "Client B LLC", "role": "consultant" }
@@ -901,12 +917,14 @@ No request body
     "organizationId": "cm9zx4k1p0001qw8f6b3n2v8y",
     "role": "owner",
     "plan": "free",
+    "operator": false,
     "tokenId": "cm9zx4k1p0002qw8f9m4c1r7k"
   }
 }
 ```
 
-For an orgless session `organizationId`, `role` and `plan` are all `null`.
+For an orgless session `organizationId`, `role` and `plan` are all `null`. `operator` is `true`
+only for a token carrying the `op` claim.
 
 **Errors:**
 
@@ -2590,6 +2608,7 @@ role in.
     "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
     "role": "owner",
     "plan": "free",
+    "operator": false,
     "organizations": [
       { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
     ]
@@ -2910,6 +2929,7 @@ No request body
       "organization": null,
       "role": null,
       "plan": null,
+      "operator": false,
       "organizations": []
     }
   }
@@ -3047,6 +3067,7 @@ organization no longer counts toward the three-organization creation cap.
       "organization": null,
       "role": null,
       "plan": null,
+      "operator": false,
       "organizations": []
     }
   }
@@ -3458,6 +3479,7 @@ No request body
       "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
       "role": "coordinator",
       "plan": "pro",
+      "operator": false,
       "organizations": [
         { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "coordinator" }
       ]
@@ -5343,6 +5365,187 @@ broken integration.
 
 ---
 
+## Operator
+
+The console of the person running Tendra itself, not of anyone acting inside an organization.
+Being an operator is a property of the **user** (`users.is_operator`), never of a membership:
+`owner` and `admin` are roles inside one organization and grant nothing here.
+
+- **The flag is set by hand** (SQL or a script) and never through the API. It is read from the
+  database at every session mint and refresh, exactly as the role is, and an operator's access
+  token carries an `op: true` claim. Clearing the flag ends operator access at the next refresh,
+  so within one access-token lifetime (15 minutes by default). Setting it takes effect the same
+  way: refresh, or sign in again.
+- **Orgless sessions are allowed.** Operating Tendra never depends on the operator's own
+  membership, and these routes read no organization's private data.
+- **Everyone else is refused with `403 ROLE_FORBIDDEN`** and `details: { required: "operator" }`
+  on every route below, whatever their role in whatever organization, before the body is
+  validated.
+
+## Create a promo code
+
+Issues a code that an owner will redeem for a period of a plan. The operator chooses the text, so
+a shared code can be memorable (`LAUNCH100`).
+
+- The text is stored **trimmed and upper-cased**, so redemption matches it whatever the case or
+  stray spaces. A code that differs from an existing one only in case is a duplicate.
+- A code below 100% off is stored as asked, but redemption refuses it until card payments exist.
+- The shared launch code should be created with a `redeemableUntil`, or it stays free Pro for
+  anyone who finds it.
+
+**API:**
+`POST /api/v1/operator/promo-codes`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+```json
+{
+  "code": "launch100",
+  "plan": "pro",
+  "percentOff": 100,
+  "durationMonths": 3,
+  "maxRedemptions": null,
+  "redeemableUntil": "2027-03-31T23:59:59Z"
+}
+```
+
+- `code` (**required**): 3–40 characters after trimming and upper-casing: Latin letters, digits,
+  `-` and `_`, starting with a letter or digit. Armenian and Cyrillic letters are refused,
+  because several look like Latin ones and the code would never match what an owner types.
+- `plan` (**required**): a plan name (`starter`, `pro`, `business`, `enterprise`), any case.
+  `free` is refused.
+- `percentOff` (**required**): integer 1–100.
+- `durationMonths` (**required**): integer 1–120. The period lasts this many calendar months
+  from its start.
+- `maxRedemptions` (optional): integer ≥ 1, or `null` (the default) for unlimited.
+- `redeemableUntil` (optional): ISO-8601 timestamp in the future, or `null` (the default) for no
+  last redemption date.
+
+**Response data:** `201 Created`
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0700qw8f2a6d9k3m",
+    "code": "LAUNCH100",
+    "plan": "pro",
+    "percentOff": 100,
+    "durationMonths": 3,
+    "maxRedemptions": null,
+    "redemptionCount": 0,
+    "redeemableUntil": "2027-03-31T23:59:59.000Z",
+    "disabledAt": null,
+    "createdBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+    "createdAt": "2026-11-01T09:12:44.318Z"
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `409 CONFLICT`: "A promo code with that text already exists." `details.code` is the text as
+  sent.
+- `422 VALIDATION_FAILED`: any field out of range; `plan` is `free`; `plan` names no plan
+  (`There is no plan named "…".`); `redeemableUntil` is in the past.
+
+---
+
+## List promo codes
+
+Every code, newest first, with how often it was redeemed against its limit. Disabled codes are
+included, so the operator can see what the launch code did after it was closed.
+
+**API:**
+`GET /api/v1/operator/promo-codes`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+Query parameters:
+
+- `page[size]` (optional): 1–100, default 20.
+- `page[cursor]` (optional): `meta.cursor` from the previous page.
+
+**Response data:**
+
+```json
+{
+  "data": [
+    {
+      "id": "cm9zx4k1p0700qw8f2a6d9k3m",
+      "code": "LAUNCH100",
+      "plan": "pro",
+      "percentOff": 100,
+      "durationMonths": 3,
+      "maxRedemptions": null,
+      "redemptionCount": 41,
+      "redeemableUntil": "2027-03-31T23:59:59.000Z",
+      "disabledAt": null,
+      "createdBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+      "createdAt": "2026-11-01T09:12:44.318Z"
+    }
+  ],
+  "meta": { "cursor": "MjAyNi0xMS0wMVQwOToxMjo0NC4zMThafGNtOXo...", "hasMore": false }
+}
+```
+
+`maxRedemptions: null` is unlimited. `createdBy` is `null` once that account no longer exists.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `422 VALIDATION_FAILED`: bad page size.
+
+---
+
+## Delete or disable a promo code
+
+Deletes a code nobody has redeemed, so a mistyped code leaves no trace. A code that **has** been
+redeemed is disabled instead: the subscriptions it granted keep their record of where they came
+from, and they keep running, so closing the launch code does not cut off the people who used it.
+A disabled code cannot be redeemed, and there is no re-enabling.
+
+The response says which happened. A redemption that lands at the same moment is never lost: the
+delete only matches a code whose count is still 0, so the code is disabled instead. Disabling an
+already-disabled code keeps its first `disabledAt`.
+
+**API:**
+`DELETE /api/v1/operator/promo-codes/:id`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+No request body
+
+**Response data:** `200 OK`
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0700qw8f2a6d9k3m",
+    "outcome": "disabled",
+    "disabledAt": "2026-11-20T08:00:00.000Z"
+  }
+}
+```
+
+`outcome` is `deleted` (the row is gone, and `disabledAt` is `null`) or `disabled`.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `404 NOT_FOUND`: no such code, including one already deleted.
+
+---
+
 ## Unsubscribe (no login)
 
 Switching a channel off from inside a delivered message. The authenticated way to do this is
@@ -5577,5 +5780,8 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | DELETE | `/api/v1/integrations/email/:id` | Switch email alerts off | Yes (`savedsearch:write`) |
 | POST | `/api/v1/integrations/telegram/:id/enable` | Switch a linked chat back on (own only) | Yes (`savedsearch:write`) |
 | POST | `/api/v1/integrations/email/:id/enable` | Switch an address back on (own only) | Yes (`savedsearch:write`) |
+| POST | `/api/v1/operator/promo-codes` | Issue a promo code | Yes (operator) |
+| GET | `/api/v1/operator/promo-codes` | Every code with its redemptions, newest first | Yes (operator) |
+| DELETE | `/api/v1/operator/promo-codes/:id` | Delete an unredeemed code, disable a redeemed one | Yes (operator) |
 
-**59 endpoints** across 9 route modules.
+**62 endpoints** across 10 route modules.

@@ -46,7 +46,8 @@ that would catch a gnumner redesign before customers do.
 
 Migrations are hand-run scripts, not the Knex CLI. `migrate:up` runs `up()` over the whole schema in
 one transaction and is not idempotent; `migrate:down` drops every table. A schema change means
-editing `migrations/create_table.js` *and* `drop_table.js`, or adding a new script.
+editing `migrations/create_table.js` *and* `drop_table.js` — never adding a script (see
+*Current state*, schema changes).
 
 ## Processes
 
@@ -276,8 +277,11 @@ POST   /invitations/:id/{accept,decline}
   refuses an orgless token with `NO_ORGANIZATION`, so a route that authenticates and forgets to
   authorize still denies it; the allowlist is explicit and greppable — the routes mounted on
   `authenticateOrgless`: `POST /organizations`, `GET /fields` (its picker), `/invitations` (list, accept, decline),
-  `POST /auth/switch-org` (the way out for a second device still holding an orgless session) and
-  `GET /auth/me`. `POST /auth/refresh` and `/auth/logout` take no bearer token. An orgless refresh
+  `POST /auth/switch-org` (the way out for a second device still holding an orgless session),
+  `GET /auth/me`, and `/operator` behind `authorizeOperator` — there because an operator is a
+  property of the user (`users.is_operator`, the `op` claim, read at mint and refresh like the
+  role), not of any organization, and refused with `ROLE_FORBIDDEN` to every session without it.
+  `POST /auth/refresh` and `/auth/logout` take no bearer token. An orgless refresh
   stays orgless even if a membership has appeared since — moving into a tenant is `switch-org`.
 - **`NO_ORGANIZATION` is its own 403**, beside `EMAIL_UNVERIFIED` and for the same reason: the client
   must tell "your role cannot do this" apart from "you are not in an organization yet" — different
@@ -1183,23 +1187,16 @@ decision that has already been made.
   is harmless: it excludes the cursor row correctly and can only drop a row created inside the
   same millisecond. The next ascending one needs `date_trunc('milliseconds', …)` in the keyset
   AND the ORDER BY, which must agree.
-- **Schema changes against the live database go in a throwaway additive script**, never in
-  `create_table.js` directly — that file builds the whole schema in one transaction and cannot
-  be re-run against a database that already holds data. The workflow is four steps, and the
-  last one is the part that surprises people:
-
-  1. Write `migrations/add_<thing>.js`: `IF NOT EXISTS` throughout, and `ADD CONSTRAINT`
-     guarded by a `pg_constraint` lookup, since constraints have no `IF NOT EXISTS` of their
-     own. It must be safe to run twice.
-  2. Run it against every live database.
-  3. **Mirror the identical change into `create_table.js`** so a fresh database comes out the
-     same shape. This is the durable record — the additive script is not.
-  4. **Delete the script.** Once applied everywhere it is dead weight, and a directory of
-     historical one-shots invites someone to re-run one or to read it as current schema.
-
-  So `migrations/` holds only `create_table.js` and `drop_table.js` at rest. If you find an
-  `add_*.js` there, it is in flight — step 2 or 3 has not finished. Past migrations are
-  recoverable from git history if ever needed; they are not kept on disk.
+- **Schema changes go straight into `create_table.js` and `drop_table.js` — no additive
+  scripts** (decided 2026-11-01, overruling the earlier four-step add-script workflow). This is
+  development: a database is rebuilt from `create_table.js` (`migrate:down` then `migrate:up`)
+  rather than altered in place, so a one-shot `add_<thing>.js` is a second copy of the schema
+  that can only drift from the first. Write the change in `create_table.js` — table, CHECKs and
+  partial indexes in `indexes()` — and the matching drop in `drop_table.js`, in dependency order.
+  To check it, build a scratch database from `create_table.js` and drop it with
+  `drop_table.js`. Applying a change to an existing database without a rebuild is a hand-run
+  `ALTER`, never a file in `migrations/`. `migrations/` holds only those two files; revisit this
+  once a database holds data that a rebuild would lose.
 
 ## Docs
 

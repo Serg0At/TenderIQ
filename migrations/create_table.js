@@ -280,6 +280,10 @@ function up(pg) {
       table.string('display_name').notNullable();
       table.string('locale').notNullable().defaultTo('hy');
       table.timestamp('email_verified_at');
+      // A person running Tendra itself (CONTEXT.md, Operator), never a role in an organization.
+      // Set by hand, never through the API; read at session mint and refresh like the role and
+      // carried as the `op` claim, so clearing it lands within one access-token lifetime.
+      table.boolean('is_operator').notNullable().defaultTo(false);
     })
 
     // organizations — A supplier company using Tendra, and the tenant boundary that every
@@ -644,6 +648,29 @@ function up(pg) {
       table.specificType('features', 'text[]').notNullable();
     })
 
+    // promo_codes — A code an operator issues and an owner redeems for a period of a plan.
+    //
+    // `code` is stored upper-cased and trimmed (CHECK in indexes()), so a lookup is an equality
+    // and a code typed off a flyer matches whatever its case. `plan_id` never names `free`, which
+    // the boundary refuses: plans are keyed by CUID, so no CHECK can. `max_redemptions` NULL is
+    // unlimited, and `redemption_count` is moved by a conditional UPDATE so the database holds
+    // the limit under concurrent redemptions. A redeemed code is disabled, never deleted — the
+    // periods it granted keep their record of where they came from.
+    .createTable('promo_codes', table => {
+      table.string('id').primary();
+      table.string('code').notNullable();
+      table.string('plan_id').notNullable().references('id').inTable('plans').onDelete('RESTRICT');
+      table.integer('percent_off').notNullable();
+      table.integer('duration_months').notNullable();
+      table.integer('max_redemptions');
+      table.integer('redemption_count').notNullable().defaultTo(0);
+      table.timestamp('redeemable_until');
+      table.timestamp('disabled_at');
+      table.string('created_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.unique(['code'], { indexName: 'promo_codes_code_uq' });
+    })
+
     // subscriptions — Which plan an organisation is on, and when it renews.
     .createTable('subscriptions', table => {
       table.string('id').primary();
@@ -722,6 +749,18 @@ async function indexes(pg) {
   await pg.raw(`ALTER TABLE invitations ADD CONSTRAINT invitations_email_lower_chk
      CHECK (email = lower(email))`);
   await pg.raw(`CREATE INDEX IF NOT EXISTS invitations_email_idx ON invitations (email)`);
+
+  // Promo codes: the normalized text is the identity, and the limit can never be passed.
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_code_chk
+     CHECK (code = upper(btrim(code)) AND code <> '')`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_percent_off_chk
+     CHECK (percent_off BETWEEN 1 AND 100)`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_duration_chk
+     CHECK (duration_months >= 1)`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_max_redemptions_chk
+     CHECK (max_redemptions IS NULL OR (max_redemptions >= 1 AND redemption_count <= max_redemptions))`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_redemption_count_chk
+     CHECK (redemption_count >= 0)`);
 
   // Three fields, not more: past that the list matches everything and ranks nothing. The ids
   // themselves are validated against the code list, which a CHECK could only duplicate.

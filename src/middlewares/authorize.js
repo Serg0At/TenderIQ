@@ -43,6 +43,27 @@ export const authorize = (permission, { planGate = permission } = {}) => (req, _
 };
 
 /**
+ * The operator gate: does this session belong to a person running Tendra?
+ *
+ * Not a role and not one of the four gates. `admin` and `owner` are roles
+ * inside one organization and grant nothing over Tendra itself, so this reads
+ * only the `op` claim — which `sessionFor` and `refresh` take from
+ * `users.is_operator`, never from the previous token. Mounted with
+ * `authenticateOrgless`, because operating Tendra never depends on the
+ * operator's own membership.
+ *
+ * ROLE_FORBIDDEN rather than NOT_FOUND: the console's existence is not a
+ * secret, and a client should show "not permitted" rather than a broken link.
+ */
+export const authorizeOperator = (req, _res, next) => {
+  if (!req.user) return next(ApiError.unauthenticated());
+  if (req.user.operator !== true) {
+    return next(ApiError.forbidden('ROLE_FORBIDDEN', { required: 'operator' }));
+  }
+  return next();
+};
+
+/**
  * Gate 3: does this resource belong to the caller's organization?
  *
  * Tenant isolation is enforced in repositories by scoping queries on
@@ -59,4 +80,4 @@ export const assertSameTenant = (req, resource, { hideExistence = true } = {}) =
   return resource;
 };
 
-export default { authorize, assertSameTenant };
+export default { authorize, authorizeOperator, assertSameTenant };

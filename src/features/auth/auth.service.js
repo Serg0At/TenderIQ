@@ -54,12 +54,24 @@ const requireSecrets = () => {
 /** The tenant claims of a session in no organization — one spelling, used everywhere. */
 const ORGLESS_CLAIMS = Object.freeze({ organizationId: null, role: null, plan: null });
 
-const issueTokens = async ({ userId, organizationId, role, plan, family = createId() }) => {
+/**
+ * Whether this user runs Tendra itself (CONTEXT.md, Operator).
+ *
+ * Read off the user row at every mint and refresh, the way the role is read
+ * off the membership, and never copied from the token being refreshed — so
+ * clearing the flag ends operator access within one access-token lifetime. It
+ * belongs to the person, not to a membership: an orgless session can carry it,
+ * and no role in any organization implies it.
+ */
+const isOperator = (user) => user.is_operator === true;
+
+const issueTokens = async ({ userId, organizationId, role, plan, operator = false, family = createId() }) => {
   requireSecrets();
   const jti = createId();
 
+  // `op` is present only when true, so every other token is exactly what it was.
   const accessToken = jwt.sign(
-    { sub: userId, org: organizationId, role, plan },
+    { sub: userId, org: organizationId, role, plan, ...(operator ? { op: true } : {}) },
     AUTH.JWT_ACCESS_SECRET,
     { expiresIn: AUTH.ACCESS_TOKEN_ACTIVE_TIME, jwtid: createId() }
   );
@@ -106,6 +118,7 @@ const sessionFor = async (user, organizationId = null) => {
     organizationId: membership.organization_id,
     role: membership.role,
     plan,
+    operator: isOperator(user),
   });
 
   return {
@@ -114,6 +127,7 @@ const sessionFor = async (user, organizationId = null) => {
     organization: { id: membership.organization_id, name: membership.organization_name },
     role: membership.role,
     plan,
+    operator: isOperator(user),
     organizations: await organizations.listMembershipsFor(user.id),
   };
 };
@@ -128,7 +142,7 @@ const sessionFor = async (user, organizationId = null) => {
  * show "create an organization, or check your invitations". ADR 0001.
  */
 const orglessSessionFor = async (user) => {
-  const tokens = await issueTokens({ userId: user.id, ...ORGLESS_CLAIMS });
+  const tokens = await issueTokens({ userId: user.id, ...ORGLESS_CLAIMS, operator: isOperator(user) });
 
   return {
     ...tokens,
@@ -136,6 +150,7 @@ const orglessSessionFor = async (user) => {
     organization: null,
     role: null,
     plan: null,
+    operator: isOperator(user),
     organizations: [],
   };
 };
@@ -431,26 +446,33 @@ export default class AuthService {
      * of a refresh.
      */
     if (!claims.org) {
-      const tokens = await issueTokens({ userId: user.id, ...ORGLESS_CLAIMS, family: claims.family });
-      return { ...tokens, role: null, plan: null };
+      const tokens = await issueTokens({
+        userId: user.id,
+        ...ORGLESS_CLAIMS,
+        operator: isOperator(user),
+        family: claims.family,
+      });
+      return { ...tokens, role: null, plan: null, operator: isOperator(user) };
     }
 
     const membership = await organizations.findMembership(user.id, claims.org);
     if (!membership) throw ApiError.unauthenticated();
 
-    // Role and plan are re-read rather than copied from the old token, so a
-    // downgrade or role change takes effect within one access-token lifetime
-    // instead of persisting for the refresh token's whole 20 days.
+    // Role, plan and the operator flag are re-read rather than copied from the
+    // old token, so a downgrade, a role change or a revoked operator takes
+    // effect within one access-token lifetime instead of persisting for the
+    // refresh token's whole 20 days.
     const plan = await organizations.planFor(membership.organization_id);
     const tokens = await issueTokens({
       userId: user.id,
       organizationId: membership.organization_id,
       role: membership.role,
       plan,
+      operator: isOperator(user),
       family: claims.family,
     });
 
-    return { ...tokens, role: membership.role, plan };
+    return { ...tokens, role: membership.role, plan, operator: isOperator(user) };
   }
 
   static async logout({ refreshToken }) {
