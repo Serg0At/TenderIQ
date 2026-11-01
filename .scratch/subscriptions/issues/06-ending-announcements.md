@@ -35,9 +35,12 @@ dedupe subjects ride `notifications_dedupe_uq` as the vault alerts' do.
   organization (the class comment lists it with the operator exceptions). It returns non-voided
   periods whose end is within 3 days ahead or 3 days back, joined to the plan and organization
   name, with `ended` computed as `period_end <= now()`. A follower is ruled out in SQL with
-  `NOT EXISTS`: a non-voided period of the same organization whose `period_start = period_end`,
-  compared in Postgres so microseconds are kept. Both windows read the database clock, the one
-  `current` reads.
+  `NOT EXISTS`: a non-voided period of the same organization starting in
+  `[period_end, greatest(period_end, now())]`, compared in Postgres so microseconds are kept.
+  Before the end that is exactly at it. After the end it is any time since, because a code
+  redeemed the day after a lapse starts then, not at the old end, and "has ended" would reach an
+  organization already back on Pro. A start still to come after a gap suppresses neither: the
+  gap is real. Both windows read the database clock, the one `current` reads.
 - **Worker.** `workers/subscriptionEnding.js` raises each row through `AnnouncementService.raise`,
   as `subscription-ending` or `subscription-ended`, with subject `{id}-ending` or `{id}-ended`.
   The payload is `subscriptionId`, `organizationName`, `plan`, `periodKind` and `periodEnd`. It
@@ -74,3 +77,13 @@ ingestion was not resumed. `npm run scheduler` logged `subscription ending sweep
 That is exactly two announcements across two runs. In a third and fourth run, org A's trial end
 was moved to an hour ago. The third run raised `subscription-ended` (`…-ended`) for it, and the
 fourth raised nothing, so a period is announced once each way.
+
+After review the follower rule was widened (above) and re-run on fresh fixtures, with the four
+rows above plus:
+
+| period | run 1 | run 2 |
+|---|---|---|
+| org D: trial ended 2 days ago, promo redeemed (started) 1 day ago | nothing | nothing |
+| org E: promo ended yesterday, next starts in 5 days | `subscription-ended` | nothing |
+| org F: trial ends in 2 days, next starts a day after it | `subscription-ending` | nothing |
+| **sweep result** | `{ ending: 2, ended: 2 }` | `{ ending: 0, ended: 0 }` |

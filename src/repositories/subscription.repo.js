@@ -136,11 +136,15 @@ export default class SubscriptionRepository {
    * its plan and organization name, and `ended` saying which side of now its
    * end is on. For the ending announcements, across every organization.
    *
-   * A follower starts exactly at the end (a trial cut short by a redeemed code,
-   * or a promo queued behind one), so that end is no end at all. Compared here
-   * in SQL, never in JavaScript: a Date drops the microseconds both columns
-   * hold. Both windows are read against the database clock, the one `current`
-   * reads against.
+   * A follower starting exactly at the end (a trial cut short by a redeemed
+   * code, or a promo queued behind one) makes that end no end at all. Once the
+   * end has passed, so does one that started since: a code redeemed the day
+   * after a lapse starts then, not at the old end, and "has ended" would reach
+   * an organization already back on its plan. A later start still to come is
+   * no follower either way — the gap before it is real. Compared here in SQL,
+   * never in JavaScript: a Date drops the microseconds both columns hold. Both
+   * windows are read against the database clock, the one `current` reads
+   * against.
    */
   static async endingOrEnded({ aheadDays, backDays }, trx = db) {
     return trx(`${TABLE} as s`)
@@ -154,7 +158,7 @@ export default class SubscriptionRepository {
       .whereNotExists(
         trx(`${TABLE} as f`)
           .whereRaw('f.organization_id = s.organization_id')
-          .whereRaw('f.period_start = s.period_end')
+          .whereRaw('f.period_start >= s.period_end AND f.period_start <= greatest(s.period_end, now())')
           .whereRaw('f.id <> s.id')
           .whereNull('f.voided_at')
       )
