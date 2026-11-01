@@ -192,6 +192,8 @@ export const processMatch = async (job) => {
     // function directly is how the other two would silently never fire.
     case JOB.VAULT_EXPIRY:
       return (await import('./vaultExpiry.js')).processVaultExpiry();
+    case JOB.SUBSCRIPTION_ENDING:
+      return (await import('./subscriptionEnding.js')).processSubscriptionEnding();
     case JOB.DELIVER_NOTIFICATION:
       return (await import('./notifier.js')).handleDeliverNotification(job);
     case JOB.MATCH_TENDER:

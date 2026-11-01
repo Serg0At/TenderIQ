@@ -9,6 +9,8 @@ import {
   isVaultType,
   isTeamType,
   teamAnnouncement,
+  isSubscriptionType,
+  subscriptionAnnouncement,
   matchedSearchesLine,
   changeLine,
 } from './notification.present.js';
@@ -156,6 +158,16 @@ const teamBody = (notification, payload) => {
   };
 };
 
+/** A subscription announcement: the same shape, pointing at the subscription. */
+const subscriptionBody = (notification, payload) => {
+  const sentence = subscriptionAnnouncement(notification.type, payload);
+  const url = appLink('/organization/subscription');
+  return {
+    text: url ? `${sentence}\n\n${url}` : sentence,
+    html: [paragraph(sentence), url ? button(url, 'Open subscription') : ''].filter(Boolean).join('\n'),
+  };
+};
+
 const tenderBody = (notification, payload, now) => {
   const facts = [];
   if (payload.buyerName) facts.push(['Buyer', payload.buyerName]);
@@ -241,7 +253,9 @@ export const formatNotification = (notification, { now = new Date(), unsubscribe
     ? vaultBody(notification, payload, now)
     : isTeamType(notification.type)
       ? teamBody(notification, payload)
-      : tenderBody(notification, payload, now);
+      : isSubscriptionType(notification.type)
+        ? subscriptionBody(notification, payload)
+        : tenderBody(notification, payload, now);
 
   return {
     subject: subjectFor(notification, payload),

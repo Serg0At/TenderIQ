@@ -4365,6 +4365,8 @@ No request body
 | `countdown-48h`, `countdown-12h`, `countdown-3h` | reminder (pipeline countdown) | `hoursRemaining`, `trackedTenderId`, `pipelineStatus` |
 | `vault-expiry-30d`, `vault-expiry-7d`, `vault-expiry-1d` | vault expiry sweep | `documentId`, `kind`, `filename`, `validUntil`, `daysRemaining` |
 | `vault-expired` | vault expiry sweep | same, with `daysRemaining: 0` |
+| `subscription-ending` | subscription ending sweep, up to 3 days before a period ends | `subscriptionId`, `organizationName`, `plan`, `periodKind` (`trial`, `promo`, `paid`), `periodEnd` |
+| `subscription-ended` | subscription ending sweep, once a period has ended | same |
 
 A tender raises **one** match alert per organization however many of its saved searches it
 matches. `matchedSearches` lists them all (`id`, `name` as it was when the alert was raised,
@@ -4374,7 +4376,10 @@ Alerts raised before `matchedSearches` existed do not carry it.
 `payload` is a JSONB column whose contents vary by `type` as above; the column itself is not
 schema-constrained. `tenderId` is `null` on vault alerts — those dedupe on
 `notifications.subject_id` instead (the document id), which is why the dedupe constraint is
-`(organization_id, type, tender_id, subject_id)` with `NULLS NOT DISTINCT`. An `amendment`
+`(organization_id, type, tender_id, subject_id)` with `NULLS NOT DISTINCT`. A subscription
+announcement's `subject_id` is `{subscriptionId}-ending` or `{subscriptionId}-ended`, so each
+period is announced once each way; neither is raised when another non-voided period starts at
+that period's end. An `amendment`
 carries `subject_id` = `v{version}`, so each amendment of a tender alerts once and a second one
 is a new alert.
 

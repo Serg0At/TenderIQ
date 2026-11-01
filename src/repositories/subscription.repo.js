@@ -38,9 +38,10 @@ const forOperator = (trx) =>
  *
  * Scoped by organization like every private repository, except
  * `creatorHasTrial`, which asks the one cross-tenant question a trial needs (has
- * this person had one in any organization?) and answers only yes or no, and
+ * this person had one in any organization?) and answers only yes or no,
  * `findById` and `voidPeriod`, which the operator console reaches by a period's
- * id: the operator belongs to no organization, and acts on any one.
+ * id: the operator belongs to no organization, and acts on any one, and
+ * `endingOrEnded`, the daily sweep's read across every organization.
  */
 export default class SubscriptionRepository {
   /**
@@ -127,6 +128,38 @@ export default class SubscriptionRepository {
   static async findById(id, trx = db) {
     const row = await forOperator(trx).where('s.id', id).first();
     return row ?? null;
+  }
+
+  /**
+   * Every non-voided period ending within `aheadDays`, or ended within the last
+   * `backDays`, that no non-voided period of its organization follows — with
+   * its plan and organization name, and `ended` saying which side of now its
+   * end is on. For the ending announcements, across every organization.
+   *
+   * A follower starts exactly at the end (a trial cut short by a redeemed code,
+   * or a promo queued behind one), so that end is no end at all. Compared here
+   * in SQL, never in JavaScript: a Date drops the microseconds both columns
+   * hold. Both windows are read against the database clock, the one `current`
+   * reads against.
+   */
+  static async endingOrEnded({ aheadDays, backDays }, trx = db) {
+    return trx(`${TABLE} as s`)
+      .join('plans as p', 'p.id', 's.plan_id')
+      .join('organizations as o', 'o.id', 's.organization_id')
+      .whereNull('s.voided_at')
+      .whereRaw(
+        's.period_end > now() - make_interval(days => ?) AND s.period_end <= now() + make_interval(days => ?)',
+        [backDays, aheadDays]
+      )
+      .whereNotExists(
+        trx(`${TABLE} as f`)
+          .whereRaw('f.organization_id = s.organization_id')
+          .whereRaw('f.period_start = s.period_end')
+          .whereRaw('f.id <> s.id')
+          .whereNull('f.voided_at')
+      )
+      .orderBy([{ column: 's.period_end' }, { column: 's.id' }])
+      .select(...columns, 's.organization_id', 'o.name as organization_name', trx.raw('s.period_end <= now() as ended'));
   }
 
   /**

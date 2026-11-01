@@ -8,6 +8,8 @@ import {
   isVaultType,
   isTeamType,
   teamAnnouncement,
+  isSubscriptionType,
+  subscriptionAnnouncement,
   matchedSearchesLine,
   changeLine,
 } from './notification.present.js';
@@ -108,6 +110,14 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
     lines.push(escapeHtml(teamAnnouncement(notification.type, payload)));
     const url = appLink('/organization/members');
     if (url) lines.push('', `<a href="${escapeHtml(url)}">Open team</a>`);
+    return lines.join('\n');
+  }
+
+  // A subscription announcement is likewise about the company, not a tender.
+  if (isSubscriptionType(notification.type)) {
+    lines.push(escapeHtml(subscriptionAnnouncement(notification.type, payload)));
+    const url = appLink('/organization/subscription');
+    if (url) lines.push('', `<a href="${escapeHtml(url)}">Open subscription</a>`);
     return lines.join('\n');
   }
 

@@ -193,6 +193,14 @@ export const JOB = {
    */
   VAULT_EXPIRY: 'vault.expiry',
   /**
+   * Daily sweep of subscription periods: an organization-wide announcement
+   * three days before a period ends and one once it has, unless another period
+   * starts at that end (workers/subscriptionEnding.js). Rides ALERTS like the
+   * vault sweep: what it produces is the warning before the 402s, not
+   * housekeeping.
+   */
+  SUBSCRIPTION_ENDING: 'subscription.ending',
+  /**
    * Deliver one already-recorded notification to every destination its
    * organization has.
    *

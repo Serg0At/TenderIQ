@@ -148,6 +148,16 @@ const register = async () => {
   );
   logger.info('[scheduler] vault expiry sweep scheduled "11 6 * * *"');
 
+  // Daily, beside the vault sweep and for its reason: a period ends on a day,
+  // and three days' notice needs no finer clock. Offset so the two do not
+  // land on one tick.
+  await alertsQueue.upsertJobScheduler(
+    'subscription-ending',
+    { pattern: '17 6 * * *' },
+    { name: JOB.SUBSCRIPTION_ENDING, data: {} }
+  );
+  logger.info('[scheduler] subscription ending sweep scheduled "17 6 * * *"');
+
   // Nightly full recompute. Repairs anything the targeted path missed, and
   // promotes categories that only now cleared the comparables threshold
   // because the seed advanced.
