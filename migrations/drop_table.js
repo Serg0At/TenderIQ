@@ -18,6 +18,7 @@ async function down(pg) {
     'buyer_profiles',
     'price_benchmarks',
     'saved_searches',
+    'checklist_generations',
     'checklist_items',
     'checklists',
     'bids',

@@ -440,6 +440,21 @@ function up(pg) {
       table.timestamp('updated_at').defaultTo(pg.fn.now());
     })
 
+    // checklist_generations — One accepted request to generate a checklist: what an
+    // organisation's monthly quota counts. Written under the organisation row lock before the
+    // job is queued, and never deleted when the job finds nothing to do — the request was the
+    // spend. Deleting a pursuit keeps the row with only `tracked_tender_id` nulled (composite FK
+    // in indexes()), so a generation is never refunded by deleting what it was for.
+    .createTable('checklist_generations', table => {
+      table.string('id').primary();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      // No single-column FK: the composite one in indexes() covers it and anchors organization_id.
+      table.string('tracked_tender_id');
+      table.string('requested_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['organization_id', 'created_at'], 'checklist_generations_org_created_idx');
+    })
+
     // checklist_items — A single bid requirement, AI-extracted or manual, carrying a
     // confidence score so low-confidence ones can route to human review.
     .createTable('checklist_items', table => {
@@ -921,6 +936,16 @@ async function indexes(pg) {
      FOREIGN KEY (vault_document_id, organization_id)
      REFERENCES vault_documents (id, organization_id)
      ON DELETE SET NULL (vault_document_id)`);
+
+  /**
+   * A generation belongs to its own tenant's pursuit. SET NULL with the column list, for the
+   * reason above: deleting the pursuit clears the pointer and keeps the row, so a deleted
+   * pursuit gives no quota back, and `organization_id` — which the count reads — stays.
+   */
+  await pg.raw(`ALTER TABLE checklist_generations ADD CONSTRAINT checklist_generations_tracked_org_fk
+     FOREIGN KEY (tracked_tender_id, organization_id)
+     REFERENCES tracked_tenders (id, organization_id)
+     ON DELETE SET NULL (tracked_tender_id)`);
 
   /**
    * A contract cannot name an award belonging to a different tender.

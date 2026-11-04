@@ -120,23 +120,32 @@ Already implemented and costing nothing — neither should ever count against a 
 
 ## Quota design sketch
 
-`QUOTA_EXCEEDED` (429) already exists in `utils/errors.js` with nothing raising it, and
-`PLAN_GATED` in `libs/permissions.js` is where the entitlement belongs. Enforce in
-`ChecklistService.generate`, beside the existing `ai.isConfigured()` gate.
-
-Meter **checklist generations and document generations only**. A starting shape against the
-seeded plans, given a supplier realistically pursues ~20 tenders a month:
+**Built** (subscriptions ticket 08, spec `.scratch/subscriptions/quota-spec.md`). Every accepted
+`POST /tracked-tenders/:id/checklist/generate` spends one checklist generation, `force` included;
+at the limit it is refused `429 QUOTA_EXCEEDED` with `{ used, limit, resetsAt }`. The limits are
+`CHECKLIST_QUOTA` beside `PLAN_GATED` in `libs/permissions.js`, read from the subscription
+covering now (never the token), given a supplier realistically pursues ~20 tenders a month:
 
 | plan | price | checklist generations / month |
 |---|---|---|
-| free | $0 | 0 — feature gated entirely |
+| free (no subscription) | $0 | 0 — feature gated entirely |
+| trial (any plan) | $0 | 10 — enough to see it work, at most ~$11 per trial |
 | starter | $40 | 5 |
 | pro | $115 | 30 |
 | business | $250 | 100 |
-| enterprise | $600 | metered, with alerting |
+| enterprise | $600 | 300 (the sketch said metered; there is no metering without payments) |
+
+**The window** is a calendar month in Asia/Yerevan, opened at the later of the 1st and the
+current subscription's start, so a new subscription — a promo redeemed mid-trial — starts with
+its full quota. Each accepted request is a `checklist_generations` row, written under the
+organization row lock before the job is queued; deleting a pursuit refunds nothing. A tender
+with no stored invitation is refused before the quota and costs nothing — the commonest case,
+since most tenders have no archive. A job that then finds nothing to do (`unchanged`,
+`no_text`) does not give the unit back.
 
 Hard-stop at the limit rather than bill-through: simpler, and no surprise invoices while the
-real numbers are still being learned.
+real numbers are still being learned. The document generator is expected to spend from the same
+quota when it is built.
 
 **Before setting any of these, persist actual usage.** The adapter already returns
 `input_tokens` / `output_tokens`; `aiExtractor.js` logs them and throws them away. Storing them

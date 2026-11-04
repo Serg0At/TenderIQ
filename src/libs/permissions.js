@@ -97,6 +97,30 @@ export const PLAN_GATED = {
   relevance: ['pro', 'business', 'enterprise'],
 };
 
+/**
+ * Checklist generations an organization may request per calendar month (Yerevan) of its
+ * current subscription. Code, not configuration: changing a number is a reviewed decision.
+ * A trial gets less than paid Pro, whatever plan it grants. A plan with no entry is 0, so a
+ * plan added without a number fails closed.
+ */
+export const CHECKLIST_QUOTA = Object.freeze({
+  free: 0,
+  starter: 5,
+  pro: 30,
+  business: 100,
+  enterprise: 300,
+});
+
+export const TRIAL_CHECKLIST_QUOTA = 10;
+
+/** The monthly limit for the period covering now (`{ plan, kind }`), or 0 with none. */
+export const checklistQuotaFor = (period) => {
+  if (!period) return 0;
+  if (period.kind === 'trial') return TRIAL_CHECKLIST_QUOTA;
+  const plan = String(period.plan ?? '').toLowerCase();
+  return Object.hasOwn(CHECKLIST_QUOTA, plan) ? CHECKLIST_QUOTA[plan] : 0;
+};
+
 export const roleHas = (role, permission) => (PERMISSIONS[role] ?? []).includes(permission);
 
 export const planAllows = (plan, permission) => {
@@ -110,6 +134,9 @@ export default {
   ROLES,
   ASSIGNABLE_ROLES,
   PLAN_GATED,
+  CHECKLIST_QUOTA,
+  TRIAL_CHECKLIST_QUOTA,
+  checklistQuotaFor,
   roleHas,
   planAllows,
   canActOn,

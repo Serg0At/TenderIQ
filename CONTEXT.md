@@ -103,6 +103,12 @@ A code an owner redeems for a subscription of a stated plan and length at a stat
 One code may be shared by many organizations, up to its redemption limit.
 _Avoid_: Coupon, Voucher, Discount code
 
+**Quota**:
+How many checklist generations an organization may request within one calendar month of its
+current subscription. Set by the plan and the subscription's kind, and started afresh by every
+new subscription. An organization with no subscription has none.
+_Avoid_: Allowance, Credits, Limit (alone)
+
 ### Tenders and sources
 
 **Tender**:

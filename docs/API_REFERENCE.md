@@ -2282,6 +2282,14 @@ job's idempotency key, so two clicks cannot buy two model calls.
 **Authentication:** required (Bearer). Permission: `bid:write` — generating spends money, which
 is a stronger act than viewing.
 
+**Quota:** every `202` spends one of the organization's monthly checklist generations, `force`
+included and whatever the job then finds (unchanged, no text, a failure). The limit comes from the
+subscription covering now, read at request time, not from the token: no subscription (`free`)
+0, a trial 10, `starter` 5, `pro` 30, `business` 100, `enterprise` 300. Used counts this
+organization's generations since the later of the 1st of the current month and the start of its
+current subscription, both in Asia/Yerevan, so a new subscription starts afresh. Every refusal
+below costs nothing.
+
 **Path parameters:**
 
 - `id`: the tracked tender's CUID2 id.
@@ -2299,7 +2307,7 @@ is a stronger act than viewing.
   changed.
 
 Regenerating when the invitation has not changed since the stored items were extracted makes
-**no model call**. The answer is still `202` and `pending`, and the next
+**no model call**. The answer is still `202` and `pending` (and still spends a unit), and the next
 [GET](#get-checklist) shows `status: "ready"` with the stored items as they are: the same ids,
 `generatedAt` and `model`, and an AI item a user deleted stays deleted. This holds even if a later
 run failed, because a failed run leaves the stored items as they were. That includes a failed
@@ -2330,9 +2338,21 @@ The body may be omitted entirely.
 - `404 NOT_FOUND`: "Tracked tender not found."
 - `409 CONFLICT`: "A checklist is already being generated for this tender." Exactly while its job
   is still queued or running, whatever the checklist's status and with `force` too — a running job
-  cannot be re-pointed, and adding a second under its id would do nothing.
+  cannot be re-pointed, and adding a second under its id would do nothing. No `details`.
+- `409 CONFLICT` with `details: { reason }` — the tender holds nothing a checklist can be read
+  from, so nothing is queued, nothing is spent, and the checklist is left as it was:
+  - `no_document`: no stored invitation archive (the common case);
+  - `unsupported_document`: documents are stored, but none a checklist is read from yet (an
+    ARMEPS tender's archive).
+- `429 QUOTA_EXCEEDED`: the month's generations are spent, or the plan has none.
+  `details: { used, limit, resetsAt }`, where `resetsAt` is the next 1st of the month at 00:00
+  Asia/Yerevan, in UTC (`"2026-11-30T20:00:00.000Z"`). `limit: 0` means no subscription covers
+  now.
 - `503 DEPENDENCY_UNAVAILABLE`: "AI checklist extraction is not configured." Refused up front
   rather than enqueueing a job certain to fail.
+
+Refusals are checked in this order: tracked tender found → AI configured → already in flight →
+an invitation stored → quota.
 
 ---
 

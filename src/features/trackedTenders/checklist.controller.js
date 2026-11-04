@@ -14,7 +14,9 @@ export default class ChecklistController {
    * to render an empty checklist as the answer.
    */
   static async generate(req, res) {
-    const result = await ChecklistService.generate(req.user.organizationId, req.params.id, req.body);
+    const result = await ChecklistService.generate(req.user.organizationId, req.params.id, req.body, {
+      userId: req.user.id,
+    });
     return res.status(202).json({ data: result });
   }
 
