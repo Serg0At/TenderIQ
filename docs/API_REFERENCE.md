@@ -2765,7 +2765,8 @@ No request body
       "periodStart": "2026-12-01T09:12:44.120Z",
       "periodEnd": "2027-06-01T09:12:44.120Z"
     },
-    "trialAvailable": false
+    "trialAvailable": false,
+    "quota": { "used": 3, "limit": 10, "resetsAt": "2026-11-30T20:00:00.000Z" }
   }
 }
 ```
@@ -2778,6 +2779,13 @@ No request body
 - `trialAvailable`: `true` exactly when the organization has never had a subscription and the
   person who created it has never had a trial, in this organization or any other — one they
   have since deleted included.
+- `quota`: the organization's checklist generations this month — `used`, `limit`, and
+  `resetsAt`, the next 1st of the month at 00:00 Asia/Yerevan, in UTC. It is the same reading
+  [Generate checklist](#generate-checklist) enforces, so when `used` has reached `limit` the next
+  generate is a `429 QUOTA_EXCEEDED` carrying these numbers. `limit` comes from `current`: 10 on
+  a trial, else by plan (`starter` 5, `pro` 30, `business` 100, `enterprise` 300), and `0` with
+  no current period, `used` still counted. `used` counts since the later of the 1st and
+  `current`'s start, so a new period starts at `0`.
 - An operator-voided period never appears here and grants nothing, but still counts as having
   had a subscription.
 
@@ -2832,7 +2840,8 @@ No request body
         "periodEnd": "2026-12-01T09:12:44.120Z"
       },
       "next": null,
-      "trialAvailable": false
+      "trialAvailable": false,
+      "quota": { "used": 0, "limit": 10, "resetsAt": "2026-11-30T20:00:00.000Z" }
     },
     "session": {
       "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -2937,7 +2946,8 @@ from the membership as for the trial. Not plan-gated.
         "periodStart": "2026-12-01T09:12:44.120Z",
         "periodEnd": "2027-06-01T09:12:44.120Z"
       },
-      "trialAvailable": false
+      "trialAvailable": false,
+      "quota": { "used": 4, "limit": 10, "resetsAt": "2026-11-30T20:00:00.000Z" }
     },
     "session": {
       "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",

@@ -5,6 +5,7 @@ import organizations from '../../repositories/organization.repo.js';
 import promoCodes from '../../repositories/promoCode.repo.js';
 import users from '../../repositories/user.repo.js';
 import AuthService from '../auth/auth.service.js';
+import QuotaService from './quota.service.js';
 import { ApiError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 
@@ -65,22 +66,27 @@ export default class SubscriptionService {
    * subscription and the person who created it has never claimed a trial. Both
    * outlast a void, and the claim outlasts the organization it was made in: a
    * creator who deletes their organization does not get a second trial.
+   *
+   * `quota` is `QuotaService.read`, the one computation the generate request
+   * enforces, so the view and the 429 can never disagree.
    */
   static async current(organizationId) {
     const organization = await organizations.findById(organizationId);
     if (!organization) throw ApiError.notFound('Organization');
 
-    const [current, next, everHad, creatorHadTrial] = await Promise.all([
+    const [current, next, everHad, creatorHadTrial, quota] = await Promise.all([
       subscriptions.current(organizationId),
       subscriptions.next(organizationId),
       subscriptions.everHad(organizationId),
       subscriptions.hasClaimedTrial(organization.created_by),
+      QuotaService.read(organizationId),
     ]);
 
     return {
       current: presentPeriod(current),
       next: presentPeriod(next),
       trialAvailable: !everHad && !creatorHadTrial,
+      quota,
     };
   }
 
