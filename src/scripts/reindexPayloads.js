@@ -35,12 +35,18 @@ import { logger } from '../utils/logger.js';
  * next sweep still stops at page 1 and merely re-verifies that page's notices.
  * Each of those detail fetches finds an unchanged content hash and writes
  * nothing. One cheap request per notice on one page, not a re-crawl.
+ *
+ * Nor the `upload:paper:{digest}` rows (ticket 33), which say which stored
+ * invitation a gnumner notice uploaded and point at the invitation's own
+ * object. A file that became a tender keeps that fact in its links; one that
+ * did not loses its notice until a sweep lists it again, and with it the
+ * replay a converter added later would give it (paper.js#recordUpload).
  */
 
 const RAW_PREFIX = `${PREFIX.RAW}/`;
 
 /**
- * `raw/armeps/detail%3A46895/<hash>.html` -> { source, ref, hash }
+ * `raw/eauction/detail%3A46895/<hash>.html` -> { source, ref, hash }
  *
  * Returns null for anything that does not match rather than guessing, so an
  * unrelated object in the bucket is skipped and counted instead of being

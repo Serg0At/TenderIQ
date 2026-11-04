@@ -1,7 +1,9 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
+import { significantPrefix } from '../libs/cpv.js';
 import { stableHash } from '../utils/hash.js';
 import parties from './party.repo.js';
+import tenderSources, { SUPERSEDED } from './tenderSource.repo.js';
 
 const TABLE = 'tenders';
 
@@ -10,6 +12,19 @@ const TABLE = 'tenders';
  * live enough to be worth re-checking.
  */
 const TERMINAL_STATUSES = ['awarded', 'cancelled'];
+
+/**
+ * A tender's *current* link for one source: the one whose run has not been
+ * replaced. `tenders.source_id` names the link that created the tender, and an
+ * e-auction amendment is a new tid that joins it (ticket 29), so every reader
+ * that fetches or reads a page by its id — the refresh, the document stage —
+ * goes through this rather than the creating id, which may be a dead run.
+ */
+const currentLink = (query, source) =>
+  query
+    .join('tender_sources as s', 's.tender_id', 't.id')
+    .where('s.source', source)
+    .whereRaw('s.observed_status is distinct from ?', [SUPERSEDED]);
 
 /**
  * Money to a canonical form before hashing or diffing.
@@ -29,6 +44,25 @@ const money = (value) => {
 };
 
 /**
+ * A set of CPV codes in its stored form: each once, in order. A set, not a
+ * list — the order a page happens to print them in is not a fact about the
+ * tender, and must not read as an amendment when it moves.
+ */
+const codeSet = (codes) => [...new Set((codes ?? []).filter(Boolean).map(String))].sort();
+
+const sameCodes = (a, b) => codeSet(a).join() === codeSet(b).join();
+
+/**
+ * A tender holds one document row per set it was issued, and an addendum is a
+ * new set (ticket 18), so "the tender's invitation" is the newest row. The id
+ * only breaks a tie — a CUID2 says nothing about order.
+ */
+const NEWEST_DOCUMENT_FIRST = [
+  { column: 'stored_at', order: 'desc' },
+  { column: 'id', order: 'desc' },
+];
+
+/**
  * Fields whose movement constitutes an amendment. Anything a supplier would
  * act on belongs here; bookkeeping (fetched_at, storage keys) does not.
  */
@@ -38,8 +72,14 @@ const fieldHash = (tender) =>
     buyerId: tender.buyerId,
     referenceCode: tender.referenceCode,
     cpvCode: tender.cpvCode,
+    cpvCodes: codeSet(tender.cpvCodes),
     procedureType: tender.procedureType,
+    submissionChannel: tender.submissionChannel,
     goodsWorksServices: tender.goodsWorksServices,
+    evaluationMethod: tender.evaluationMethod,
+    // Where a paper bid is delivered: a supplier who drives the envelope to
+    // the old address has lost the bid as surely as one who misses the date.
+    submissionAddress: tender.submissionAddress ?? null,
     status: tender.status,
     // Included so a move between two site states that share one enum value
     // (e.g. Նախաաճուրդային -> Աճուրդ, both `closed`) still registers as an
@@ -59,8 +99,12 @@ const toRow = (tender, buyerId) => ({
   buyer_id: buyerId,
   reference_code: tender.referenceCode ?? null,
   cpv_code: tender.cpvCode ?? null,
+  cpv_codes: codeSet(tender.cpvCodes),
   procedure_type: tender.procedureType,
+  submission_channel: tender.submissionChannel,
   goods_works_services: tender.goodsWorksServices ?? null,
+  evaluation_method: tender.evaluationMethod ?? null,
+  submission_address: tender.submissionAddress ?? null,
   status: tender.status,
   source_status: tender.sourceStatus ?? null,
   estimated_value: tender.estimatedValue ?? null,
@@ -94,10 +138,19 @@ const changedKeys = (before, after) =>
  * the ledger in full every time, so it is authoritative, and a lot that
  * disappears from it must disappear here too — but only when a ledger was
  * actually parsed. See the guard below.
+ *
+ * `lotScoped` replaces only the lots given, for a source that publishes a
+ * tender's results a notice at a time: a gnumner contract notice can cover
+ * some lots of a tender (ticket 08), and a second notice must not erase the
+ * first's. A lot it does give is replaced whole, so a corrected notice wins.
+ *
+ * A lot may name its winner (`award`, null for none): a source that states
+ * who won is taken at its word. Without it, the winner is the first accepted
+ * bid in rank order, the e-auction ledger's rule below.
  */
-const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt }) => {
+const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt, lotScoped = false }) => {
   // Nothing parsed -> touch nothing. The delete used to run before this guard,
-  // which made an empty parse destructive: ARMEPS adding one column to
+  // which made an empty parse destructive: the e-auction board adding one column to
   // Գնառաջարկներ makes parseBidLedger reject every row, and a finished tender's
   // entire ledger — its whole contribution to the benchmark corpus — would be
   // deleted with no error and no alarm, since labelsSeen stays > 0 so the
@@ -113,7 +166,7 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
   for (const lot of lots) {
     for (const bid of lot.bids) {
       const supplierId = await parties.upsertSupplier(
-        { source, sourceId: bid.supplierSourceId, name: bid.supplierName },
+        { source, sourceId: bid.supplierSourceId, name: bid.supplierName, taxId: bid.supplierTaxId },
         trx
       );
 
@@ -159,7 +212,7 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
        * the honest reading of a failed lot.
        */
       const accepted = bid.participantStatus ? false : true;
-      if (accepted && !awardedLots.has(lot.lotNumber)) {
+      if (!('award' in lot) && accepted && !awardedLots.has(lot.lotNumber)) {
         awardedLots.add(lot.lotNumber);
         awardRows.push({
           id: createId(),
@@ -176,6 +229,28 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
         });
       }
     }
+
+    if (lot.award) {
+      const supplierId = await parties.upsertSupplier(
+        { source, sourceId: lot.award.supplierSourceId, name: lot.award.supplierName, taxId: lot.award.supplierTaxId },
+        trx
+      );
+      if (supplierId) {
+        awardRows.push({
+          id: createId(),
+          tender_id: tenderId,
+          lot_number: lot.lotNumber,
+          supplier_id: supplierId,
+          amount: lot.award.amount,
+          net_amount: lot.award.netAmount,
+          estimated_value: lot.estimatedValue,
+          currency,
+          awarded_at: lot.award.awardedAt ?? awardedAt ?? null,
+          status: 'awarded',
+          source,
+        });
+      }
+    }
   }
 
   // Delete immediately before the insert, and only once there is something to
@@ -183,8 +258,10 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
   // authoritative only for its own rows, so an unscoped delete would wipe a
   // second source's awards on every re-normalize. Both statements run in the
   // caller's transaction, so readers never observe the empty window.
-  await trx('public_tender_bids').where({ tender_id: tenderId, source }).del();
-  await trx('awards').where({ tender_id: tenderId, source }).del();
+  const scope = (query) =>
+    lotScoped ? query.whereIn('lot_number', lots.map((lot) => lot.lotNumber)) : query;
+  await scope(trx('public_tender_bids').where({ tender_id: tenderId, source })).del();
+  await scope(trx('awards').where({ tender_id: tenderId, source })).del();
 
   if (bidRows.length) await trx('public_tender_bids').insert(bidRows);
   if (awardRows.length) await trx('awards').insert(awardRows);
@@ -192,10 +269,90 @@ const replaceLedger = async (trx, { source, tenderId, lots, currency, awardedAt 
 };
 
 
+/**
+ * SQL twin of `normalizeCode` in services/resolution.service.js: «» and quotes
+ * stripped, dashes made `-`, inner whitespace collapsed, uppercased. It only
+ * narrows the candidates; the resolution module re-checks each one.
+ *
+ * The `և` replace is not cosmetic: JavaScript uppercases that ligature to
+ * `ԵՒ` and Postgres leaves it alone, so without it a code such as
+ * `ՀՀ ԱԱԾ-ՏԱևԿԿԳՎ-…` never reaches the candidates at all.
+ *
+ * The outer replace is `normalizeCode`'s last step: a dash put back between
+ * the method marker `ՁԲ` and a digit directly after it (ՄԿԻ-ԳՀԱՊՁԲ26/47,
+ * ticket 07), and nowhere else. A capture and back-reference, not the
+ * lookahead JavaScript uses: knex reads the `?` of `(?=` as a binding, and
+ * every raw query this is spliced into would throw.
+ */
+export const codeKeySql = (column) =>
+  `regexp_replace(upper(btrim(regexp_replace(regexp_replace(translate(replace(${column}, 'և', 'ԵՒ'), ` +
+  `'‐‑‒–—―', '------'), '[«»"''“”„‘’]', '', 'g'), '\\s+', ' ', 'g'))), 'ՁԲ([0-9])', 'ՁԲ-\\1', 'g')`;
+
+/**
+ * Every code a tender states, as SQL over a `tenders` alias: the twin of
+ * libs/cpv.js#tenderCodes — primary code, the tender's own list, every lot's —
+ * so a filter in SQL reads the same list the matcher does. It may hold NULLs
+ * and repeats, which `coversAnySql` is not disturbed by: a NULL starts with
+ * nothing, and a repeat inside `exists` counts once.
+ */
+export const tenderCodesSql = (alias = 't') =>
+  `(array[${alias}.cpv_code]::text[] || ${alias}.cpv_codes || ` +
+  `array(select l.cpv_code::text from tender_lots l where l.tender_id = ${alias}.id))`;
+
+/**
+ * SQL twin of libs/cpv.js#covers: does any code the tender states start with
+ * one of the bound `?::text[]` prefixes. A wanted code covers exactly the codes
+ * that start with its `significantPrefix`, so the CPV filter binds those and
+ * the field filter binds its field's prefixes, and both answer the matcher's
+ * question. `starts_with` rather than `like`: a `%` or `_` in a filter value is
+ * a character, not a wildcard. It moves with `covers`: change one, change both.
+ */
+const coversAnySql = (alias = 't') =>
+  `exists (select 1 from unnest(${tenderCodesSql(alias)}) as c(code) ` +
+  `join unnest(?::text[]) as p(prefix) on starts_with(c.code, p.prefix))`;
+
+/**
+ * Competitive procurement only, as SQL over a `tenders` alias: a single-source
+ * price is what a buyer agreed with one supplier, not what a market bid
+ * (ticket 31), so every figure that measures competition — win rates,
+ * discounts, bidder counts, price comparisons, benchmarks — leaves it out
+ * unless a caller explicitly asks. Totals (spend, contracts, revenue) count it
+ * and split it out, and one tender's own ledger is never filtered by it.
+ */
+export const competitiveOnlySql = (alias = 't') => `${alias}.procedure_type is distinct from 'single_source'`;
+
+/**
+ * The winner's offer WITH VAT, as SQL over an `awards` alias: what a discount
+ * from the budget compares, never the contract. An e-auction award and a
+ * gnumner one are the winning bid's gross (`amount`). A PPCM award's `amount`
+ * is the contract price — what the buyer pays, and still the gross for spend —
+ * which on a framework or partial-funds contract is far from the offer, and
+ * PPCM states no bidder's VAT to rebuild it from. So it is the offer only when
+ * the contract is the winning net or net + 20% (within 2 AMD), and NULL
+ * otherwise: a discount figure leaves that lot out and counts it rather than
+ * guess a gross (ticket 10 follow-up). The same test picks a lot's contract
+ * in ppcm/observation.js#pricedAsOffer — change one, change both.
+ */
+export const awardOfferSql = (alias = 'a') =>
+  `(case when ${alias}.source is distinct from 'ppcm' then ${alias}.amount
+         when abs(${alias}.amount - ${alias}.net_amount) <= 2
+           or abs(${alias}.amount - ${alias}.net_amount * 1.2) <= 2 then ${alias}.amount end)`;
+
+/**
+ * A tender's lot numbers: its lots, and the lots its ledger names. One
+ * definition, for resolution's "do the lots fit" and for "has every lot
+ * failed" (ticket 09).
+ */
+const lotNumbersSql = (tenderIdSql) =>
+  `array(select lot_number from tender_lots where tender_id = ${tenderIdSql}
+          union
+          select lot_number from public_tender_bids where tender_id = ${tenderIdSql})`;
+
 /** The columns every tender list selects. */
 const LIST_COLUMNS = [
-  't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code',
-  't.procedure_type', 't.goods_works_services', 't.status', 't.source_status', 't.estimated_value',
+  't.id', 't.source_id', 't.title', 't.reference_code', 't.cpv_code', 't.cpv_codes',
+  't.procedure_type', 't.submission_channel', 't.goods_works_services', 't.evaluation_method', 't.submission_address',
+  't.status', 't.source_status', 't.estimated_value',
   't.currency', 't.published_at', 't.deadline_at', 't.auction_at',
   'b.id as buyer_id', 'b.name as buyer_name', 'b.region as buyer_region',
 ];
@@ -208,10 +365,12 @@ export const BIDDABLE_STATUSES = ['active', 'amended'];
  * `parties as b`. One function for both lists, so every filter the plain list
  * has, the relevant list has too, and they cannot drift.
  *
- * CPV matches the tender headline code OR any of its lots. That is the whole
- * point of tender_lots: a tender whose lot 7 of 18 is a supplier's category
- * must surface for them, and matching only `tenders.cpv_code` would silently
- * hide it. A missed tender is the product's #1 churn cause.
+ * CPV matches any code the tender states — its primary code, every code its
+ * source lists for it, or any lot's (`tenderCodesSql`). A tender whose lot 7 of
+ * 18 is a supplier's category must surface for them, and so must one whose
+ * page names a code no lot carries; reading fewer codes would silently hide
+ * it. A missed tender is the product's #1 churn cause. Both CPV filters match
+ * by the alert's rule (`coversAnySql`).
  */
 const applyDiscoveryFilters = (query, {
   cpvCodes = [],
@@ -221,6 +380,7 @@ const applyDiscoveryFilters = (query, {
   minValue = null,
   maxValue = null,
   procedureType = null,
+  submissionChannels = [],
   status = null,
   deadlineAfter = null,
   deadlineBefore = null,
@@ -228,11 +388,7 @@ const applyDiscoveryFilters = (query, {
   cpvPrefixes = [],
 } = {}) => {
   if (cpvCodes.length) {
-    query.where((q) =>
-      q.whereIn('t.cpv_code', cpvCodes).orWhereExists((sub) =>
-        sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id').whereIn('l.cpv_code', cpvCodes)
-      )
-    );
+    query.whereRaw(coversAnySql('t'), [cpvCodes.map(significantPrefix).filter(Boolean)]);
   }
 
   if (keyword) {
@@ -251,6 +407,7 @@ const applyDiscoveryFilters = (query, {
   if (buyerId) query.where('t.buyer_id', buyerId);
   if (region) query.whereILike('b.region', `%${region}%`);
   if (procedureType) query.where('t.procedure_type', procedureType);
+  if (submissionChannels.length) query.whereIn('t.submission_channel', submissionChannels);
   if (status) query.whereIn('t.status', Array.isArray(status) ? status : [status]);
   if (minValue !== null) query.where('t.estimated_value', '>=', minValue);
   if (maxValue !== null) query.where('t.estimated_value', '<=', maxValue);
@@ -258,19 +415,10 @@ const applyDiscoveryFilters = (query, {
   if (deadlineBefore) query.where('t.deadline_at', '<=', deadlineBefore);
   if (purchaseKindLabels.length) query.whereIn('t.goods_works_services', purchaseKindLabels);
 
-  // A Field resolves to CPV prefixes, matched on the headline code OR any lot —
-  // the same reach as `cpvCodes` above, so the field filter is never a second,
-  // narrower answer to "is this tender in my category". A tender with no CPV
+  // A Field resolves to CPV prefixes — significant prefixes, or libs/fields.js
+  // refuses to load — so it binds them as they are. A tender with no CPV
   // anywhere cannot match, and that is accepted rather than guessed from text.
-  if (cpvPrefixes.length) {
-    const patterns = cpvPrefixes.map((prefix) => `${prefix}%`);
-    query.where((q) =>
-      q.whereRaw('t.cpv_code like any(?::text[])', [patterns]).orWhereExists((sub) =>
-        sub.select(1).from('tender_lots as l').whereRaw('l.tender_id = t.id')
-          .whereRaw('l.cpv_code like any(?::text[])', [patterns])
-      )
-    );
-  }
+  if (cpvPrefixes.length) query.whereRaw(coversAnySql('t'), [cpvPrefixes]);
   return query;
 };
 
@@ -409,7 +557,30 @@ export default class TenderRepository {
       .select(...LIST_COLUMNS, lotsColumn(trx, []));
   }
 
-  /** Full detail for one tender, including its lots. */
+  /**
+   * Tenders with no CPV code list recorded, keyset by id — the ones stored
+   * before `cpv_codes` existed, for the backfill from storage. A tender whose
+   * source states no code at all stays in this set; that is what it states.
+   */
+  static async findWithoutCpvCodes({ afterId = null, limit = 200 } = {}, trx = db) {
+    const query = trx(TABLE).whereRaw('cardinality(cpv_codes) = 0').orderBy('id').limit(limit);
+    if (afterId) query.where('id', '>', afterId);
+    return query.select('id', 'source_id');
+  }
+
+  /**
+   * Record a tender's code list where none is recorded yet. A blank only, so
+   * the backfill can never overwrite what a live fetch wrote since it read the
+   * row. Writes the column and nothing else: no version, no event, no alert.
+   */
+  static async fillCpvCodes(id, codes, trx = db) {
+    const list = codeSet(codes);
+    if (!list.length) return false;
+    const updated = await trx(TABLE).where({ id }).whereRaw('cardinality(cpv_codes) = 0').update({ cpv_codes: list });
+    return updated > 0;
+  }
+
+  /** Full detail for one tender, including its lots, documents and source links. */
   static async findDetail(id, trx = db) {
     const tender = await trx(`${TABLE} as t`)
       .join('parties as b', 'b.id', 't.buyer_id')
@@ -418,12 +589,17 @@ export default class TenderRepository {
       .first();
     if (!tender) return null;
 
-    const [lots, documents] = await Promise.all([
+    const [lots, documents, sources] = await Promise.all([
       trx('tender_lots').where({ tender_id: id }).orderBy('lot_number').select('lot_number', 'cpv_code', 'name'),
-      trx('tender_documents').where({ tender_id: id }).orderBy('id').select('id', 'kind', 'url', 'parsed', 'manifest'),
+      // Newest set first, the same order the checklist reads its invitation in.
+      trx('tender_documents')
+        .where({ tender_id: id })
+        .orderBy(NEWEST_DOCUMENT_FIRST)
+        .select('id', 'kind', 'url', 'parsed', 'manifest'),
+      tenderSources.listForTender(id, trx),
     ]);
 
-    return { ...tender, lots, documents };
+    return { ...tender, lots, documents, sources };
   }
 
 
@@ -441,6 +617,39 @@ export default class TenderRepository {
   }
 
   /**
+   * One tender's stored documents with their storage keys, for a worker that
+   * reads them out of the bucket.
+   *
+   * Its own method rather than a column on `findDetail`: that one serves the
+   * API, and a storage key is an internal address that must not reach a
+   * response just to feed a worker. The AI checklist read the key off
+   * `findDetail` until the file list narrowed its select, and from then on
+   * found no document for every tender without anything failing.
+   *
+   * Newest first, so the first invitation is the one the tender holds now.
+   */
+  static async findWithStoredDocuments(tenderId, trx = db) {
+    const tender = await trx(TABLE).where({ id: tenderId }).first('id', 'title');
+    if (!tender) return null;
+    const documents = await trx('tender_documents')
+      .where({ tender_id: tenderId })
+      .orderBy(NEWEST_DOCUMENT_FIRST)
+      .select('id', 'kind', 'storage_key');
+    return { ...tender, documents };
+  }
+
+  /**
+   * The invitation a tender holds now, without its text: what a checklist's
+   * `document_hash` is compared with on every read.
+   */
+  static async findCurrentInvitation(tenderId, trx = db) {
+    return trx('tender_documents')
+      .where({ tender_id: tenderId, kind: 'invitation' })
+      .orderBy(NEWEST_DOCUMENT_FIRST)
+      .first('id', 'text_hash');
+  }
+
+  /**
    * Stored documents whose file list was never taken — every row written
    * before `manifest` existed, and any whose archive could not be listed.
    * Keyset by id so a long run can resume, and so a row that fails again is
@@ -449,7 +658,7 @@ export default class TenderRepository {
   static async findDocumentsWithoutManifest({ afterId = null, limit = 100 } = {}, trx = db) {
     const query = trx('tender_documents').whereNull('manifest').orderBy('id').limit(limit);
     if (afterId) query.where('id', '>', afterId);
-    return query.select('id', 'tender_id', 'storage_key');
+    return query.select('id', 'tender_id', 'kind', 'storage_key');
   }
 
   /** Fills a blank only: a listed archive never changes, so neither does its list. */
@@ -477,17 +686,20 @@ export default class TenderRepository {
    * shape as findNeedingRefresh, driven from the database rather than from the
    * board.
    */
-  static async findMissingInvitationDocuments({ source = 'armeps', limit = 500 }, trx = db) {
-    return trx(`${TABLE} as t`)
-      .leftJoin('tender_documents as d', 'd.tender_id', 't.id')
+  static async findMissingInvitationDocuments({ source = 'eauction', limit = 500 }, trx = db) {
+    // The current link names the page whose invitation `invitation_url` is.
+    // Missing means no row for *that* invitation: a joined replacement whose
+    // archive never landed still holds its predecessor's, which is not it.
+    return currentLink(trx(`${TABLE} as t`), source)
+      .leftJoin('tender_documents as d', (join) =>
+        join.on('d.tender_id', 't.id').andOn('d.url', 't.invitation_url'))
       .whereNotNull('t.invitation_url')
       .whereNull('d.id')
-      .andWhere('t.source_id', 'like', `${source}:%`)
       // Newest first: recent tenders are the ones a supplier might still act
       // on, so they get their category filled in first.
       .orderBy('t.published_at', 'desc')
       .limit(limit)
-      .select('t.id', 't.source_id', 't.invitation_url');
+      .select('t.id', 's.external_id', 't.invitation_url');
   }
 
 
@@ -504,7 +716,7 @@ export default class TenderRepository {
    * no re-crawl, no re-parse. The winner is the lowest-ranked accepted bid per
    * lot; a lot with no accepted bid yields no award.
    */
-  static async rebuildAwardsFromBids({ source = 'armeps' } = {}) {
+  static async rebuildAwardsFromBids({ source = 'eauction' } = {}) {
     return db.transaction(async (trx) => {
       const before = Number((await trx('awards').where({ source }).count('* as c').first()).c);
 
@@ -538,26 +750,122 @@ export default class TenderRepository {
   }
 
   /**
+   * The candidate tenders for one observation, answering exactly the lookups
+   * `resolution.service.js#lookupsFor` asked for. Deciding between them is the
+   * resolution module's job, never this one's: the code lookup may return more
+   * than one run, and that is the point.
+   */
+  static async findCandidates({ link, pointer, predecessors = [], code, codeRuns }, trx = db) {
+    const candidates = (query) =>
+      query.select(
+        't.id', 't.status', 't.reference_code', 't.submission_channel', 't.procedure_type', 't.published_at', 't.deadline_at',
+        trx.raw('(select name from parties where id = t.buyer_id) as buyer_name'),
+        trx.raw(
+          'exists(select 1 from tender_sources where tender_id = t.id and observed_status = ?) as replaced_runs',
+          [SUPERSEDED]
+        ),
+        // Only results ever said anything about it (ticket 31): no invitation, no page.
+        trx.raw(
+          `exists(select 1 from tender_sources where tender_id = t.id and role = 'results')
+           and not exists(select 1 from tender_sources where tender_id = t.id and role <> 'results') as result_only`
+        ),
+        trx.raw(`${lotNumbersSql('t.id')} as lot_numbers`)
+      );
+    const byLink = async (ref) =>
+      ref
+        ? candidates(
+          trx(`${TABLE} as t`)
+            .join('tender_sources as s', 's.tender_id', 't.id')
+            .where({ 's.source': ref.source, 's.external_id': ref.externalId })
+        ).select('s.observed_status as link_status')
+        : [];
+    // The tenders holding any run this one replaced: one, and it joins; two,
+    // and resolution calls it ambiguous rather than merge them.
+    const byPredecessors = async () =>
+      predecessors.length
+        ? candidates(
+          trx(`${TABLE} as t`)
+            .join('tender_sources as s', 's.tender_id', 't.id')
+            .where('s.source', predecessors[0].source)
+            .whereIn('s.external_id', predecessors.map((p) => p.externalId))
+        )
+        : [];
+    // A null channel is every channel: an amendment notice does not say which
+    // one its tender is on.
+    const byCode = async (lookup) => {
+      if (!lookup) return [];
+      const query = trx(`${TABLE} as t`).whereRaw(`${codeKeySql('t.reference_code')} = ?`, [lookup.key]);
+      if (lookup.submissionChannel) query.andWhere('t.submission_channel', lookup.submissionChannel);
+      return candidates(query);
+    };
+
+    const toCandidate = (row) => ({
+      id: row.id,
+      status: row.status,
+      referenceCode: row.reference_code,
+      submissionChannel: row.submission_channel,
+      procedureType: row.procedure_type,
+      buyerName: row.buyer_name,
+      replacedRuns: row.replaced_runs,
+      resultOnly: row.result_only,
+      publishedAt: row.published_at,
+      deadlineAt: row.deadline_at,
+      lotNumbers: row.lot_numbers ?? [],
+    });
+    const linked = await byLink(link);
+    const pointed = await byLink(pointer);
+    const predecessorTenders = await byPredecessors();
+    const coded = await byCode(code);
+    const runs = await byCode(codeRuns);
+    return {
+      linked: linked.map((row) => ({ ...toCandidate(row), linkSuperseded: row.link_status === SUPERSEDED })),
+      pointed: pointed.map(toCandidate),
+      predecessorTenders: predecessorTenders.map(toCandidate),
+      byCode: coded.map(toCandidate),
+      codeRuns: runs.map(toCandidate),
+    };
+  }
+
+  /**
    * Apply what the invitation archive revealed: the buyer's tax ID, the CPV
-   * code, and a `tender_documents` row for the archive itself.
+   * code, every CPV code it states, and a `tender_documents` row for the
+   * archive itself.
    *
    * These three fields exist nowhere in the HTML — only inside hraver.docx —
    * so this is the only path that can ever populate them. One transaction, so
    * a tender never shows a CPV whose source document was not recorded.
+   *
+   * The tender row is locked, and its status, deadline and version returned,
+   * so the caller can raise an addendum in the same transaction
+   * (services/addendum.service.js) without racing the normalizer's version.
+   *
+   * The tender is found through the archive's own link, `(source,
+   * externalId)`, not `tenders.source_id`: a replacement's archive belongs to
+   * the tender it joined, whose creating id is the run it replaced (ticket 29).
+   * A superseded link's archive is the dead run's and is not applied — its
+   * lots and codes would overwrite the replacement's.
    */
   static async applyInvitationFacts({
-    source = 'armeps',
-    sourceId,
+    source = 'eauction',
+    externalId,
+    kind = 'invitation',
     url,
     storageKey,
     taxId,
     cpvCode,
+    cpvCodes = [],
     lots = [],
     manifest = null,
-  }) {
-    return db.transaction(async (trx) => {
-      const tender = await trx(TABLE).where({ source_id: sourceId }).first();
+    textHash = null,
+  }, trx = db) {
+    const run = async (trx) => {
+      const tender = await trx(`${TABLE} as t`)
+        .join('tender_sources as s', 's.tender_id', 't.id')
+        .where({ 's.source': source, 's.external_id': String(externalId) })
+        .forUpdate('t')
+        .first('t.*', 's.observed_status as link_status');
       if (!tender) return { skipped: 'unknown_tender' };
+      if (tender.link_status === SUPERSEDED) return { skipped: 'superseded_link' };
 
       // Only fills a blank: the detail page is authoritative for everything it
       // publishes, and re-running this must not churn `version`.
@@ -565,7 +873,20 @@ export default class TenderRepository {
         await trx(TABLE).where({ id: tender.id }).update({ cpv_code: cpvCode });
       }
 
+      // Replaced, not filled: for a source whose codes live only in the archive
+      // (e-auction), the archive is the authority on them, as it is on the lots
+      // below — and only when something parsed, for the same reason. A source
+      // whose page states its codes (armeps.am) passes none, and the page's
+      // list stands.
+      const codes = codeSet(cpvCodes);
+      const codesReplaced = codes.length > 0 && !sameCodes(tender.cpv_codes, codes);
+      if (codesReplaced) await trx(TABLE).where({ id: tender.id }).update({ cpv_codes: codes });
+
+      // A buyer that gains its ՀՎՀՀ here may share it with another source's
+      // buyer — the ARMEPS ministry that already buys by e-auction. Whichever
+      // archive comes second merges them (ticket 19).
       const taxIdSet = taxId ? await parties.setTaxId(tender.buyer_id, taxId, trx) : false;
+      const buyerMerge = taxId ? await parties.mergeBuyers(taxId, {}, trx) : null;
 
       // Replace rather than merge: the invitation lists the lots in full, so it
       // is authoritative, and a lot removed by an addendum must disappear here
@@ -607,24 +928,61 @@ export default class TenderRepository {
           tender_id: tender.id,
           url,
           storage_key: storageKey,
-          kind: 'invitation',
+          kind,
           parsed: true,
           // Serialised by hand: knex hands a JS array to node-postgres as a
           // Postgres array literal, which jsonb rejects.
           manifest: manifest ? JSON.stringify(manifest) : null,
+          text_hash: textHash,
         })
         .onConflict(['tender_id', 'storage_key'])
         .ignore();
 
       return {
         tenderId: tender.id,
+        tender: { status: tender.status, deadlineAt: tender.deadline_at, version: tender.version },
         cpvSet: Boolean(cpvCode && !tender.cpv_code),
+        codesReplaced,
         taxIdSet,
+        buyersMerged: buyerMerge?.merged.length ?? 0,
+        buyersRefused: buyerMerge?.refused ?? null,
         lotsSeen: lots.length,
         lotsWritten,
         documentRecorded: (inserted?.rowCount ?? 0) > 0,
       };
-    });
+    };
+    return trx === db ? db.transaction(run) : run(trx);
+  }
+
+  /**
+   * The set a tender held before this one: its newest document row of the
+   * same kind other than `storageKey`. Read by tender, not by the archive's
+   * ref, because a joined replacement's first archive is still the tender's
+   * next set (ticket 29). Of the same kind, because a paper amendment notice
+   * (`amendment`, ticket 07) is a document beside the invitation, not a set
+   * that replaces it.
+   */
+  static async findPreviousDocument(tenderId, storageKey, kind = 'invitation', trx = db) {
+    return trx('tender_documents')
+      .where({ tender_id: tenderId, kind })
+      .whereNot({ storage_key: storageKey })
+      .orderBy(NEWEST_DOCUMENT_FIRST)
+      .first('id', 'storage_key', 'manifest');
+  }
+
+  /**
+   * One more version, and the status the caller decided: an addendum's
+   * (services/addendum.service.js), or a cancellation its failure notices
+   * completed (services/failure.service.js). The same counter `saveNormalized`
+   * advances, under the row lock the caller took, so the two never hand out
+   * one version twice.
+   */
+  static async advanceVersion(id, { status }, trx = db) {
+    const [row] = await trx(TABLE)
+      .where({ id })
+      .update({ version: trx.raw('version + 1'), status })
+      .returning('version');
+    return row.version;
   }
 
   /**
@@ -646,21 +1004,163 @@ export default class TenderRepository {
    * The lower bound stops this from re-checking a tender forever. A tender
    * that never leaves `closed` is a source-side dead end, not something to
    * re-fetch hourly until the end of time.
+   *
+   * It re-reads the tender's current link (ticket 29). A superseded run says
+   * Փոփոխված for good, so re-reading it would only spend the budget — once
+   * hourly for the whole window — and the ledger appears on the replacement.
    */
   static async findNeedingRefresh({ source, windowDays = 30, limit = 200 }, trx = db) {
     const now = new Date();
     const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
-    return trx(TABLE)
-      .whereNotIn('status', TERMINAL_STATUSES)
-      .andWhere('source_id', 'like', `${source}:%`)
-      .andWhereRaw('COALESCE(auction_at, deadline_at) < ?', [now])
-      .andWhereRaw('COALESCE(auction_at, deadline_at) > ?', [floor])
+    return currentLink(trx(`${TABLE} as t`), source)
+      .whereNotIn('t.status', TERMINAL_STATUSES)
+      .andWhereRaw('COALESCE(t.auction_at, t.deadline_at) < ?', [now])
+      .andWhereRaw('COALESCE(t.auction_at, t.deadline_at) > ?', [floor])
       // Oldest first: the ones most likely to have settled, and it makes the
       // batch cap drain a backlog in order instead of starving the tail.
-      .orderByRaw('COALESCE(auction_at, deadline_at) ASC')
+      .orderByRaw('COALESCE(t.auction_at, t.deadline_at) ASC')
       .limit(limit)
-      .select('id', 'source_id', 'status', 'auction_at', 'deadline_at');
+      .select('t.id', 's.external_id', 't.status', 't.auction_at', 't.deadline_at');
+  }
+
+  /**
+   * A detail source's links on tenders that have not settled, whether or not
+   * their deadline has passed — the ARMEPS refresh. Its job is the opposite
+   * case from findNeedingRefresh's: armeps.am can move a deadline while the
+   * gnumner notice stays the same, so nothing else would ever re-read the
+   * page before the deadline.
+   *
+   * Read through `tender_sources` rather than a `source_id` prefix: it is the
+   * link that names the page to fetch. Stalest link first, so the batch cap
+   * rotates through every open tender instead of re-reading the same few.
+   *
+   * A tender with no deadline is left out: nothing then bounds how long it
+   * would be re-read, and an armeps.am CfT page always states one.
+   */
+  static async findUnsettledLinks({ source, windowDays, limit }, trx = db) {
+    const floor = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+    return trx(`${TABLE} as t`)
+      .join('tender_sources as s', 's.tender_id', 't.id')
+      .where('s.source', source)
+      .whereNotIn('t.status', TERMINAL_STATUSES)
+      .andWhere('t.deadline_at', '>', floor)
+      .orderBy([{ column: 's.last_seen_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .limit(limit)
+      .select('t.id', 's.external_id', 't.status', 't.deadline_at', 's.last_seen_at');
+  }
+
+  /**
+   * Tenders of one submission channel whose results are still owed: past the
+   * deadline, inside the window, with a code to ask for them by, and not yet
+   * settled. The PPCM refresh's worklist (ticket 10): the oldest deadline
+   * first, the likeliest to have been filed. `limit` is a ceiling on the scan,
+   * not the batch — the caller skips the ones asked about recently.
+   *
+   * Settled is per lot, not per tender (ticket 10 follow-up): a buyer files
+   * one lot's contract weeks before another's, and `awarded` arrives with the
+   * first. So an awarded tender is still owed while any lot it has
+   * (`lotNumbersSql`: its lots and the lots its ledger names) has neither an
+   * award nor a failure a notice recorded (`tender_sources.failed_lots`). A
+   * cancelled tender is settled; one that is neither is owed as before.
+   */
+  static async findAwaitingResults({ submissionChannel, windowDays, limit }, trx = db) {
+    const now = new Date();
+    const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+
+    return trx(`${TABLE} as t`)
+      .where({ 't.submission_channel': submissionChannel, 't.is_latest': true })
+      .whereNot('t.status', 'cancelled')
+      .andWhere((q) =>
+        q.whereNot('t.status', 'awarded').orWhereRaw(
+          `exists (select 1 from unnest(${lotNumbersSql('t.id')}) as l(lot_number)
+                    where not exists (select 1 from awards a
+                                       where a.tender_id = t.id and a.lot_number = l.lot_number)
+                      and not exists (select 1 from tender_sources s
+                                       where s.tender_id = t.id and l.lot_number = any(s.failed_lots)))`
+        )
+      )
+      .whereNotNull('t.reference_code')
+      .andWhere('t.deadline_at', '<', now)
+      .andWhere('t.deadline_at', '>', floor)
+      .orderBy([{ column: 't.deadline_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .limit(limit)
+      .select('t.id', 't.reference_code', 't.status', 't.deadline_at');
+  }
+
+  /**
+   * E-auction tenders whose bidders PPCM may still give a ՀՎՀՀ (ticket 11):
+   * not cancelled, holding an award — PPCM lists a procedure once its results
+   * are filed, and an awarded e-auction is `closed` until its contract is
+   * signed — with a bidder in the eauction ledger whose party has no ՀՎՀՀ,
+   * deadline within the window. Once every bidder has one, the tender drops
+   * off.
+   */
+  static async findAwaitingTaxIds({ windowDays, limit }, trx = db) {
+    const now = new Date();
+    const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+
+    return trx(`${TABLE} as t`)
+      .where({ 't.submission_channel': 'eauction', 't.is_latest': true })
+      .whereNot('t.status', 'cancelled')
+      .whereExists((q) => q.select(trx.raw('1')).from('awards as a').whereRaw('a.tender_id = t.id'))
+      .whereExists((q) =>
+        q.select(trx.raw('1'))
+          .from('public_tender_bids as b')
+          .join('parties as p', 'p.id', 'b.supplier_id')
+          .whereRaw("b.tender_id = t.id and b.source = 'eauction'")
+          .whereNull('p.tax_id')
+      )
+      .whereNotNull('t.reference_code')
+      .andWhere('t.deadline_at', '<', now)
+      .andWhere('t.deadline_at', '>', floor)
+      .orderBy([{ column: 't.deadline_at', order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .limit(limit)
+      .select('t.id', 't.reference_code', 't.status', 't.deadline_at');
+  }
+
+  /**
+   * Paper tenders whose deadline has passed while they still say open — the
+   * paper refresh, which re-normalizes them from storage so they close. A
+   * paper invitation never changes, so nothing else would ever re-read it,
+   * and its status is read off its deadline. The current detail link (the
+   * file, keyed by its content hash) names what to re-read; the notice links
+   * (`paper:…`), the amendment notices (`amendment:…`) and the files a
+   * re-post replaced (superseded, ticket 07) are left out — a replaced file
+   * would write its old deadline back. Bounded below so a tender that
+   * somehow never closes is not re-read for ever.
+   *
+   * A tender with no deadline is past it once its publication — its newest
+   * file's (ticket 07) — is older than `undatedOpenDays` for its procedure
+   * type, the longest for any other (ticket 37). The SQL twin of
+   * `observation.js#undatedOpenUntil`, which the re-normalize closes it on;
+   * change both. Both read the same publication — `published_at` is the
+   * current file's first notice, as the observation counts it — and were
+   * they ever to differ, the tender would be re-read hourly, from storage,
+   * until the window's floor passes it.
+   */
+  static async findPaperPastDeadline({ windowDays, limit, undatedOpenDays }, trx = db) {
+    const now = new Date();
+    const floor = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+    const types = Object.entries(undatedOpenDays);
+    const longest = Math.max(...Object.values(undatedOpenDays));
+    const closesAt = trx.raw(
+      `coalesce(t.deadline_at, t.published_at + make_interval(days => case t.procedure_type ${types
+        .map(() => 'when ? then ?::int')
+        .join(' ')} else ?::int end))`,
+      [...types.flatMap(([type, days]) => [type, days]), longest]
+    );
+
+    return currentLink(trx(`${TABLE} as t`), 'gnumner')
+      .where({ 't.submission_channel': 'paper', 's.role': 'detail' })
+      .whereRaw("s.external_id ~ '^[0-9a-f]{64}$'")
+      .whereIn('t.status', BIDDABLE_STATUSES)
+      .andWhere(closesAt, '<', now)
+      .andWhere(closesAt, '>', floor)
+      .orderBy([{ column: closesAt, order: 'asc' }, { column: 't.id', order: 'asc' }])
+      .limit(limit)
+      .select('t.id', 's.external_id', 't.status', 't.deadline_at');
   }
 
   /**
@@ -675,23 +1175,93 @@ export default class TenderRepository {
    * `version`. Retaining superseded rows (which `is_latest` implies) needs the
    * constraint changed to UNIQUE(source_id, version) first. Deliberately left
    * as-is — that is a schema decision, not a normalizer one.
+   *
+   * `link` is the `tender_sources` row for the page this came from. It is
+   * written on every call, unchanged tenders included, in the same
+   * transaction: a tender is never visible without the link that produced it,
+   * and `last_seen_at` / `observed_status` follow every fetch that got this far.
+   *
+   * `tenderId` is the resolution module's decision: the tender this
+   * observation links to, or null to create one under `sourceId`. Which tender
+   * is never re-decided here. A linked tender deleted since it was resolved
+   * throws, so the retry resolves again rather than resurrecting it.
+   *
+   * `supersedes` are the runs this page replaced (an e-auction amendment,
+   * ticket 29), written as superseded links of the tender in the same
+   * transaction, so the tender is never visible joined but with its old run
+   * still current. `replaces` is resolution's word that this page has just
+   * joined that tender: it is an amendment even if no stored field moved,
+   * because the run itself did.
+   *
+   * `supersedeCurrent` is a re-posted paper invitation joining its run
+   * (ticket 07), which names no predecessor: under the row lock, every other
+   * current detail link of the source on the tender is superseded. A tender's
+   * `published_at` is its newest file's, so a lock that finds one newer than
+   * this observation means a later re-post committed after this one was
+   * resolved — then this file is the older of the two, and the retry resolves
+   * it as one.
+   *
+   * `runGuard` (`{ key, submissionChannel, knownIds }`) is a paper file being
+   * created as a new run. Two files of one code normalized at once — a cold
+   * start queues both — would each find no run and create one, and rule 1
+   * would keep them two tenders for good. So the create takes a lock on the
+   * code, and a same-code tender that resolution did not see (not in
+   * `knownIds`) means another file just created it: this one throws, and the
+   * retry resolves against it.
    */
-  static async saveNormalized({ source, sourceId, buyerName, tender, lots }) {
+  static async saveNormalized({ source, sourceId, tenderId = null, buyerName, buyerTaxId = null, tender, lots, link, supersedes = [], replaces = false, supersedeCurrent = false, runGuard = null }) {
     return db.transaction(async (trx) => {
-      const buyerId = await parties.upsertBuyer({ source, name: buyerName }, trx);
+      const { id: buyerId, refused: buyersRefused } = await parties.upsertBuyer({ source, name: buyerName, taxId: buyerTaxId }, trx);
       if (!buyerId) {
         // buyer_id is NOT NULL and there is no honest placeholder for it.
         // Skipping keeps the tender out until the page yields a real buyer.
         return { event: null, skipped: 'no_buyer' };
       }
 
-      const candidate = { ...tender, buyerId };
+      const existing = tenderId ? await trx(TABLE).where({ id: tenderId }).forUpdate().first() : null;
+      if (tenderId && !existing) {
+        throw new Error(`[tenders] resolved tender ${tenderId} no longer exists — re-resolve`);
+      }
+      // The detail page never carries a CPV; the invitation archive does, and
+      // applyInvitationFacts writes it after this row exists. A detail with no
+      // CPV is silence, not a change — treating it as one wiped every stored
+      // code and re-notified each tender as amended on every replay.
+      const candidate = {
+        ...tender,
+        // `amended` is an addendum's (services/addendum.service.js), written
+        // under this row's lock. deriveStatus read the status before the lock
+        // was taken, so an addendum that committed in between would be
+        // reverted here — and alerted as a status change — without this.
+        status: existing?.status === 'amended' && tender.status === 'active' ? 'amended' : tender.status,
+        buyerId,
+        cpvCode: tender.cpvCode ?? existing?.cpv_code ?? null,
+        // Same silence for the full list: e-auction's comes from the archive.
+        cpvCodes: tender.cpvCodes ?? existing?.cpv_codes ?? [],
+      };
       const row = toRow(candidate, buyerId);
-      const existing = await trx(TABLE).where({ source_id: sourceId }).forUpdate().first();
+
+      // A tender stored before `cpv_codes` existed has an empty list, and the
+      // page re-read now states its codes. Filling that blank is recording what
+      // the tender always said, not a change: as an amendment it would
+      // re-notify every matching organization about every old tender the first
+      // time each was re-read after a deploy (ticket 17). A list that was
+      // recorded and then moves is an amendment like any other field.
+      const storedCodes = existing?.cpv_codes?.length ? existing.cpv_codes : row.cpv_codes;
 
       if (!existing) {
+        if (runGuard) {
+          await trx.raw('select pg_advisory_xact_lock(hashtext(?))', [`run:${runGuard.submissionChannel}:${runGuard.key}`]);
+          const unseen = await trx(TABLE)
+            .whereRaw(`${codeKeySql('reference_code')} = ?`, [runGuard.key])
+            .andWhere('submission_channel', runGuard.submissionChannel)
+            .whereNotIn('id', runGuard.knownIds)
+            .first('id');
+          if (unseen) throw new Error(`[tenders] ${sourceId}: tender ${unseen.id} of the same code was created meanwhile — re-resolve`);
+        }
         const id = createId();
         await trx(TABLE).insert({ ...row, id, source_id: sourceId, version: 1, is_latest: true });
+        await tenderSources.upsert({ ...link, tenderId: id }, trx);
+        await tenderSources.markSuperseded({ tenderId: id, source, runs: supersedes, seenAt: link.seenAt }, trx);
         const ledger = await replaceLedger(trx, {
           source,
           tenderId: id,
@@ -699,7 +1269,7 @@ export default class TenderRepository {
           currency: tender.currency,
           awardedAt: tender.auctionAt,
         });
-        return { event: 'TenderIngested', tenderId: id, version: 1, ...ledger };
+        return { event: 'TenderIngested', tenderId: id, version: 1, buyersRefused, ...ledger };
       }
 
       const unchanged =
@@ -709,8 +1279,12 @@ export default class TenderRepository {
           buyerId: existing.buyer_id,
           referenceCode: existing.reference_code,
           cpvCode: existing.cpv_code,
+          cpvCodes: storedCodes,
           procedureType: existing.procedure_type,
+          submissionChannel: existing.submission_channel,
           goodsWorksServices: existing.goods_works_services,
+          evaluationMethod: existing.evaluation_method,
+          submissionAddress: existing.submission_address,
           status: existing.status,
           sourceStatus: existing.source_status,
           estimatedValue: existing.estimated_value === null ? null : String(existing.estimated_value),
@@ -721,8 +1295,20 @@ export default class TenderRepository {
           auctionAt: existing.auction_at,
         });
 
-      if (unchanged) {
-        return { event: null, tenderId: existing.id, version: existing.version };
+      if (supersedeCurrent) {
+        if (new Date(existing.published_at).getTime() >= new Date(tender.publishedAt).getTime()) {
+          throw new Error(`[tenders] tender ${existing.id} now holds a newer file than ${sourceId} — re-resolve`);
+        }
+        await tenderSources.supersedeOthers({ tenderId: existing.id, source, keep: link.externalId }, trx);
+      }
+      await tenderSources.upsert({ ...link, tenderId: existing.id }, trx);
+      await tenderSources.markSuperseded({ tenderId: existing.id, source, runs: supersedes, seenAt: link.seenAt }, trx);
+
+      if (unchanged && !replaces) {
+        if (!sameCodes(existing.cpv_codes, row.cpv_codes)) {
+          await trx(TABLE).where({ id: existing.id }).update({ cpv_codes: row.cpv_codes });
+        }
+        return { event: null, tenderId: existing.id, version: existing.version, buyersRefused };
       }
 
       await trx(TABLE)
@@ -741,9 +1327,75 @@ export default class TenderRepository {
         event: 'TenderAmended',
         tenderId: existing.id,
         version: existing.version + 1,
-        changedFields: changedKeys(existing, row),
+        changedFields: changedKeys({ ...existing, cpv_codes: storedCodes }, row),
+        buyersRefused,
         ...ledger,
       };
     });
+  }
+
+  /**
+   * A results source's word on a tender another source created (ticket 08, a
+   * gnumner contract notice): its link, the lots' bids and awards it states,
+   * and the status it moves the tender to. One transaction under the row
+   * lock, so a tender is never awarded without the awards that say so.
+   *
+   * Nothing else about the tender is touched — its title, dates and lots are
+   * its detail source's — and only the lots given are replaced
+   * (`replaceLedger`'s `lotScoped`), so two notices covering different lots
+   * both stand.
+   *
+   * `status` was derived from `expectedStatus`, read when the observation was
+   * resolved. A tender that has moved since — cancelled meanwhile, say —
+   * throws, and the retry derives again from what it is now, the same as a
+   * resolved tender that no longer exists. A status that moves is an
+   * amendment like any other: `version` + 1 and `TenderAmended`, so the
+   * matcher hears of it and decides, as it does for an e-auction that settles.
+   * Writing the same notice again moves nothing and raises no event.
+   */
+  static async recordResults({ tenderId, expectedStatus, status, link, lots, currency = 'AMD' }) {
+    return db.transaction(async (trx) => {
+      const existing = await trx(TABLE).where({ id: tenderId }).forUpdate().first();
+      if (!existing) throw new Error(`[tenders] resolved tender ${tenderId} no longer exists — re-resolve`);
+      if (existing.status !== expectedStatus) {
+        throw new Error(`[tenders] tender ${tenderId} is ${existing.status}, not ${expectedStatus} as resolved — re-resolve`);
+      }
+
+      await tenderSources.upsert({ ...link, tenderId }, trx);
+      const ledger = await replaceLedger(trx, { source: link.source, tenderId, lots, currency, lotScoped: true });
+
+      if (status === existing.status) return { event: null, tenderId, version: existing.version, ...ledger };
+      const version = existing.version + 1;
+      await trx(TABLE).where({ id: tenderId }).update({ status, version });
+      return { event: 'TenderAmended', tenderId, version, changedFields: ['status'], ...ledger };
+    });
+  }
+
+  /**
+   * What decides whether a tender's failure notices cancel it (ticket 09),
+   * read under a row lock — the caller's transaction, which writes the lots
+   * or the link it is asked after: its status and the lots it has, and the
+   * lots each linked failure notice named. Null when the tender is gone.
+   */
+  static async findFailureFacts(id, trx = db) {
+    // `t.id`, never a bare `id`: inside the subquery that is the lot's own.
+    const tender = await trx(`${TABLE} as t`)
+      .where('t.id', id)
+      .forUpdate()
+      .first('t.status', 't.version', 't.submission_channel', 't.deadline_at', trx.raw(`${lotNumbersSql('t.id')} as lot_numbers`));
+    if (!tender) return null;
+    const failures = await trx('tender_sources')
+      .where({ tender_id: id })
+      .whereNotNull('failed_lots')
+      .orderBy([{ column: 'first_seen_at' }, { column: 'id' }])
+      .select('source', 'failed_lots');
+    return {
+      status: tender.status,
+      version: tender.version,
+      submissionChannel: tender.submission_channel,
+      deadlineAt: tender.deadline_at,
+      lotNumbers: (tender.lot_numbers ?? []).map(Number),
+      failures: failures.map((row) => ({ source: row.source, lots: row.failed_lots.map(Number) })),
+    };
   }
 }

@@ -1,4 +1,4 @@
-import { bestCpvMatch, closeness, covers, CPV_LEVELS } from '../libs/cpv.js';
+import { bestCpvMatch, closeness, covers, tenderCodes, CPV_LEVELS } from '../libs/cpv.js';
 import { FIELDS } from '../libs/fields.js';
 import { termsOf, buildRarity, buildProfile, overlap } from './termRarity.service.js';
 
@@ -117,7 +117,7 @@ const BASIS_SOURCES = [
   },
   {
     name: 'supplier_identity',
-    present: (s) => Boolean(s.ledger?.partyId),
+    present: (s) => (s.ledger?.partyIds ?? []).length > 0,
     scorable: (s) => (s.ledger?.items ?? []).length > 0,
   },
   {
@@ -150,15 +150,17 @@ const round = (n) => Math.round(n * 10000) / 10000;
 /**
  * The units a tender is scored on: one per lot, carrying that lot's codes and
  * the saved-search keywords its item names contain (`keywordHits`, computed by
- * the repository so the names never have to be loaded). A headline code no lot
- * carries gets a unit of its own; a tender with neither still gets one, so its
- * title can still be read.
+ * the repository so the names never have to be loaded). The codes the tender
+ * states that no lot carries — the primary code, or one the source names
+ * without saying which lot it is (armeps.am) — make one unit of their own; a
+ * tender with none of either still gets one, so its title can still be read.
  */
 const unitsOf = (tender) => {
   const lots = tender.lots ?? [];
   const units = lots.map((lot) => ({ lot: lot.lotNumber, codes: lot.codes ?? [], keywordHits: lot.keywordHits ?? [] }));
   const lotCodes = new Set(units.flatMap((u) => u.codes));
-  if (tender.cpvCode && !lotCodes.has(tender.cpvCode)) units.push({ lot: null, codes: [tender.cpvCode], keywordHits: [] });
+  const unplaced = tenderCodes({ cpvCode: tender.cpvCode, cpvCodes: tender.cpvCodes }).filter((code) => !lotCodes.has(code));
+  if (unplaced.length) units.push({ lot: null, codes: unplaced, keywordHits: [] });
   if (!units.length) units.push({ lot: null, codes: [], keywordHits: [] });
   return units;
 };
@@ -386,7 +388,8 @@ const knownBuyerSignal = (tender, unit, ledger) => {
   }];
 };
 
-export const hasAnyCode = (tender) => Boolean(tender.cpvCode) || (tender.lots ?? []).some((lot) => lot.codes?.length);
+export const hasAnyCode = (tender) =>
+  tenderCodes({ cpvCode: tender.cpvCode, cpvCodes: tender.cpvCodes, lotCodes: (tender.lots ?? []).flatMap((lot) => lot.codes ?? []) }).length > 0;
 
 /** What a tender is about, in words: the title, plus lot names when loaded. Never the reference code — it names a procedure, not a purchase. */
 const textOf = (tender) => tender.text ?? tender.title ?? '';
@@ -480,8 +483,8 @@ export const compareRanked = (a, b) => {
 /**
  * Rank candidate tenders for one organization.
  *
- * @param {Array}  candidates  `{ id, title, referenceCode, cpvCode, buyerId, estimatedValue, deadlineAt, lots: [{ lotNumber, codes, keywordHits }] }`
- * @param {object} signals     `{ fields, savedSearches, ledger: { partyId, items: [{ tenderId, cpvCode, buyerId, at, won }] },
+ * @param {Array}  candidates  `{ id, title, referenceCode, cpvCode, cpvCodes, buyerId, estimatedValue, deadlineAt, lots: [{ lotNumber, codes, keywordHits }] }`
+ * @param {object} signals     `{ fields, savedSearches, ledger: { partyIds, items: [{ tenderId, cpvCode, buyerId, at, won }] },
  *                             pipeline: [{ trackedTenderId, tenderId, status, goNoGo, at, codes }],
  *                             textProfile: [string] — titles and lot names of tenders bid on or pursued;
  *                             needed only when a candidate has no code, and its `text` then too }`

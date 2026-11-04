@@ -16,7 +16,7 @@ const { AUTH, APP } = config;
  * button when the message declares where it points, and the honest reason to
  * build one is self-interested rather than polite. Without it the annoyed
  * recipient presses the spam button instead, and mail providers score a sending
- * domain on how often that happens — enough of them and every TenderIQ message
+ * domain on how often that happens — enough of them and every Tendra message
  * lands in junk, password resets included. The unsubscribe link protects the
  * password resets.
  *

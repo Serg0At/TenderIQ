@@ -1,4 +1,6 @@
 import db from '../libs/knex.js';
+import { tenderCodesSql } from './tender.repo.js';
+import supplierIdentities from './supplierIdentity.repo.js';
 
 /** One row per (tender, lot): the lot's first item code, as profile.repo.js reads a lot's category. */
 const lotCategoryCte = (qb) =>
@@ -127,8 +129,8 @@ export default class RelevanceRepository {
   }
 
   /**
-   * Everything this organization is tracking, with each tender's CPV codes —
-   * headline and every lot — and when the team last acted on it.
+   * Everything this organization is tracking, with every CPV code each tender
+   * states (`tenderCodesSql`) and when the team last acted on it.
    *
    * Private tenant data: scoped on `tt.organization_id` here, so one tenant's
    * pursuits can never inform another's ranking.
@@ -143,13 +145,7 @@ export default class RelevanceRepository {
         'tt.status',
         'tt.go_no_go',
         trx.raw('coalesce(tt.updated_at, tt.created_at) as at'),
-        trx.raw(
-          `array_remove(array(
-             select distinct c from unnest(
-               array[t.cpv_code] || array(select l.cpv_code from tender_lots l where l.tender_id = t.id)
-             ) as c
-           ), null) as codes`
-        )
+        trx.raw(`array_remove(array(select distinct c from unnest(${tenderCodesSql('t')}) as c), null) as codes`)
       );
 
     return rows.map((row) => ({
@@ -169,7 +165,7 @@ export default class RelevanceRepository {
    */
   static async signalsFor(organizationId, trx = db) {
     const [organization, searches, pipeline] = await Promise.all([
-      trx('organizations').where({ id: organizationId }).first('type', 'supplier_party_id'),
+      trx('organizations').where({ id: organizationId }).first('type'),
       trx('saved_searches')
         .where({ organization_id: organizationId })
         .orderBy([{ column: 'created_at' }, { column: 'id' }])
@@ -177,15 +173,17 @@ export default class RelevanceRepository {
       RelevanceRepository.pipelineFor(organizationId, trx),
     ]);
 
-    // The ledger needs the claimed identity first, so it is the second round trip.
+    // The ledger needs the claimed identities first, so it is the second round trip.
     // No identity, no ledger: the ranking runs on what else it has, and the
-    // basis names the missing claim.
-    const partyId = organization?.supplier_party_id ?? null;
-    const ledger = partyId ? (await RelevanceRepository.ledgerFor([partyId], {}, trx)).get(partyId) : [];
+    // basis names the missing claim. Every claimed party's lots are one ledger
+    // (ticket 32): they are one company's bids.
+    const partyIds = await supplierIdentities.partyIdsFor(organizationId, trx);
+    const byParty = await RelevanceRepository.ledgerFor(partyIds, {}, trx);
+    const ledger = partyIds.flatMap((id) => byParty.get(id) ?? []);
 
     return {
       fields: organization?.type ?? [],
-      ledger: { partyId, items: ledger },
+      ledger: { partyIds, items: ledger },
       pipeline,
       savedSearches: searches.map((s) => ({
         id: s.id,

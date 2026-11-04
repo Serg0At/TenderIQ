@@ -16,6 +16,9 @@ export const tenderDocKey = ({ source, sourceId, hash, ext }) =>
 export const tenderDocTextKey = ({ source, sourceId, hash }) =>
   `${PREFIX.TENDER_DOCS}/${source}/${encodeURIComponent(sourceId)}/${hash}.txt`;
 
+/** The extracted text stored beside an archive: the same key with `.txt` for `.zip`. */
+export const tenderDocTextKeyOf = (archiveKey) => archiveKey.replace(/\.zip$/, '.txt');
+
 /**
  * Where one organisation's vault documents live.
  *
@@ -43,4 +46,4 @@ export const getStorage = async () => {
   return instance;
 };
 
-export default { getStorage, PREFIX, rawKey, tenderDocKey, tenderDocTextKey, vaultKey };
+export default { getStorage, PREFIX, rawKey, tenderDocKey, tenderDocTextKey, tenderDocTextKeyOf, vaultKey };

@@ -8,7 +8,10 @@ import {
   isVaultType,
   isTeamType,
   teamAnnouncement,
+  isSubscriptionType,
+  subscriptionAnnouncement,
   matchedSearchesLine,
+  changeLine,
 } from './notification.present.js';
 
 /**
@@ -110,6 +113,14 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
     return lines.join('\n');
   }
 
+  // A subscription announcement is likewise about the company, not a tender.
+  if (isSubscriptionType(notification.type)) {
+    lines.push(escapeHtml(subscriptionAnnouncement(notification.type, payload)));
+    const url = appLink('/organization/subscription');
+    if (url) lines.push('', `<a href="${escapeHtml(url)}">Open subscription</a>`);
+    return lines.join('\n');
+  }
+
   if (payload.title) lines.push(escapeHtml(payload.title));
 
   const facts = [];
@@ -125,9 +136,10 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
   // is more precise than re-deriving it from the deadline at send time.
   if (payload.hoursRemaining) facts.push(`⏳ ${escapeHtml(`${payload.hoursRemaining}h remaining`)}`);
 
-  // The pipeline stage, on countdowns only. "still considering" three hours out
-  // is a different message from "preparing", and it is the whole reason this
-  // alert is separate from the matched reminder. Must be pushed BEFORE `facts`
+  // The pipeline stage, on countdowns and on an amendment to a tracked tender.
+  // "still considering" three hours out is a different message from
+  // "preparing", and it is the whole reason the countdown is separate from the
+  // matched reminder. Must be pushed BEFORE `facts`
   // is spread into `lines` — after it, the array is already copied.
   if (payload.pipelineStatus) facts.push(`📋 ${escapeHtml(payload.pipelineStatus)}`);
 
@@ -135,9 +147,8 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
 
   // Amendments carry what moved — a re-notification with no "what changed" is
   // indistinguishable from a duplicate, which is how people learn to ignore.
-  if (notification.type === 'amendment' && payload.changedFields?.length) {
-    lines.push('', `<b>Changed:</b> ${escapeHtml(payload.changedFields.join(', '))}`);
-  }
+  const changed = notification.type === 'amendment' ? changeLine(payload) : null;
+  if (changed) lines.push('', `<b>Changed:</b> ${escapeHtml(changed)}`);
 
   // Which of the organization's saved searches this is for, so a supplier with
   // several can tell "IT hardware" apart from "Road works" without opening it.
@@ -175,7 +186,7 @@ export const stopConfirmation = () =>
     '<b>Disconnected</b>',
     '',
     'This chat will no longer receive tender alerts.',
-    'Use the connect link in TenderIQ to reconnect.',
+    'Use the connect link in Tendra to reconnect.',
   ].join('\n');
 
 // `escapeHtml` and `tenderLink` are deliberately not re-exported: they moved to

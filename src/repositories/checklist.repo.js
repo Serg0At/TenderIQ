@@ -115,6 +115,15 @@ export default class ChecklistRepository {
     return trx === db ? db.transaction(run) : run(trx);
   }
 
+  /** How many items of a checklist came from the model; manual ones are not counted. */
+  static async countAiItems(checklistId, organizationId, trx = db) {
+    const row = await trx(ITEMS)
+      .where({ checklist_id: checklistId, organization_id: organizationId, source: 'ai' })
+      .count({ n: '*' })
+      .first();
+    return Number(row.n);
+  }
+
   static async markStatus(checklistId, { status, failureReason = null }, trx = db) {
     await trx(TABLE).where({ id: checklistId }).update({
       status,

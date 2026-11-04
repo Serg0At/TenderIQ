@@ -1,0 +1,132 @@
+import { createId } from '@paralleldrive/cuid2';
+import db from '../libs/knex.js';
+import { codeKeySql } from './tender.repo.js';
+
+const TABLE = 'unmatched_results';
+
+/**
+ * Results a source published that could not be attached to exactly one
+ * tender (ADR 0004): kept with their reason and counted, never guessed onto a
+ * tender and never thrown away. Public data, so no organization scope.
+ */
+export default class UnmatchedResultRepository {
+  /**
+   * Record that a result could not be resolved, as of `seenAt`.
+   *
+   * An upsert on `(source, external_ref)`, so a re-seen result refreshes its
+   * row and a concurrent insert that loses the race lands as an update — the
+   * database arbitrates, as it does for `tender_sources`.
+   *
+   * `seenAt` is when the source was fetched, so a replay of an old payload
+   * neither moves `last_seen_at` backwards nor overwrites a newer reason.
+   *
+   * `procedureType` is the procedure as far as the result says, and
+   * `wasPublic` whether it was announced publicly — true, false, or null for
+   * not known (ticket 31). A re-read decides `wasPublic` again, and the
+   * covered window only grows, so the newest answer stands.
+   *
+   * `first_seen_at` and the resolution columns are never touched here:
+   * resolving is `markResolved`'s job.
+   */
+  static async record(
+    {
+      source,
+      externalRef,
+      procedureCode = null,
+      procedureType = null,
+      reason,
+      wasPublic = null,
+      candidateTenderIds = [],
+      payloadHash,
+      seenAt = new Date(),
+    },
+    trx = db
+  ) {
+    const newer = (column) =>
+      trx.raw('case when excluded.last_seen_at >= ?? then excluded.?? else ?? end', [
+        `${TABLE}.last_seen_at`, column, `${TABLE}.${column}`,
+      ]);
+    await trx(TABLE)
+      .insert({
+        id: createId(),
+        source,
+        external_ref: String(externalRef),
+        procedure_code: procedureCode,
+        procedure_type: procedureType,
+        reason,
+        was_public: wasPublic,
+        candidate_tender_ids: candidateTenderIds,
+        payload_hash: payloadHash,
+        first_seen_at: seenAt,
+        last_seen_at: seenAt,
+      })
+      .onConflict(['source', 'external_ref'])
+      .merge({
+        // A re-read that cannot see the code does not forget it: a replayed
+        // paper upload no listing notice travels with knows none.
+        procedure_code: trx.raw('coalesce(?, ??)', [newer('procedure_code'), `${TABLE}.procedure_code`]),
+        procedure_type: trx.raw('coalesce(?, ??)', [newer('procedure_type'), `${TABLE}.procedure_type`]),
+        reason: newer('reason'),
+        was_public: newer('was_public'),
+        candidate_tender_ids: newer('candidate_tender_ids'),
+        payload_hash: newer('payload_hash'),
+        last_seen_at: trx.raw('greatest(??, excluded.last_seen_at)', [`${TABLE}.last_seen_at`]),
+      });
+  }
+
+  /**
+   * Unresolved results of one source whose code is `key` (a normalized code,
+   * `normalizeCode`) and whose ref starts with `refPrefix` — the ones a tender
+   * created under that code might now take. Only `no_candidate` and
+   * `ambiguous`: a result with no code or an unreadable file is not one a new
+   * tender changes.
+   */
+  static async findOpenByCode({ source, refPrefix, key }, trx = db) {
+    return trx(TABLE)
+      .where({ source })
+      .whereNull('resolved_at')
+      .whereIn('reason', ['no_candidate', 'ambiguous'])
+      .andWhere('external_ref', 'like', `${refPrefix}%`)
+      .whereRaw(`${codeKeySql('procedure_code')} = ?`, [key])
+      .select('external_ref', 'procedure_code', 'payload_hash');
+  }
+
+  /**
+   * Unresolved results of one source and reason whose ref starts with
+   * `refPrefix` — the notices a parser or converter that improved might now
+   * read (`npm run notices:replay -- --unmatched=…`).
+   */
+  static async findOpenByReason({ source, refPrefix, reason }, trx = db) {
+    return trx(TABLE)
+      .where({ source, reason })
+      .whereNull('resolved_at')
+      .andWhere('external_ref', 'like', `${refPrefix}%`)
+      .orderBy('external_ref')
+      .select('external_ref');
+  }
+
+  /**
+   * An unresolved result's procedure is known to have been public (ticket 12:
+   * PPCM's bid-report names its armeps.am page). The next read of the result
+   * finds the same fact in storage and says the same, so this only spares the
+   * count a day of being wrong. Returns the number of rows changed.
+   */
+  static async markPublic({ source, externalRef }, trx = db) {
+    return trx(TABLE)
+      .where({ source, external_ref: String(externalRef) })
+      .whereNull('resolved_at')
+      .update({ was_public: true });
+  }
+
+  /**
+   * A result that was unmatched now belongs to `tenderId`. Only an unresolved
+   * row moves, so a repeat is a no-op and the first resolution time stands.
+   * Returns the number of rows resolved (0 or 1).
+   */
+  static async markResolved({ source, externalRef, tenderId, resolvedAt = new Date() }, trx = db) {
+    return trx(TABLE)
+      .where({ source, external_ref: String(externalRef) })
+      .whereNull('resolved_at')
+      .update({ resolved_tender_id: tenderId, resolved_at: resolvedAt });
+  }
+}

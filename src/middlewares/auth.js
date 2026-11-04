@@ -34,11 +34,13 @@ const verifyBearer = (req, next, { allowOrgless }) => {
     }
     // `org`, `role` and `plan` are all null for an orgless session. Normalised to
     // null rather than left undefined, so "no organization" has one spelling.
+    // `operator` is the `op` claim, false unless it is exactly true.
     req.user = {
       id: claims.sub,
       organizationId: claims.org ?? null,
       role: claims.role ?? null,
       plan: claims.plan ?? null,
+      operator: claims.op === true,
       tokenId: claims.jti,
     };
     return next();
@@ -68,6 +70,14 @@ export const authenticate = (req, _res, next) => verifyBearer(req, next, { allow
  * way out for a second device still holding an orgless session after the first
  * joined somewhere), and `GET /auth/me`. Log out and refresh take no bearer token at all. Grep for this
  * name to audit the list; anything added to it needs the same justification.
+ *
+ * One entry is here for a different reason: `/operator`, behind
+ * `authorizeOperator`. Being an operator is a property of the user, not of any
+ * organization, so the console must work whether or not the session is inside
+ * one — and these routes read no tenant's private data (an organization's
+ * subscriptions are Tendra's record of what it granted, not the tenant's), so
+ * there is no tenant for a membership to scope them to. They are still refused to every session
+ * without the `op` claim; orgless here widens nothing.
  */
 export const authenticateOrgless = (req, _res, next) => verifyBearer(req, next, { allowOrgless: true });
 

@@ -1,6 +1,7 @@
 import Joi from 'joi';
 import { PURCHASE_KIND_CODES } from '../../libs/purchaseKinds.js';
 import { FIELD_IDS } from '../../libs/fields.js';
+import { SUBMISSION_CHANNELS } from './tender.schema.js';
 
 /**
  * Discovery filters, per FR-DISC-1.
@@ -34,6 +35,12 @@ export const tenderQuerySchema = Joi.object({
     purchaseKind: Joi.alternatives(
       Joi.array().items(Joi.string().valid(...PURCHASE_KIND_CODES)),
       Joi.string().valid(...PURCHASE_KIND_CODES)
+    ),
+    // One or several submission channels; any of them matches. Unknown is a
+    // 422 for the same reason as purchaseKind.
+    submissionChannel: Joi.alternatives(
+      Joi.array().items(Joi.string().valid(...SUBMISSION_CHANNELS)),
+      Joi.string().valid(...SUBMISSION_CHANNELS)
     ),
     // A Field from GET /fields, or several (any of them matches). Unknown is a
     // 422 for the same reason as purchaseKind.

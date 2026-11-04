@@ -1,8 +1,16 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
+import { awardOfferSql, competitiveOnlySql } from './tender.repo.js';
 
 const TABLE = 'price_benchmarks';
+
+/**
+ * A comparable is a competitive award unless the caller explicitly asks for
+ * single-source ones too (tender.repo.js#competitiveOnlySql). Materialised
+ * rows never hold them: only a live, explicit request can.
+ */
+const competitiveOnly = (query) => query.andWhereRaw(competitiveOnlySql('t'));
 
 /**
  * Comparable awards and the materialised price statistics computed from them.
@@ -24,8 +32,9 @@ export default class BenchmarkRepository {
    * @param {boolean} opts.exact    true = this code only; false = its family
    * @param {string|null} opts.buyerId  restrict to one buying agency
    * @param {number} opts.sinceMonths   recency window
+   * @param {boolean} opts.includeSingleSource  count single-source awards too (explicit only)
    */
-  static async statsFor({ cpvCode, exact = true, buyerId = null, sinceMonths = 24 }, trx = db) {
+  static async statsFor({ cpvCode, exact = true, buyerId = null, sinceMonths = 24, includeSingleSource = false }, trx = db) {
     // Family match walks up the CPV hierarchy by stripping trailing zeros:
     // 33141211 -> '33141211%', 33140000 -> '3314%'. A profile for the parent
     // therefore catches its children, never the reverse.
@@ -37,6 +46,9 @@ export default class BenchmarkRepository {
           'a.amount',
           'a.net_amount',
           'a.estimated_value',
+          // The winner's offer with VAT, for the discount: NULL where the
+          // award's contract is not that offer (tender.repo.js#awardOfferSql).
+          trx.raw(`${awardOfferSql('a')} as offer`),
           // Carried so the aggregate below can count how many distinct
           // procurements the sample actually represents.
           't.id as tender_id',
@@ -54,6 +66,7 @@ export default class BenchmarkRepository {
           ]);
 
         if (buyerId) qb.andWhere('t.buyer_id', buyerId);
+        if (!includeSingleSource) competitiveOnly(qb);
         if (exact) qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) = ?', [cpvCode]);
         else qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) like ?', [`${prefix}%`]);
       })
@@ -88,12 +101,17 @@ export default class BenchmarkRepository {
         // decimals implies an accuracy the sample cannot support, and the
         // column was `real` (float4), so the trailing digits were float noise
         // rather than data — 6.8833737 for what is simply 6.88.
+        //
+        // Against the winner's offer, never the contract: a lot whose contract
+        // is not its offer (a PPCM framework or partial contract) is left out
+        // and counted, rather than given a gross nobody stated.
         trx.raw(
           `round(
-             avg((estimated_value - amount) / nullif(estimated_value, 0) * 100)
-               filter (where estimated_value > 0)::numeric
+             avg((estimated_value - offer) / nullif(estimated_value, 0) * 100)
+               filter (where estimated_value > 0 and offer is not null)::numeric
            , 2) as avg_discount_pct`
-        )
+        ),
+        trx.raw('count(*) filter (where estimated_value > 0 and offer is null)::int as discount_excluded')
       )
       .from('comparable')
       .first();
@@ -105,6 +123,7 @@ export default class BenchmarkRepository {
       medianPrice: rows?.median_price === null ? null : Number(rows?.median_price),
       maxPrice: rows?.max_price === null ? null : Number(rows?.max_price),
       avgDiscountPct: rows?.avg_discount_pct === null ? null : Number(rows?.avg_discount_pct),
+      discountExcludedLots: Number(rows?.discount_excluded ?? 0),
     };
   }
 
@@ -133,7 +152,7 @@ export default class BenchmarkRepository {
    * the sample in a direction.
    */
   static async comparableAwards(
-    { cpvCode, exact = true, buyerId = null, sinceMonths = 24, limit = 10, excludeTenderId = null },
+    { cpvCode, exact = true, buyerId = null, sinceMonths = 24, limit = 10, excludeTenderId = null, includeSingleSource = false },
     trx = db
   ) {
     const prefix = exact ? null : significantPrefix(cpvCode);
@@ -191,6 +210,7 @@ export default class BenchmarkRepository {
 
     if (buyerId) inner.andWhere('t.buyer_id', buyerId);
     if (excludeTenderId) inner.andWhereNot('t.id', excludeTenderId);
+    if (!includeSingleSource) competitiveOnly(inner);
     if (exact) inner.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) = ?', [cpvCode]);
     else inner.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) like ?', [`${prefix}%`]);
 
@@ -228,6 +248,7 @@ export default class BenchmarkRepository {
       median_price: stats.medianPrice,
       max_price: stats.maxPrice,
       avg_discount_pct: stats.avgDiscountPct,
+      discount_excluded: stats.discountExcludedLots ?? 0,
       computed_at: new Date(),
     };
 
@@ -249,6 +270,7 @@ export default class BenchmarkRepository {
       })
       .whereNotNull('a.amount')
       .whereRaw('coalesce(l.cpv_code, t.cpv_code) is not null')
+      .modify(competitiveOnly)
       .distinct(trx.raw('coalesce(l.cpv_code, t.cpv_code) as cpv'));
     return rows.map((r) => r.cpv);
   }
@@ -302,6 +324,7 @@ export default class BenchmarkRepository {
       .andWhereRaw(`t.published_at >= now() - (? || ' months')::interval`, [
         String(Number(sinceMonths)),
       ])
+      .modify(competitiveOnly)
       .groupByRaw('coalesce(l.cpv_code, t.cpv_code), t.buyer_id')
       .havingRaw('count(*) >= ?', [Number(minCount)])
       .select(

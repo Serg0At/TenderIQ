@@ -98,7 +98,37 @@ export const fetchPage = async (url, { etag, lastModified, binary = false } = {}
     contentType,
     etag: response.headers.etag,
     lastModified: response.headers['last-modified'],
+    // `name=value` of each cookie the response set, attributes dropped: what
+    // a client that needs a session (PPCM) sends back.
+    cookies: (response.headers['set-cookie'] ?? []).map((cookie) => cookie.split(';')[0].trim()),
   };
+};
+
+/**
+ * POST a JSON body and read a JSON answer — PPCM's report endpoints. Same
+ * client, user agent, timeout and size cap as every page fetch.
+ *
+ * `json` is null when the body is not JSON (an HTML error or login page),
+ * which is for the caller to judge; `body` is the decoded text either way,
+ * byte for byte what was received, so it can be stored as the raw payload.
+ */
+export const postJson = async (url, payload, { cookie } = {}) => {
+  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (cookie) headers.Cookie = cookie;
+
+  const response = await client.post(url, JSON.stringify(payload), { headers });
+  const contentType = response.headers['content-type'];
+  const body = decode(Buffer.from(response.data), contentType);
+
+  let json = null;
+  if (/json/i.test(contentType || '')) {
+    try {
+      json = JSON.parse(body);
+    } catch {
+      json = null;
+    }
+  }
+  return { status: response.status, body, json, contentType };
 };
 
 
@@ -112,4 +142,4 @@ export const isRetryable = (error) => {
   );
 };
 
-export default { fetchPage, isRetryable };
+export default { fetchPage, postJson, isRetryable };

@@ -13,12 +13,19 @@ const optional = (key, fallback) => {
   return value === undefined || value === '' ? fallback : value;
 };
 
-const int = (key, fallback) => {
+/**
+ * An integer, optionally range-checked. The bounds are opt-in so every existing
+ * caller keeps exactly the behaviour it had.
+ */
+const int = (key, fallback, { min = -Infinity, max = Infinity } = {}) => {
   const raw = optional(key, undefined);
   if (raw === undefined) return fallback;
   const parsed = Number.parseInt(raw, 10);
   if (Number.isNaN(parsed)) {
     throw new Error(`[config] ${key} must be an integer, received "${raw}"`);
+  }
+  if (parsed < min || parsed > max) {
+    throw new Error(`[config] ${key} must be between ${min} and ${max}, received ${parsed}`);
   }
   return parsed;
 };
@@ -149,7 +156,7 @@ const config = {
     PORT: int('PSQL_PORT', 5432),
     HOST: optional('PSQL_HOST', 'localhost'),
     USER: optional('PSQL_USER', 'postgres'),
-    DATABASE: optional('PSQL_DATABASE', 'tenderiq'),
+    DATABASE: optional('PSQL_DATABASE', 'Tendra'),
     PASSWORD: optional('PSQL_PASSWORD', ''),
     SSL: sslFlag('PSQL_SSL', true),
   },
@@ -196,7 +203,7 @@ const config = {
   EMAIL: {
     DRIVER: oneOf('EMAIL_DRIVER', ['smtp', 'log'], 'log'),
     /** RFC 5322 From. A display name matters here: bare no-reply@ addresses score badly with spam filters. */
-    FROM: optional('EMAIL_FROM', 'TenderIQ <no-reply@tenderiq.am>'),
+    FROM: optional('EMAIL_FROM', 'Tendra <no-reply@Tendra.am>'),
     /** Where a reply actually goes, if anywhere. Unset means the From address. */
     REPLY_TO: optional('EMAIL_REPLY_TO', undefined),
     SMTP: {
@@ -229,7 +236,7 @@ const config = {
     DRIVER: optional('STORAGE_DRIVER', 's3'), // s3 | local
     ENDPOINT: optional('S3_ENDPOINT', undefined),
     REGION: optional('S3_REGION', 'us-east-1'),
-    BUCKET: optional('S3_BUCKET', 'tenderiq'),
+    BUCKET: optional('S3_BUCKET', 'Tendra'),
     ACCESS_KEY: optional('S3_ACCESS_KEY', undefined),
     SECRET_KEY: optional('S3_SECRET_KEY', undefined),
     FORCE_PATH_STYLE: bool('S3_FORCE_PATH_STYLE', true),
@@ -241,7 +248,7 @@ const config = {
   SCRAPER: {
     USER_AGENT: optional(
       'SCRAPER_USER_AGENT',
-      'TenderIQBot/1.0 (+https://tenderiq.am/bot; contact@tenderiq.am)'
+      'TendraBot/1.0 (+https://Tendra.am/bot; contact@Tendra.am)'
     ),
     EXTRA_CA_DIR: optional('SCRAPER_EXTRA_CA_DIR', './certs'),
     HTTP_TIMEOUT_MS: int('SCRAPER_HTTP_TIMEOUT_MS', 30000),
@@ -269,6 +276,20 @@ const config = {
     MIN_COMPARABLES: int('INTELLIGENCE_MIN_COMPARABLES', 5),
     /** How far back an award still counts as evidence of today's price. */
     RECENCY_MONTHS: int('INTELLIGENCE_RECENCY_MONTHS', 24),
+  },
+
+  /**
+   * Subscriptions (ADR 0005). Card payments do not exist yet, so this holds only
+   * what the trial needs.
+   */
+  BILLING: {
+    /**
+     * How long a trial lasts, in days, from the moment the owner starts it.
+     * Bounded because nothing else checks it: 0 would be refused by the
+     * period CHECK only when an owner pressed the button, and a stray extra
+     * digit would hand out a free year.
+     */
+    TRIAL_DAYS: int('BILLING_TRIAL_DAYS', 30, { min: 1, max: 365 }),
   },
 
   /**

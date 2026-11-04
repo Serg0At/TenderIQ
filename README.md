@@ -1,9 +1,9 @@
-# TenderIQ
+# Tendra
 
 > **Bid intelligence for suppliers who bid on public tenders.**
 > Armenia first, OCDS-region expansion later.
 
-TenderIQ is a private SaaS tool used only by suppliers — the companies that bid on public
+Tendra is a private SaaS tool used only by suppliers — the companies that bid on public
 tenders. It helps them discover the right tenders, see what competitors won at, prepare
 compliant bids, and never miss a deadline.
 

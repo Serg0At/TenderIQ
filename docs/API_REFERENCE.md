@@ -1,4 +1,4 @@
-# TenderIQ API Reference
+# Tendra API Reference
 
 > **Frontend status:** this repository contains **no frontend**. There is no `frontend/`,
 > `client/` or `web/` directory, no `.jsx`/`.tsx`/`.vue`/`.html` files, and no browser HTTP
@@ -7,7 +7,7 @@
 > frontend-to-server requests.
 >
 > Consequently **every endpoint below is currently uncalled by any frontend in this repo**.
-> Rather than repeat that on all 45 entries, the endpoints are documented normally by
+> Rather than repeat that on all 93 entries, the endpoints are documented normally by
 > feature, and [Backend endpoints not currently used by frontend](#backend-endpoints-not-currently-used-by-frontend)
 > records the situation once. No "Backend endpoint not found" entries exist, because there
 > are no frontend requests to cross-check.
@@ -78,6 +78,9 @@ All paths are relative to the base path **`/api/v1`**.
 - [Create organization](#create-organization) — `POST /organizations`
 - [Get organization](#get-organization) — `GET /organization`
 - [Update organization](#update-organization) — `PATCH /organization`
+- [Get subscription](#get-subscription) — `GET /organization/subscription`
+- [Start a trial](#start-a-trial) — `POST /organization/subscription/trial`
+- [Redeem a promo code](#redeem-a-promo-code) — `POST /organization/subscription/redeem`
 - [List members](#list-members) — `GET /organization/members`
 - [Change a member's role](#change-a-members-role) — `PATCH /organization/members/:userId`
 - [Remove a member](#remove-a-member) — `DELETE /organization/members/:userId`
@@ -88,7 +91,8 @@ All paths are relative to the base path **`/api/v1`**.
 - [List sent invitations](#list-sent-invitations) — `GET /organization/invitations`
 - [Cancel an invitation](#cancel-an-invitation) — `DELETE /organization/invitations/:id`
 - [Get supplier identity](#get-supplier-identity) — `GET /organization/supplier-identity`
-- [Set supplier identity](#set-supplier-identity) — `PUT /organization/supplier-identity`
+- [Claim a supplier party](#claim-a-supplier-party) — `POST /organization/supplier-identity`
+- [Unclaim a supplier party](#unclaim-a-supplier-party) — `DELETE /organization/supplier-identity/:partyId`
 - [Search supplier candidates](#search-supplier-candidates) — `GET /organization/supplier-identity/candidates`
 
 ### Invitations (addressed to me)
@@ -129,6 +133,13 @@ All paths are relative to the base path **`/api/v1`**.
 - [Unlink Telegram chat](#unlink-telegram-chat) — `DELETE /integrations/telegram/:id`
 - [Switch a destination back on](#switch-a-destination-back-on) — `POST /integrations/{telegram,email}/:id/enable`
 - [Telegram webhook](#telegram-webhook) — `POST /integrations/telegram/webhook`
+
+### Operator
+- [Create a promo code](#create-a-promo-code) — `POST /operator/promo-codes`
+- [List promo codes](#list-promo-codes) — `GET /operator/promo-codes`
+- [Delete or disable a promo code](#delete-or-disable-a-promo-code) — `DELETE /operator/promo-codes/:id`
+- [List an organization's subscriptions](#list-an-organizations-subscriptions) — `GET /operator/organizations/:id/subscriptions`
+- [Void a subscription](#void-a-subscription) — `POST /operator/subscriptions/:id/void`
 
 ### Unsubscribe (no login)
 - [Preview an unsubscribe link](#preview-an-unsubscribe-link) — `GET /unsubscribe`
@@ -194,7 +205,8 @@ Mechanism: **JWT Bearer access token** in the `Authorization` header
 - `Content-Type`: `application/json` — required on requests carrying a body. JSON bodies are
   capped at 1 MB.
 
-Access-token claims (`sub`, `org`, `role`, `plan`, `jti`) become `req.user`. Default lifetime
+Access-token claims (`sub`, `org`, `role`, `plan`, `jti`, and `op` when the user is an
+[operator](#operator)) become `req.user`. Default lifetime
 is 15 minutes (`ACCESS_TOKEN_ACTIVE_TIME`); refresh tokens last 20 days
 (`REFRESH_TOKEN_ACTIVE_TIME`) and are single-use — reusing one revokes the whole family.
 
@@ -208,7 +220,10 @@ Four gates run in order ([src/middlewares/authorize.js](src/middlewares/authoriz
    permission → else `403 ROLE_FORBIDDEN`
 3. resource `organization_id` matches the token's org → enforced in repositories; a
    cross-tenant id answers `404 NOT_FOUND` rather than confirming the row exists
-4. plan entitles the feature → else `402 PLAN_UPGRADE_REQUIRED`
+4. plan entitles the feature → else `402 PLAN_UPGRADE_REQUIRED`. The plan is read from the
+   token, which takes it from the subscription covering the moment the session was minted or
+   refreshed (see [Get subscription](#get-subscription)) — so a plan that starts or lapses
+   reaches a session at its next refresh.
 
 | Role | Permissions |
 |---|---|
@@ -242,7 +257,9 @@ the routes mounted on `authenticateOrgless` ([src/middlewares/auth.js](src/middl
 [Create organization](#create-organization), [List fields](#list-fields) (the picker on that
 screen), [the invitations addressed to the caller](#list-my-invitations),
 [Switch organization](#switch-organization) (the way out for a second device still holding an
-orgless session), and [Current user](#current-user). [Refresh](#refresh-session) and
+orgless session), [Current user](#current-user), and the [operator console](#operator) — which
+is there because being an operator belongs to the user, not to any organization, and which still
+refuses every session without the `op` claim. [Refresh](#refresh-session) and
 [Log out](#log-out) take no bearer token. The client's locked screen
 is presentation; the null claims are the enforcement.
 
@@ -262,7 +279,7 @@ From [src/utils/errors.js](src/utils/errors.js). Any of these may surface on any
 | `UNAUTHENTICATED` | 401 | Missing, malformed or invalid Bearer token. |
 | `TOKEN_EXPIRED` | 401 | Access token expired — refresh rather than re-login. |
 | `PLAN_UPGRADE_REQUIRED` | 402 | Role allows it, plan does not. |
-| `ROLE_FORBIDDEN` | 403 | Role lacks the permission. |
+| `ROLE_FORBIDDEN` | 403 | Role lacks the permission, or an [operator route](#operator) was called without the `op` claim (`details.required: "operator"`). |
 | `EMAIL_UNVERIFIED` | 403 | Address not confirmed. |
 | `NO_ORGANIZATION` | 403 | The session is in no organization (see [the orgless state](#the-orgless-state)). `details.permission`. |
 | `TENANT_FORBIDDEN` | 403 | Resource belongs to another organization. |
@@ -309,11 +326,11 @@ No request body
     "checks": [
       {
         "check": "freshness",
-        "source": "armeps",
+        "source": "eauction",
         "severity": "ok",
         "ageMinutes": 7,
         "slaMinutes": 15,
-        "detail": "ARMEPS e-auction: 7m since last sweep"
+        "detail": "e-auction (reverse auctions): 7m since last sweep"
       },
       {
         "check": "dead_letters",
@@ -460,6 +477,7 @@ error, so the endpoint cannot be used to discover who holds an account.
     },
     "role": "owner",
     "plan": "free",
+    "operator": false,
     "organizations": [
       { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
     ]
@@ -469,7 +487,9 @@ error, so the endpoint cannot be used to discover who holds an account.
 
 `expiresIn` is the access token's lifetime in seconds. `organizations` is every membership the
 user holds, in the order they were joined (oldest first); the session is minted for the first
-one, and the ids are what [Switch organization](#switch-organization) takes.
+one, and the ids are what [Switch organization](#switch-organization) takes. `operator` is
+`users.is_operator`, read at mint; every session response carries it, and only an operator's
+token carries the `op` claim the [operator console](#operator) requires.
 
 A user with **no membership** still signs in successfully, into the
 [orgless state](#the-orgless-state):
@@ -490,6 +510,7 @@ A user with **no membership** still signs in successfully, into the
     "organization": null,
     "role": null,
     "plan": null,
+    "operator": false,
     "organizations": []
   }
 }
@@ -508,8 +529,9 @@ A user with **no membership** still signs in successfully, into the
 
 Exchanges a refresh token for a new pair. Each refresh token is single-use; presenting one that
 verifies but is no longer tracked revokes the entire token family, because a replay and a stolen
-copy are indistinguishable. Role and plan are re-read from the database rather than copied from
-the old token, so a downgrade takes effect within one access-token lifetime.
+copy are indistinguishable. Role, plan and the operator flag are re-read from the database rather
+than copied from the old token, so a downgrade — or a cleared `users.is_operator` — takes effect
+within one access-token lifetime.
 
 **API:**
 `POST /api/v1/auth/refresh`
@@ -535,14 +557,16 @@ the old token, so a downgrade takes effect within one access-token lifetime.
     "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     "expiresIn": 900,
     "role": "owner",
-    "plan": "free"
+    "plan": "free",
+    "operator": false
   }
 }
 ```
 
 Note this response carries **no** `user` or `organization` block, unlike login.
 
-An orgless refresh token refreshes into another orgless pair (`role` and `plan` both `null`).
+An orgless refresh token refreshes into another orgless pair (`role` and `plan` both `null`;
+`operator` is still read, since it belongs to the user).
 It stays orgless even if the user has gained a membership since — moving into a tenant is
 [Switch organization](#switch-organization), never a side effect of a refresh.
 
@@ -858,6 +882,7 @@ Same shape as [Log in](#log-in), minted for the requested organization:
     "organization": { "id": "cm9zx4k1p0301qw8fd8k2m4q6", "name": "Client B LLC" },
     "role": "consultant",
     "plan": "free",
+    "operator": false,
     "organizations": [
       { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Advisory LLC", "role": "owner" },
       { "id": "cm9zx4k1p0301qw8fd8k2m4q6", "name": "Client B LLC", "role": "consultant" }
@@ -900,12 +925,14 @@ No request body
     "organizationId": "cm9zx4k1p0001qw8f6b3n2v8y",
     "role": "owner",
     "plan": "free",
+    "operator": false,
     "tokenId": "cm9zx4k1p0002qw8f9m4c1r7k"
   }
 }
 ```
 
-For an orgless session `organizationId`, `role` and `plan` are all `null`.
+For an orgless session `organizationId`, `role` and `plan` are all `null`. `operator` is `true`
+only for a token carrying the `op` claim.
 
 **Errors:**
 
@@ -918,9 +945,10 @@ For an orgless session `organizationId`, `role` and `plan` are all `null`.
 ## List tenders
 
 Filtered, cursor-paginated search over the public tender corpus. Not tenant-scoped — public
-procurement data is the same for every organization. A CPV filter matches the tender's headline
-code **or any of its lots**, and only `is_latest` rows are returned, so an amended tender
-appears once at its current version.
+procurement data is the same for every organization. A CPV filter matches **any code the tender
+states** — its headline code, every code its source lists for it (`cpvCodes`), or any lot's —
+and only `is_latest` rows are returned, so an amended tender appears once at its current
+version.
 
 **API:**
 `GET /api/v1/tenders`
@@ -934,12 +962,23 @@ No request body
 **Query parameters:**
 
 - `filter[cpv]` (optional): CPV code, or several — repeated params, a comma-separated string,
-  or `filter[cpv][]` array items. Each max 20 chars.
+  or `filter[cpv][]` array items. Each max 20 chars. **Hierarchical**: a tender matches when a
+  code it states anywhere — headline, `cpvCodes` or a lot — is one of them or sits under one,
+  by the same rule a saved search alerts on. Trailing zeros are padding, down to the 2-digit
+  division: `33100000` returns everything in group 331, `30000000` everything in division 30 and
+  nothing in 31–39, and `33141110` only that code. So this filter returns exactly the tenders a
+  saved search on the same codes would alert on (before its keyword, region and value rules).
 - `filter[keyword]` (optional): free-text search, max 200 chars. Empty string allowed.
 - `filter[buyerId]` (optional): buyer party id, max 40 chars.
 - `filter[region]` (optional): buyer region, max 100 chars.
 - `filter[procedure]` (optional): one of `open`, `quotation`, `single_source`, `e_auction`,
-  `restricted`. (The only live source produces `e_auction` exclusively.)
+  `restricted`. (e-auction tenders are all `e_auction`; ARMEPS tenders are `open` or
+  `quotation` so far.)
+- `filter[submissionChannel]` (optional): one or several of `eauction`, `armeps`, `paper` —
+  repeat the parameter for several; any of them matches. How a supplier submits a bid, which is
+  not the procedure type: a quotation can run on ARMEPS or on paper. All three have tenders
+  (`paper` since ticket 06: paper quotations and the rare paper open tender, read from the
+  invitation a gnumner notice uploads). An unknown value is a `422`, not an empty list.
 - `filter[status]` (optional): one or several of `planned`, `active`, `amended`, `closed`,
   `awarded`, `cancelled`.
 - `filter[minValue]` (optional): number ≥ 0.
@@ -950,9 +989,9 @@ No request body
   source's own label on every tender (Ապրանք / Աշխատանք / Ծառայություն). Anything else is a
   `422`, not an empty list.
 - `filter[field]` (optional): one or several [field](#list-fields) ids — repeat the parameter
-  for several; any of them matches. Resolved to the field's CPV prefixes and matched against the
-  headline code **or any lot**, like `filter[cpv]`, so a tender whose lot 7 of 18 is medical is
-  returned for `medical`. A tender with no CPV code anywhere matches no field. An unknown id is a
+  for several; any of them matches. Resolved to the field's CPV prefixes and matched against
+  **every code the tender states** by the same rule as `filter[cpv]`, so a tender whose lot 7
+  of 18 is medical is returned for `medical`. A tender with no CPV code anywhere matches no field. An unknown id is a
   `422`.
 - `page[size]` (optional): 1–100, default 20.
 - `page[cursor]` (optional): opaque cursor from a previous `meta.cursor`, max 200 chars.
@@ -968,12 +1007,16 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
   "data": [
     {
       "id": "cm9zx4k1p0010qw8fj3k9d2p1",
-      "sourceId": "armeps:284391",
+      "sourceId": "eauction:284391",
       "title": "Շինարարական աշխատանքների գնում",
       "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
       "cpvCode": "45000000",
+      "cpvCodes": ["45000000", "45233120"],
       "procedureType": "e_auction",
+      "submissionChannel": "eauction",
       "purchaseKind": "works",
+      "evaluationMethod": null,
+      "submissionAddress": null,
       "status": "active",
       "sourceStatus": "Ընթացիկ",
       "estimatedValue": 12750000,
@@ -999,6 +1042,19 @@ Example: `GET /api/v1/tenders?filter[status]=active&filter[purchaseKind]=service
 notices carry neither.
 `purchaseKind` is `goods`, `works` or `services`, and `null` on the rare row whose label is
 blank or unrecognised.
+`submissionChannel` is how a supplier bids on the tender, and is never null: `eauction` (live
+online price bidding on eauction.armeps.am), `armeps` (one sealed electronic bid on armeps.am) or
+`paper` (a sealed envelope delivered to the buyer).
+`evaluationMethod` is how the winner is chosen, as a code derived from the source's label
+(`lowest_price` is the only one seen so far). It is `null` on e-auction tenders, whose pages
+state none. An `armeps` tender has `sourceStatus` and `auctionAt` `null`: armeps.am states no
+status (it is derived from the deadline) and runs no auction.
+`submissionAddress` is where a `paper` bid is delivered, verbatim from the invitation's
+submission sentence; `null` for tenders bid online. A `paper` tender's `deadlineAt` is computed
+from the invitation's "N-th day counted from publication, at HH:MM" against the notice's publish
+datetime — the Yerevan calendar date of publication plus N days, never moved off a holiday — or
+taken from a date the invitation states; `sourceStatus`, `evaluationMethod`, `estimatedValue` and
+`auctionAt` are `null`, and `title` is the buyer's notice headline.
 
 **Errors:**
 
@@ -1024,8 +1080,8 @@ and tuning this ranking cannot change which alerts fire.
 `GET /api/v1/tenders/relevant`
 
 **Authentication:** required (Bearer). Permission: `tender:read` (all roles). **Plan-gated** on
-the `relevance` feature: `pro`, `business`, `enterprise`. No subscription writer exists yet, so
-every organization currently reads `free` and this answers `402` for everyone.
+the `relevance` feature: `pro`, `business`, `enterprise` — the plan of the organization's
+current [subscription](#get-subscription), else `free`.
 
 **Request data:**
 
@@ -1035,7 +1091,8 @@ No request body
 
 The [List tenders](#list-tenders) filter vocabulary, unchanged: `filter[cpv]`, `filter[keyword]`,
 `filter[buyerId]`, `filter[region]`, `filter[procedure]`, `filter[minValue]`, `filter[maxValue]`,
-`filter[deadlineAfter]`, `filter[deadlineBefore]`, `filter[purchaseKind]`, `filter[field]`, plus
+`filter[deadlineAfter]`, `filter[deadlineBefore]`, `filter[purchaseKind]`, `filter[field]`,
+`filter[submissionChannel]`, plus
 `page[size]` (1–100, default 20) and `page[cursor]`.
 
 Candidates are **biddable** tenders: the current version, with a deadline still ahead **or no
@@ -1058,6 +1115,7 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
       "id": "cm9zx4k1p0010qw8fj3k9d2p1",
       "title": "Բժշկական պարագաների ձեռքբերում",
       "cpvCode": "33141110",
+      "cpvCodes": ["33141110", "33141211"],
       "purchaseKind": "goods",
       "status": "active",
       "deadlineAt": "2026-09-22T11:00:00.000Z",
@@ -1093,7 +1151,8 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
   screen is expected to show it — a number out of one has no units.
 - `relevance.reasons` — strongest first, as **codes plus values**, never prose, so the client
   writes the Armenian. A tender is scored on its **best-matching lot**, and `lot` names it
-  (`null` when the match is the tender's headline code). Empty for a tender that fits nothing.
+  (`null` when the match is a code of the tender's own that no lot carries — its headline code, or
+  one in `cpvCodes`). Empty for a tender that fits nothing.
   `level` is how close the CPV match is: `exact`, `group` (same 3 digits) or `division` (same 2).
 
 | `code` | Meaning | Values |
@@ -1115,7 +1174,7 @@ Each row is the [List tenders](#list-tenders) shape plus `relevance`:
   was shown.
 - `meta.basis` — `ranked`, or `insufficient_data` (below).
 - `meta.missing` — the signal sources this organization has not given yet, from `field`,
-  `saved_search`, `supplier_identity` (see [Set supplier identity](#set-supplier-identity)) and
+  `saved_search`, `supplier_identity` (see [Claim a supplier party](#claim-a-supplier-party)) and
   `pipeline` (nothing [tracked](#track-a-tender) yet), so the client can offer the button that adds
   each.
 
@@ -1161,7 +1220,8 @@ free on every plan.
 
 ## Tender detail
 
-One tender with its lots, documents (and the files inside them) and buyer tax id.
+One tender with its lots, documents (and the files inside them), buyer tax id and the sources it
+was read from.
 
 **API:**
 `GET /api/v1/tenders/:id`
@@ -1182,11 +1242,13 @@ No request body
 {
   "data": {
     "id": "cm9zx4k1p0010qw8fj3k9d2p1",
-    "sourceId": "armeps:284391",
+    "sourceId": "eauction:284391",
     "title": "Շինարարական աշխատանքների գնում",
     "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
     "cpvCode": "45000000",
+    "cpvCodes": ["45000000", "45233120"],
     "procedureType": "e_auction",
+    "submissionChannel": "eauction",
     "purchaseKind": "works",
     "status": "active",
     "sourceStatus": "Ընթացիկ",
@@ -1195,6 +1257,8 @@ No request body
     "publishedAt": "2026-08-14T09:30:00.000Z",
     "deadlineAt": "2026-09-12T11:00:00.000Z",
     "auctionAt": "2026-09-13T10:00:00.000Z",
+    "submissionAddress": null,
+    "description": null,
     "qnaDeadlineAt": "2026-09-05T11:00:00.000Z",
     "invitationUrl": "https://eauction.armeps.am/tender/284391/invitation.zip",
     "version": 1,
@@ -1220,16 +1284,46 @@ No request body
           { "index": 2, "name": "lot_1_i_texnikakan_bnutagir.xlsx", "path": "lot_1_i_texnikakan_bnutagir.xlsx", "ext": "xlsx", "sizeBytes": 45736, "language": null }
         ]
       }
+    ],
+    "sources": [
+      { "source": "eauction", "url": "https://eauction.armeps.am/hy/public/tender_details/tid/284391/", "role": "detail" }
     ]
   }
 }
 ```
 
+**Sources.** One tender can be assembled from several sites, and `sources` lists every one it was
+read from, oldest first. `source` is `eauction` (eauction.armeps.am), `armeps` (armeps.am),
+`gnumner` (gnumner.minfin.am) or `ppcm`; `url` is the page on that site; `role` is what the site
+contributed — `discovery` (it announced the tender), `detail` (deadline, terms, documents) or
+`results` (bidders and prices). An e-auction tender has one `detail` link, since one site
+does all three. An amended e-auction still shows one: the site publishes the amendment under a
+new page, and the page it replaced is not listed, since it shows the old deadline. An ARMEPS tender has two: `armeps` (`detail`, its armeps.am page) and `gnumner`
+(`discovery`, the announcement listing that pointed at it). A paper tender's links are all
+`gnumner` and all point at the uploaded invitation: one `detail` (the file the tender was read
+from) and one `discovery` per notice that uploaded it — a buyer who posts the same file twice
+gives one tender with two `discovery` links.
+
+`description` is what is being bought, as the source states it beside the title: a paper
+invitation's contract subject («… կնքել **<subject>** մատակարարման պայմանագիր»). `null` for
+e-auction and ARMEPS tenders, whose pages state none apart from the title. `submissionAddress`
+is where a paper bid is delivered (see the list above). A paper tender's one document is its
+invitation: the uploaded `.zip` as it is, or the uploaded `.docx` as a one-file archive.
+
 `buyer.taxId` (ՀՎՀՀ) is populated only for buyers, and only when the invitation archive was
 parsed. `cpvCode` is `null` for most of the corpus — CPV lives inside the invitation ZIP.
 
-**Documents and their files.** Each document is an archive the tender published; `files` lists
-what is inside it, each downloadable on its own through
+**CPV codes.** `cpvCode` is the tender's primary code: the one an ARMEPS page leads with, or the
+most frequent across an e-auction's lots. `cpvCodes` is **every** code the source states for
+the tender, `cpvCode` included, sorted — `[]` when none is known yet. A code can be in
+`cpvCodes` and on no lot: an ARMEPS page lists the tender's codes without saying which lot each
+belongs to, and a lot gets one only when its name starts with that code's label. Saved-search
+alerts, the CPV and field filters and relevance all read every code — headline, `cpvCodes` and
+lots — so a search naming any of them finds the tender.
+
+**Documents and their files.** Each document is an archive the tender published, newest first: a
+buyer that re-issues its documents adds a set, and the first one is what the tender holds now.
+`files` lists what is inside it, each downloadable on its own through
 [Download a tender file](#download-a-tender-file). Every file is served from our stored copy
 of the archive — never fetched from the source on click. `availability` says whether there is
 anything to list:
@@ -1251,9 +1345,17 @@ shown for a tender that has them. A tender that names no invitation archive at a
   listed as files and not unpacked.
 - `sizeBytes` — uncompressed size.
 - `language` — `hy`, `ru` or `en` when the filename says so (`_HY`, `_ru`, `hayeren`, …), `null`
-  when it does not. Never guessed from content. armeps's `hraver.docx` is known to be the
+  when it does not. Never guessed from content. eauction's `hraver.docx` is known to be the
   Armenian invitation and is tagged `hy`; per-lot specifications are often bilingual and stay
   `null`.
+
+An ARMEPS tender's documents are one `kind: "contract_documents"` archive: everything the buyer
+uploaded to armeps.am (the invitation in HY, EN and RU, bills of quantities, addenda) plus the
+`c4t_*.xml` Tender Structure XML. `name` drops the archive's own `N_` numbering. `language` is
+the one armeps.am's document table states for that file; when a buyer uploads the same file name
+under two languages it cannot say which copy is which, and is `null`. An addendum is a second
+archive beside the first, and raises the tender's `version` (and turns `active` into `amended`
+while the deadline is ahead) when its files differ from the first's.
 
 **Errors:**
 
@@ -1610,7 +1712,11 @@ organization enters in the auction and what it is ranked on — and `winningPric
 the same basis. `gapVsWinner` is computed, not stored:
 `(price - winningPrice) / winningPrice`, and `null` unless both are known and the winner's
 price is positive. `outcome` is `won`, `lost`, `not_found` or `null` — `not_found` means the
-public ledger does not list this organization, which is a real outcome and not an error.
+public ledger does not list this organization, which is a real outcome and not an error. It is
+decided per lot: `won` only when the organization's claimed party holds the lot's award, `lost`
+when another party holds it or the lot's failure is on record. `null` covers a lot the ledger
+lists the organization on but whose award has not landed — an ARMEPS lot's bids are published
+before its contract — and the next half-hourly sweep asks again.
 
 **Errors:**
 
@@ -2064,6 +2170,7 @@ Never generated:
 {
   "data": {
     "status": "absent",
+    "itemsCurrent": null,
     "items": [],
     "progress": null,
     "advisory": true
@@ -2082,6 +2189,7 @@ Generated:
     "model": "claude-opus-5",
     "generatedAt": "2026-08-29T12:41:07.882Z",
     "failureReason": null,
+    "itemsCurrent": true,
     "progress": {
       "total": 14,
       "done": 6,
@@ -2118,6 +2226,16 @@ Generated:
 }
 ```
 
+- `itemsCurrent`: whether the AI items were read from the invitation the tender holds **now**.
+  `false` means the buyer issued a new invitation after these items were extracted, so some may
+  describe requirements that no longer hold. **A client must show this**, beside the items and not
+  only in a tooltip, and offer [Generate checklist](#generate-checklist): items from an old
+  document shown as current are as dangerous as an empty list. It is `false` whatever `status`
+  says — `ready` when nobody has regenerated since the change, `failed` when the re-read of the new
+  document failed and the old items are still shown, `unavailable` when the new invitation has no
+  readable text. `null` when there are no AI items (manual items are a person's assertion and are
+  never stale) or the tender holds no invitation to compare with. Derived on every read, never
+  stored.
 - `category`: `eligibility`, `financial`, `technical`, `document`, `procedural`, or `null`.
 - `confidence`: 0–1 for AI items, **`null` for manual ones** — a person's assertion stays
   distinguishable from an extraction. `evidence` is likewise `null` on manual items.
@@ -2128,6 +2246,20 @@ Generated:
   every read, so a certificate that lapsed since being attached shows as expired here.
 - `advisory: true` on every response: this is model output assisting a bid decision, not a
   legal reading of the tender.
+- `failureReason`: `null` unless `status` is `unavailable` or `failed`. `unavailable` is
+  `no_document` (no invitation is stored for this tender — the common case),
+  `unsupported_document` (a document is stored but its text is not read yet — every ARMEPS
+  tender today), `no_text` (the invitation is stored but its extracted text is missing) or
+  `ai_not_configured`. `failed` is `document_too_large` (refused, never truncated),
+  `invalid_output`, `no_items` (the model returned no requirements, usually because the text is
+  unusable), `no_verifiable_items` (it returned items but none quoted the document, so all were
+  dropped), the model's own `refused` / `truncated` / `empty` / `unparseable`, or —
+  once every retry has thrown — `ai_unavailable` (the AI service could not be reached),
+  `rate_limited` or `internal_error`. Between retries the checklist stays `pending`.
+  Generating again re-runs any checklist whose job is no longer queued or running — a `pending`
+  one included; no `force` is needed. A `failed` checklist keeps the AI items of its last
+  successful extraction, shown beside the failure. An extraction that keeps nothing is not
+  stored as `ready`; a row stored that way before 2026-10-20 re-extracts on its next generate.
 
 **Errors:**
 
@@ -2163,7 +2295,17 @@ is a stronger act than viewing.
 ```
 
 - `force` (optional, default `false`): re-run an extraction the worker would otherwise skip as
-  unchanged. It exists for the case the document hash cannot detect — the *prompt* changed.
+  unchanged. It exists for the case the document hash cannot detect — the prompt or the model
+  changed.
+
+Regenerating when the invitation has not changed since the stored items were extracted makes
+**no model call**. The answer is still `202` and `pending`, and the next
+[GET](#get-checklist) shows `status: "ready"` with the stored items as they are: the same ids,
+`generatedAt` and `model`, and an AI item a user deleted stays deleted. This holds even if a later
+run failed, because a failed run leaves the stored items as they were. That includes a failed
+`force`, so a plain regenerate after one brings back the items from before it. Manual items are
+kept either way. A changed invitation, a stored extraction that kept no items, or `force` makes
+the worker extract again.
 
 The body may be omitted entirely.
 
@@ -2186,7 +2328,9 @@ The body may be omitted entirely.
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`.
 - `404 NOT_FOUND`: "Tracked tender not found."
-- `409 CONFLICT`: "A checklist is already being generated for this tender." (unless `force`).
+- `409 CONFLICT`: "A checklist is already being generated for this tender." Exactly while its job
+  is still queued or running, whatever the checklist's status and with `force` too — a running job
+  cannot be re-pointed, and adding a second under its id would do nothing.
 - `503 DEPENDENCY_UNAVAILABLE`: "AI checklist extraction is not configured." Refused up front
   rather than enqueueing a job certain to fail.
 
@@ -2472,6 +2616,7 @@ role in.
     "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
     "role": "owner",
     "plan": "free",
+    "operator": false,
     "organizations": [
       { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
     ]
@@ -2559,6 +2704,264 @@ session's own organization only — there is no id in the path to point elsewher
 - `403 ROLE_FORBIDDEN`: role lacks `org:manage`.
 - `403 NO_ORGANIZATION`: orgless session.
 - `422 VALIDATION_FAILED`: empty body; a field id not on the list, a repeat, or a fourth field.
+
+---
+
+## Get subscription
+
+Which plan the organization is on and until when, what follows it, and whether a trial could be
+started. Every member reads it, a viewer included — it is why a feature is or is not available
+to them — and it is not plan-gated, so a lapsed organization can see that it lapsed.
+
+An organization's plan is held by **subscriptions**: dated periods, one each, that never overlap
+(a trial, then promo periods, later paid ones). Its plan is the plan of the period covering now,
+else `free`. Whether a period is current or lapsed is read from its dates; nothing flips it.
+
+**API:**
+`GET /api/v1/organization/subscription`
+
+**Authentication:** required (Bearer). Permission: `tender:read` (every member).
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+```json
+{
+  "data": {
+    "current": {
+      "id": "cm3k8q2v70004ab1c9x7r5t2e",
+      "kind": "trial",
+      "plan": "pro",
+      "periodStart": "2026-11-01T09:12:44.120Z",
+      "periodEnd": "2026-12-01T09:12:44.120Z"
+    },
+    "next": {
+      "id": "cm3k9a1b20007ab1cq4w8z3m1",
+      "kind": "promo",
+      "plan": "pro",
+      "periodStart": "2026-12-01T09:12:44.120Z",
+      "periodEnd": "2027-06-01T09:12:44.120Z"
+    },
+    "trialAvailable": false
+  }
+}
+```
+
+- `current`: the period covering now, or `null` — the organization is on `free`.
+- `next`: the earliest period that has not started yet, or `null`. When it starts exactly where
+  `current` ends, there is no gap in which the organization falls to `free`.
+- `kind`: `trial`, `promo` or `paid`. `plan`: the plan's name.
+- Periods are half-open: `periodStart` is inside the period, `periodEnd` is not.
+- `trialAvailable`: `true` exactly when the organization has never had a subscription and the
+  person who created it has never had a trial, in this organization or any other.
+- An operator-voided period never appears here and grants nothing, but still counts as having
+  had a subscription.
+
+The plan in a session's token is what gates features, and it is re-read at every refresh, so a
+period that starts or lapses reaches each member within one access-token lifetime (15 minutes).
+This endpoint reads the database and is always current.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 NO_ORGANIZATION`: orgless session.
+
+---
+
+## Start a trial
+
+Starts the organization's free trial: a `trial` period on `pro`, from now, lasting 30 days (the
+`BILLING_TRIAL_DAYS` setting). It is not automatic — the owner chooses when, so the days are not
+spent while the organization is still being set up — and it happens **once per organization
+creator**: only for an organization that has never had a subscription, and only if the person who
+created it has never had a trial in any organization. A voided trial still counts as used.
+[Get subscription](#get-subscription)'s `trialAvailable` says in advance whether this will succeed.
+
+The response carries a fresh session for this organization with the trial's plan already in its
+token, so intelligence, relevance and invitations work on the very next request. Other members
+pick the plan up at their next refresh (within 15 minutes), without signing out.
+
+**API:**
+`POST /api/v1/organization/subscription/trial`
+
+**Authentication:** required (Bearer). Permission: `billing:manage` — the **owner** only. The role
+is re-read from the membership too, so an owner who has just transferred the seat is refused even
+while their token still says owner. Not plan-gated: it is how an organization on `free` leaves it.
+
+**Request data:**
+
+No request body
+
+**Response data:**
+
+`201 Created`:
+
+```json
+{
+  "data": {
+    "subscription": {
+      "current": {
+        "id": "cm3k8q2v70004ab1c9x7r5t2e",
+        "kind": "trial",
+        "plan": "pro",
+        "periodStart": "2026-11-01T09:12:44.120Z",
+        "periodEnd": "2026-12-01T09:12:44.120Z"
+      },
+      "next": null,
+      "trialAvailable": false
+    },
+    "session": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expiresIn": 900,
+      "user": {
+        "id": "cm9zx4k1p0000qw8f3h2l7d5t",
+        "email": "procurement@shinarar.am",
+        "displayName": "Gevorg Sargsyan",
+        "locale": "hy",
+        "emailVerified": true
+      },
+      "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+      "role": "owner",
+      "plan": "pro",
+      "operator": false,
+      "organizations": [
+        { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
+      ]
+    }
+  }
+}
+```
+
+- `subscription`: the same view [Get subscription](#get-subscription) returns, read after the trial
+  was written.
+- `session`: the same shape [Create organization](#create-organization) returns, minted for this
+  organization. It starts a new refresh family; the session the request was made with keeps
+  working and picks up `pro` at its next refresh.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: role lacks `billing:manage` (admin, coordinator, viewer, consultant), or
+  the caller is no longer the owner — "Only the owner can start a trial."
+- `403 NO_ORGANIZATION`: orgless session.
+- `409 CONFLICT`: `details: { reason: "trial_unavailable" }` — the organization has had a
+  subscription (a trial, a promo period, or one an operator voided), or its creator has already
+  had a trial in another organization. One answer for every reason, including two organizations
+  of one creator starting a trial at the same instant: one of them gets it, the other is refused
+  the same way.
+- `429 RATE_LIMITED`: more than 10 attempts/hour for this user.
+
+---
+
+## Redeem a promo code
+
+Turns a promo code into a `promo` period of the code's plan, lasting the code's length in
+calendar months (on the Yerevan calendar). There is no checkout: only a **100%** code can be
+redeemed today, and anything less is refused before anything is written. The code is matched
+regardless of letter case and surrounding spaces, so `  launch100 ` is `LAUNCH100`.
+
+**During a trial** the owner chooses what happens to the remaining trial days, and must say:
+
+- `keep`: the promo starts the moment the trial ends, so there is no gap on `free`. Until then
+  the organization stays on the trial, and the promo shows as `next`.
+- `end`: the trial ends now and the promo starts now. Shortening a trial this way is the only
+  change a period ever takes.
+
+With no current period the promo starts now. A lapsed organization can redeem a new code it was
+given and picks up where it stopped.
+
+The response carries a fresh session for this organization, as [Start a trial](#start-a-trial)
+does. Its plan is the code's, except after `keep`, when it is the trial's until the trial ends.
+Other members pick the plan up at their next refresh.
+
+**API:**
+`POST /api/v1/organization/subscription/redeem`
+
+**Authentication:** required (Bearer). Permission: `billing:manage` — the **owner** only, re-read
+from the membership as for the trial. Not plan-gated.
+
+**Request data:**
+
+```json
+{ "code": "LAUNCH100", "trial": "keep" }
+```
+
+- `code` (required): the code as typed, up to 100 characters.
+- `trial`: `keep` or `end`. Required only while a trial is current; ignored otherwise.
+
+**Response data:**
+
+`201 Created`, in the shape [Start a trial](#start-a-trial) returns. After `keep` during a trial:
+
+```json
+{
+  "data": {
+    "subscription": {
+      "current": {
+        "id": "cm3k8q2v70004ab1c9x7r5t2e",
+        "kind": "trial",
+        "plan": "pro",
+        "periodStart": "2026-11-01T09:12:44.120Z",
+        "periodEnd": "2026-12-01T09:12:44.120Z"
+      },
+      "next": {
+        "id": "cm3k9a1b20007ab1cq4w8z3m1",
+        "kind": "promo",
+        "plan": "pro",
+        "periodStart": "2026-12-01T09:12:44.120Z",
+        "periodEnd": "2027-06-01T09:12:44.120Z"
+      },
+      "trialAvailable": false
+    },
+    "session": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expiresIn": 900,
+      "user": { "id": "cm9zx4k1p0000qw8f3h2l7d5t", "email": "procurement@shinarar.am", "displayName": "Gevorg Sargsyan", "locale": "hy", "emailVerified": true },
+      "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
+      "role": "owner",
+      "plan": "pro",
+      "operator": false,
+      "organizations": [
+        { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "owner" }
+      ]
+    }
+  }
+}
+```
+
+After `end`, `current` is the promo and `next` is `null`.
+
+**Errors**, in the order they are checked:
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: role lacks `billing:manage`, or the caller is no longer the owner — "Only
+  the owner can redeem a promo code."
+- `403 NO_ORGANIZATION`: orgless session.
+- `429 RATE_LIMITED`: more than 10 attempts/hour for this user, counted before the body is read,
+  so guessing codes is slow.
+- `422 VALIDATION_FAILED`, `details: [{ field, message }]`: `code` missing or longer than 100
+  characters, or `trial` neither `keep` nor `end`. What a code may look like is never checked
+  here: a malformed one is simply unknown.
+- `422 VALIDATION_FAILED`, `details: { reason: "code_invalid" }`: the code is unknown, disabled,
+  past its last redemption date, or used up. **One message and one shape for all four**, so the
+  answer does not tell a guesser which codes exist. A code with one use left that another
+  organization redeems at the same instant answers this too. A used-up code this organization
+  itself redeemed is not one of the four: it answers `already_redeemed` (or `promo_active` while
+  that promo runs), since the organization already knows the code.
+- `422 VALIDATION_FAILED`, `details: { reason: "payments_unavailable", percentOff }`: the code is
+  below 100% and payments are not available yet. Nothing is written and the code is not spent.
+- `409 CONFLICT`, `details: { reason: "promo_active" }`: the organization has a promo period that
+  has not ended, current or still to come. Another code can be redeemed once it ends.
+- `409 CONFLICT`, `details: { reason: "already_redeemed" }`: this organization has redeemed this
+  code before, including a period an operator voided, and even if the code has been used up
+  since.
+- `422 VALIDATION_FAILED`, `details: [{ field: "trial", message }]`: a trial is current and
+  `trial` is missing.
 
 ---
 
@@ -2792,6 +3195,7 @@ No request body
       "organization": null,
       "role": null,
       "plan": null,
+      "operator": false,
       "organizations": []
     }
   }
@@ -2929,6 +3333,7 @@ organization no longer counts toward the three-organization creation cap.
       "organization": null,
       "role": null,
       "plan": null,
+      "operator": false,
       "organizations": []
     }
   }
@@ -2954,7 +3359,7 @@ organization no longer counts toward the three-organization creation cap.
 
 Offers an email address a role in the caller's organization. The answer is **the same object for
 every address** — registered or not — and nothing about the invitee is looked up, so the endpoint
-cannot be used to learn who is a TenderIQ customer. The offer is recorded either way and is matched
+cannot be used to learn who is a Tendra customer. The offer is recorded either way and is matched
 when that address registers and verifies.
 
 - Re-inviting an address updates the role on the existing offer instead of creating a second one,
@@ -2969,8 +3374,8 @@ when that address registers and verifies.
 `POST /api/v1/organization/invitations`
 
 **Authentication:** required (Bearer). Permission: `user:manage`. **Plan:** `pro`, `business` or
-`enterprise` — until a subscription writer exists, every organization reads as `free` and this
-answers `402`.
+`enterprise`, read from the organization's current [subscription](#get-subscription). A lapsed
+organization keeps its members but cannot invite more.
 
 **Request data:**
 
@@ -3089,9 +3494,14 @@ No request body
 
 ## Get supplier identity
 
-Which party in the public corpus this organization bids **as** — the join that makes automatic
+The parties in the public corpus this organization bids **as** — the join that makes automatic
 win/loss resolution possible at all. Awards and the public bid ledger identify a bidder by
-`parties.id`; without this link there is no way to ask "did we win".
+`parties.id`; without a claim there is no way to ask "did we win".
+
+A **set**, because one company is often several parties: its e-auction bids are keyed by
+operator id, its paper bids by name, and only a ՀՎՀՀ joins them. Every claim is a separate,
+deliberate choice from [Search supplier candidates](#search-supplier-candidates). Bid
+reconciliation, the win rate and relevance ranking read every claimed party.
 
 **API:**
 `GET /api/v1/organization/supplier-identity`
@@ -3106,28 +3516,20 @@ No request body
 
 ```json
 {
-  "data": {
-    "supplierPartyId": "cm9zx4k1p0100qw8fn2j5l8w1",
-    "name": "«Շինարար» ՍՊԸ",
-    "taxId": null
-  }
+  "data": [
+    {
+      "partyId": "cm9zx4k1p0100qw8fn2j5l8w1",
+      "name": "«Շինարար» ՍՊԸ",
+      "taxId": "02512345",
+      "region": null,
+      "claimedAt": "2026-10-28T12:00:00.000Z"
+    }
+  ]
 }
 ```
 
-Unclaimed:
-
-```json
-{
-  "data": {
-    "supplierPartyId": null,
-    "name": null,
-    "taxId": null
-  }
-}
-```
-
-`taxId` is `null` for supplier parties in practice: `parties.tax_id` is populated only for
-buyers, scraped from the invitation ZIP.
+Oldest claim first. Unclaimed: `"data": []`. `taxId` is the party's ՀՎՀՀ where a source states
+one (PPCM, an e-auction bidder that PPCM matched, a paper contract's winner), else `null`.
 
 **Errors:**
 
@@ -3136,16 +3538,19 @@ buyers, scraped from the invitation ZIP.
 
 ---
 
-## Set supplier identity
+## Claim a supplier party
 
-Claims (or unclaims) the party this organization bids as. Requires `org:manage`, not
-`bid:write` — this decides whose public win record gets attributed to the account, so a
-coordinator entering prices should not be able to re-point it. It is **never auto-matched on
-name**: party names are scraped Armenian legal names with inconsistent quoting, and a fuzzy
-link would attach one company's win record to another account invisibly.
+Adds one party to the set this organization bids as. Requires `org:manage`, not `bid:write` —
+this decides whose public win record gets attributed to the account, so a coordinator entering
+prices should not be able to re-point it. It is **never auto-matched on name**: party names are
+scraped Armenian legal names with inconsistent quoting, and a fuzzy link would attach one
+company's win record to another account invisibly.
+
+A party can be claimed by **one organization** only. Claiming one this organization already
+holds changes nothing and answers as a new claim would.
 
 **API:**
-`PUT /api/v1/organization/supplier-identity`
+`POST /api/v1/organization/supplier-identity`
 
 **Authentication:** required (Bearer). Permission: `org:manage` (`owner` and `admin` only).
 
@@ -3153,25 +3558,48 @@ link would attach one company's win record to another account invisibly.
 
 ```json
 {
-  "supplierPartyId": "cm9zx4k1p0100qw8fn2j5l8w1"
+  "partyId": "cm9zx4k1p0100qw8fn2j5l8w1"
 }
 ```
 
-- `supplierPartyId` (**required**, nullable): a party id (max 40 chars), or `null` to unclaim —
-  an organization that linked the wrong party has to be able to undo it.
+- `partyId` (**required**): a party id (max 40 chars).
 
 **Response data:**
 
-The identity, same shape as [Get supplier identity](#get-supplier-identity).
+`201`, with the whole set, same shape as [Get supplier identity](#get-supplier-identity).
 
 **Errors:**
 
 - `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
 - `403 ROLE_FORBIDDEN`: only `owner` and `admin` hold `org:manage`.
 - `404 NOT_FOUND`: "Party not found."
-- `409 CONFLICT`: "That supplier is already claimed by another organization." — a partial
-  unique index arbitrating, not application logic.
-- `422 VALIDATION_FAILED`: `supplierPartyId` omitted.
+- `409 CONFLICT`: "That supplier is already claimed by another organization." — a unique index
+  arbitrating, not application logic. It never says which organization.
+- `422 VALIDATION_FAILED`: `partyId` omitted.
+- `429 QUOTA_EXCEEDED`: the organization already claims 10 parties (`details: { limit,
+  claimed }`). A claim is exclusive, so an uncapped set would let one account lock other
+  companies out of their own win records.
+
+---
+
+## Unclaim a supplier party
+
+Removes one party from the set — an organization that linked the wrong party has to be able to
+undo it.
+
+**API:**
+`DELETE /api/v1/organization/supplier-identity/:partyId`
+
+**Authentication:** required (Bearer). Permission: `org:manage`.
+
+**Response data:** `204`, no body.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`.
+- `404 NOT_FOUND`: this organization does not claim that party (another organization's claim
+  is the same 404).
 
 ---
 
@@ -3317,6 +3745,7 @@ No request body
       "organization": { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC" },
       "role": "coordinator",
       "plan": "pro",
+      "operator": false,
       "organizations": [
         { "id": "cm9zx4k1p0001qw8f6b3n2v8y", "name": "Shinarar LLC", "role": "coordinator" }
       ]
@@ -3612,7 +4041,7 @@ existing row and `upload: null` rather than a `409` the customer would have to i
     },
     "duplicate": false,
     "upload": {
-      "url": "https://minio.example.com/tenderiq/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
+      "url": "https://minio.example.com/Tendra/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
       "method": "PUT",
       "headers": {
         "Content-Type": "application/pdf",
@@ -3767,7 +4196,7 @@ No request body
 ```json
 {
   "data": {
-    "url": "https://minio.example.com/tenderiq/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
+    "url": "https://minio.example.com/Tendra/vault/cm9zx.../9f86d081....pdf?X-Amz-Algorithm=...",
     "expiresIn": 300,
     "filename": "tax-clearance-2026.pdf",
     "contentType": "application/pdf"
@@ -3931,11 +4360,13 @@ No request body
 | Type | Raised by | Extra payload fields |
 |---|---|---|
 | `tender-match` | matcher | `score`, `reasons`, `matchedSearches` |
-| `amendment` | matcher | `score`, `reasons`, `matchedSearches`, `changedFields` |
+| `amendment` | matcher | `score`, `reasons`, `matchedSearches`, `changedFields`; an addendum adds `documentChanges` (`added`, `replaced`, `removed` file names) and has `changedFields: []`; a tracking organization adds `pipelineStatus` |
 | `reminder-72h`, `reminder-24h` | reminder (matched safety net) | `hoursRemaining` |
 | `countdown-48h`, `countdown-12h`, `countdown-3h` | reminder (pipeline countdown) | `hoursRemaining`, `trackedTenderId`, `pipelineStatus` |
 | `vault-expiry-30d`, `vault-expiry-7d`, `vault-expiry-1d` | vault expiry sweep | `documentId`, `kind`, `filename`, `validUntil`, `daysRemaining` |
 | `vault-expired` | vault expiry sweep | same, with `daysRemaining: 0` |
+| `subscription-ending` | subscription ending sweep, up to 3 days before a period ends | `subscriptionId`, `organizationName`, `plan`, `periodKind` (`trial`, `promo`, `paid`), `periodEnd` |
+| `subscription-ended` | subscription ending sweep, once a period has ended | same |
 
 A tender raises **one** match alert per organization however many of its saved searches it
 matches. `matchedSearches` lists them all (`id`, `name` as it was when the alert was raised,
@@ -3945,7 +4376,19 @@ Alerts raised before `matchedSearches` existed do not carry it.
 `payload` is a JSONB column whose contents vary by `type` as above; the column itself is not
 schema-constrained. `tenderId` is `null` on vault alerts — those dedupe on
 `notifications.subject_id` instead (the document id), which is why the dedupe constraint is
-`(organization_id, type, tender_id, subject_id)` with `NULLS NOT DISTINCT`.
+`(organization_id, type, tender_id, subject_id)` with `NULLS NOT DISTINCT`. A subscription
+announcement's `subject_id` is `{subscriptionId}-ending` or `{subscriptionId}-ended`, so each
+period is announced once each way; neither is raised when another non-voided period starts at
+that period's end. An `amendment`
+carries `subject_id` = `v{version}`, so each amendment of a tender alerts once and a second one
+is a new alert.
+
+An `amendment` reaches every organization whose saved searches match the tender **and** every
+organization tracking it at `considering`, `preparing` or `submitted` — one alert per
+organization, however many reasons it has. A tracker that no search matched gets
+`matchedSearches: []`, `score: null` and `reasons: []`; `pipelineStatus` says why it was told.
+Only while the tender is open (`planned`, `active` or `amended`, deadline ahead or none). A
+`tender-match` reaches saved searches only.
 
 **Errors:**
 
@@ -4017,6 +4460,14 @@ multi-category tender is benchmarked on its headline code.
 
 - `id`: the tender's CUID2 id.
 
+**Query parameters:**
+
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
+  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
+  and only an explicit `true` puts them back. The answer is then computed live (stored
+  benchmarks never hold them) and carries `includesSingleSource: true`; the threshold is the
+  same, so a thin category is still `insufficient_data`.
+
 **Request data:**
 
 No request body
@@ -4039,6 +4490,7 @@ No request body
       "medianPrice": 9850000,
       "maxPrice": 24100000,
       "avgDiscountPct": 6.88,
+      "discountExcludedLots": 0,
       "computedAt": "2026-09-04T03:15:00.000Z",
       "basis": "materialized"
     }
@@ -4075,7 +4527,11 @@ the threshold alone.
 
 `minPrice`, `medianPrice` and `maxPrice` are winning prices **without VAT** — the auction value,
 so VAT payers and non-payers sit on one scale. `avgDiscountPct` compares the VAT-inclusive
-winning price with the VAT-inclusive budget.
+winning **offer** with the VAT-inclusive budget — never a contract that is not the offer. A
+PPCM (ARMEPS) award's price is its contract, which on a framework or partial-funds contract is
+far from what was bid, and PPCM states no bidder's VAT; such an award is left out of the
+discount and counted in `discountExcludedLots` (awards with a budget only). `null` on a
+benchmark stored before the count was kept.
 
 **Errors:**
 
@@ -4107,6 +4563,10 @@ price is entitled to know that price was disqualified.
 
 - `filter[lot]` (optional): integer ≥ 1 — narrow to a single lot.
 - `filter[includeRejected]` (optional, default `true`): boolean.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Affects only
+  `expectedCompetition`, an aggregate across tenders, which leaves single-source lots out
+  unless this is `true`. The tender's own ledger is returned either way, a single-source
+  tender's included (see `singleSource` below).
 
 **Request data:**
 
@@ -4122,6 +4582,7 @@ Settled tender:
     "status": "ok",
     "tenderId": "cm9zx4k1p0010qw8fj3k9d2p1",
     "settled": true,
+    "singleSource": false,
     "currency": "AMD",
     "summary": {
       "lotCount": 3,
@@ -4130,6 +4591,7 @@ Settled tender:
       "totalAwarded": 11450000,
       "totalBudget": 12750000,
       "totalDiscountPct": 10.2,
+      "discountExcludedLots": 0,
       "distinctBidders": 5,
       "avgBiddersPerLot": 2.7,
       "soleBidderLots": 1
@@ -4162,6 +4624,7 @@ Settled tender:
           "region": "Երևան",
           "price": 3810000,
           "netPrice": 3175000,
+          "offerPrice": 3810000,
           "discountPct": 10.4,
           "awardedAt": "2026-07-18T00:00:00.000Z"
         },
@@ -4218,6 +4681,10 @@ Tender not yet settled (no public bid ledger):
 ```
 
 - `status`: `ok` or `no_public_bids`.
+- `singleSource`: `true` for a single-source procedure (`procedure_type = 'single_source'`).
+  Its ledger is the price the buyer agreed with one supplier, so the client should say "single
+  source, no competition" rather than present the lot as one that merely drew one bidder
+  (`competition: "sole"`). The lot's `priceRange` is that one price.
 - **Two prices per offer.** `finalOffer`, `initialOffer` and `winner.price` include VAT;
   `finalOfferNet`, `initialOfferNet` and `winner.netPrice` do not. The budget includes VAT and
   the source checks bids against it gross, so `discountPct` is computed on the VAT-inclusive
@@ -4231,7 +4698,15 @@ Tender not yet settled (no public bid ledger):
 - `initialOfferUnreliable: true` marks an opening offer that exceeds the published budget,
   which the source sometimes emits; the value is then nulled rather than reported.
 - `totalDiscountPct` is computed from the totals, not as a mean of per-lot percentages — a mean
-  of ratios would weight a 50,000 AMD lot the same as a 50,000,000 one.
+  of ratios would weight a 50,000 AMD lot the same as a 50,000,000 one. Each budget is paired
+  with its own lot's winning offer: a lot with no budget, or whose contract is not the offer,
+  leaves both sides of the ratio. `totalAwarded` is still every award's `price` (spend).
+- **Offer vs contract.** `winner.price` is what the buyer pays. On an ARMEPS tender it is PPCM's
+  contract price, which on a framework or partial-funds contract is not what was bid, and PPCM
+  states no bidder's VAT. `winner.offerPrice` is the winning offer with VAT — equal to `price`
+  everywhere else — and `null` when the contract is not the offer; `discountPct` is then `null`
+  too rather than computed from the contract, and the lot is counted in the summary's
+  `discountExcludedLots` (lots with a budget only). A missing price is never a 100% discount.
 - `distinctBidders` is smaller than the sum of per-lot counts, because the same company usually
   bids on every lot.
 
@@ -4396,8 +4871,10 @@ question, with no tender to hang it off.
 
 **Query parameters:**
 
-- `buyerId` (optional): narrow the comparables to one buying agency. Note: **not** validated by
-  a Joi schema on this route — it is read straight off `req.query`.
+- `buyerId` (optional): narrow the comparables to one buying agency, max 40 chars.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
+  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
+  and only an explicit `true` puts them back. Computed live, with `includesSingleSource: true`.
 
 **Request data:**
 
@@ -4453,9 +4930,15 @@ more useful than a corpus-wide average.
 
 **Query parameters:**
 
-- `filter[cpv]` (optional): CPV code, max 20 chars.
+- `filter[cpv]` (optional): CPV code, max 20 chars. The `cpv_family` tier is every code under
+  it, trailing zeros read as padding down to the 2-digit division: `30000000`'s family is
+  division 30, never 31–39.
 - `filter[buyerId]` (optional): buyer party id, max 40 chars.
 - `filter[sinceMonths]` (optional): integer 1–120. Defaults to `INTELLIGENCE.RECENCY_MONTHS`.
+- `filter[includeSingleSource]` (optional, default `false`): boolean. Single-source awards are
+  left out of every comparison — a price a buyer agreed with one supplier is not a market's —
+  and only an explicit `true` puts them back. A single-source lot draws one supplier by design,
+  and would read as a sole-bidder market.
 
 **Request data:**
 
@@ -4522,6 +5005,13 @@ competitor.
 
 - `id`: the supplier party's CUID2 id.
 
+**Query parameters:**
+
+- `filter[includeSingleSource]` (optional, default `false`): boolean. The figures that
+  measure competition leave single-source procurement out, because a single-source award is a
+  win nobody contested. Only an explicit `true` puts it back into them, and the profile then
+  says `"includesSingleSource": true`. Totals count it either way.
+
 **Request data:**
 
 No request body
@@ -4555,9 +5045,18 @@ No request body
     "pricing": {
       "avgDiscountPct": 7.2,
       "avgWinningDiscountPct": 11.8,
-      "totalWon": 1840000000,
-      "largestWin": 96000000,
-      "currency": "AMD"
+      "winningDiscountExcludedLots": 0
+    },
+    "contracts": {
+      "lots": 71,
+      "totalValue": 1910000000,
+      "tenders": 36,
+      "largest": 96000000,
+      "currency": "AMD",
+      "split": {
+        "competitive": { "lots": 63, "totalValue": 1840000000 },
+        "singleSource": { "lots": 8, "totalValue": 70000000 }
+      }
     },
     "categories": {
       "status": "ok",
@@ -4579,6 +5078,16 @@ No request body
 }
 ```
 
+**Single source:** a figure that measures competition leaves single-source procurement out, and a
+total counts it with a competitive / single-source split (ticket 31).
+
+- **Competition, competitive procurement only:** `activity`, `winRate`, `pricing`,
+  `frequentRivals`. `activity.lotsWon` is the win rate's numerator, the wins of competitive
+  procurement.
+- **Totals, everything counted:** `contracts`, every award the company holds and what it was
+  worth, with `split.competitive` and `split.singleSource`. A company with only single-source
+  contracts has `activity` at zero and its revenue under `contracts`. `categories` (what it
+  covers, not how it competes) counts every bid.
 - `winRate.value` is a **percentage** here (29.4 = 29.4%), unlike
   [`/tracked-tenders/performance`](#bid-performance) where it is a fraction.
 - `winRate.status` is `ok`, `insufficient_data` (with `required`), or `no_data`; `value` is
@@ -4588,6 +5097,9 @@ No request body
   column is disqualification rather than being outpriced — a materially different competitor.
 - `pricing.avgDiscountPct` vs `avgWinningDiscountPct` is the useful gap: a competitor whose
   winning discount is far below its typical one is winning on something other than price.
+- `avgWinningDiscountPct` compares each won lot's winning **offer** with its budget, never a
+  contract that is not the offer (a PPCM framework or partial-funds contract); such won lots
+  with a budget are left out and counted in `winningDiscountExcludedLots`.
 - `categories.status` is `ok` or `no_data`; the `coverageNote` ships because CPV exists on only
   about a third of the corpus, and a silently short list would read as "they don't do that".
 
@@ -4613,6 +5125,13 @@ A buying agency's profile — what it spends, and how contested its work is.
 
 - `id`: the buyer party's CUID2 id.
 
+**Query parameters:**
+
+- `filter[includeSingleSource]` (optional, default `false`): boolean. The figures that
+  measure competition leave single-source procurement out, because a single-source award is a
+  win nobody contested. Only an explicit `true` puts it back into them, and the profile then
+  says `"includesSingleSource": true`. Totals count it either way.
+
 **Request data:**
 
 No request body
@@ -4633,15 +5152,24 @@ No request body
       "tendersAwarded": 118,
       "lotsAwarded": 306,
       "firstSeen": "2018-06-02T00:00:00.000Z",
-      "lastSeen": "2026-08-30T00:00:00.000Z"
+      "lastSeen": "2026-08-30T00:00:00.000Z",
+      "split": {
+        "competitive": { "tenderCount": 131, "lotsAwarded": 288 },
+        "singleSource": { "tenderCount": 11, "lotsAwarded": 18 }
+      }
     },
     "spend": {
       "totalSpend": 4820000000,
       "totalBudget": 5310000000,
       "totalEstimated": 5402000000,
       "avgDiscountPct": 8.1,
+      "discountExcludedLots": 0,
       "distinctWinners": 46,
-      "currency": "AMD"
+      "currency": "AMD",
+      "split": {
+        "competitive": { "totalSpend": 4610000000 },
+        "singleSource": { "totalSpend": 210000000 }
+      }
     },
     "competition": {
       "sampleLots": 306,
@@ -4659,6 +5187,7 @@ No request body
         "supplierId": "cm9zx4k1p0100qw8fn2j5l8w1",
         "name": "«Շինարար» ՍՊԸ",
         "awardCount": 22,
+        "singleSourceAwards": 2,
         "totalValue": 412000000,
         "lastWonAt": "2026-07-18T00:00:00.000Z",
         "shareOfAwardsPct": 7.2,
@@ -4668,6 +5197,20 @@ No request body
   }
 }
 ```
+
+**Single source:** a figure that measures competition leaves single-source procurement out, and a
+total counts it with a competitive / single-source split (ticket 31).
+
+- **Totals, everything counted:** `volume`, `spend.totalSpend`, `totalBudget`,
+  `totalEstimated` and `topSuppliers` (who this buyer pays, each with its `singleSourceAwards`).
+  `volume.split` and `spend.split` give the competitive and single-source halves. A buyer whose
+  contracts are all single-source shows its spend, under `split.singleSource`.
+- **Competition, competitive procurement only:** `spend.avgDiscountPct`,
+  `spend.distinctWinners` and `competition`.
+- `spend.totalSpend` sums what the buyer pays — on ARMEPS tenders, PPCM's contract prices.
+  `spend.avgDiscountPct` compares the winning **offer** with the budget instead, so a lot whose
+  contract is not the offer (a framework or partial-funds contract) is left out of it and
+  counted in `spend.discountExcludedLots` (competitive lots with a budget only).
 
 `topSuppliers` is named that, **not "favored"** (even though the stored column is
 `favored_supplier_ids`), and carries counted evidence only — award count, value, share. Repeat
@@ -4783,7 +5326,7 @@ No request body
 ```json
 {
   "data": {
-    "url": "https://t.me/TenderIQBot?start=aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v",
+    "url": "https://t.me/TendraBot?start=aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v",
     "expiresInMinutes": 15,
     "token": "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9v"
   }
@@ -5093,6 +5636,309 @@ broken integration.
 
 ---
 
+## Operator
+
+The console of the person running Tendra itself, not of anyone acting inside an organization.
+Being an operator is a property of the **user** (`users.is_operator`), never of a membership:
+`owner` and `admin` are roles inside one organization and grant nothing here.
+
+- **The flag is set by hand** (SQL or a script) and never through the API. It is read from the
+  database at every session mint and refresh, exactly as the role is, and an operator's access
+  token carries an `op: true` claim. Clearing the flag ends operator access at the next refresh,
+  so within one access-token lifetime (15 minutes by default). Setting it takes effect the same
+  way: refresh, or sign in again.
+- **Orgless sessions are allowed.** Operating Tendra never depends on the operator's own
+  membership, and these routes read no organization's private data. An organization's
+  subscriptions are Tendra's own record of what it granted, not the tenant's.
+- **Everyone else is refused with `403 ROLE_FORBIDDEN`** and `details: { required: "operator" }`
+  on every route below, whatever their role in whatever organization, before the body is
+  validated.
+
+## Create a promo code
+
+Issues a code that an owner will redeem for a period of a plan. The operator chooses the text, so
+a shared code can be memorable (`LAUNCH100`).
+
+- The text is stored **trimmed and upper-cased**, so redemption matches it whatever the case or
+  stray spaces. A code that differs from an existing one only in case is a duplicate.
+- A code below 100% off is stored as asked, but redemption refuses it until card payments exist.
+- The shared launch code should be created with a `redeemableUntil`, or it stays free Pro for
+  anyone who finds it.
+
+**API:**
+`POST /api/v1/operator/promo-codes`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+```json
+{
+  "code": "launch100",
+  "plan": "pro",
+  "percentOff": 100,
+  "durationMonths": 3,
+  "maxRedemptions": null,
+  "redeemableUntil": "2027-03-31T23:59:59Z"
+}
+```
+
+- `code` (**required**): 3–40 characters after trimming and upper-casing: Latin letters, digits,
+  `-` and `_`, starting with a letter or digit. Armenian and Cyrillic letters are refused,
+  because several look like Latin ones and the code would never match what an owner types.
+- `plan` (**required**): a plan name (`starter`, `pro`, `business`, `enterprise`), any case.
+  `free` is refused.
+- `percentOff` (**required**): integer 1–100.
+- `durationMonths` (**required**): integer 1–120. The period lasts this many calendar months
+  from its start.
+- `maxRedemptions` (optional): integer ≥ 1, or `null` (the default) for unlimited.
+- `redeemableUntil` (optional): ISO-8601 timestamp in the future, or `null` (the default) for no
+  last redemption date.
+
+**Response data:** `201 Created`
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0700qw8f2a6d9k3m",
+    "code": "LAUNCH100",
+    "plan": "pro",
+    "percentOff": 100,
+    "durationMonths": 3,
+    "maxRedemptions": null,
+    "redemptionCount": 0,
+    "redeemableUntil": "2027-03-31T23:59:59.000Z",
+    "disabledAt": null,
+    "createdBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+    "createdAt": "2026-11-01T09:12:44.318Z"
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `409 CONFLICT`: "A promo code with that text already exists." `details.code` is the text as
+  sent.
+- `422 VALIDATION_FAILED`: any field out of range; `plan` is `free`; `plan` names no plan
+  (`There is no plan named "…".`); `redeemableUntil` is in the past.
+
+---
+
+## List promo codes
+
+Every code, newest first, with how often it was redeemed against its limit. Disabled codes are
+included, so the operator can see what the launch code did after it was closed.
+
+**API:**
+`GET /api/v1/operator/promo-codes`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+Query parameters:
+
+- `page[size]` (optional): 1–100, default 20.
+- `page[cursor]` (optional): `meta.cursor` from the previous page.
+
+**Response data:**
+
+```json
+{
+  "data": [
+    {
+      "id": "cm9zx4k1p0700qw8f2a6d9k3m",
+      "code": "LAUNCH100",
+      "plan": "pro",
+      "percentOff": 100,
+      "durationMonths": 3,
+      "maxRedemptions": null,
+      "redemptionCount": 41,
+      "redeemableUntil": "2027-03-31T23:59:59.000Z",
+      "disabledAt": null,
+      "createdBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+      "createdAt": "2026-11-01T09:12:44.318Z"
+    }
+  ],
+  "meta": { "cursor": "MjAyNi0xMS0wMVQwOToxMjo0NC4zMThafGNtOXo...", "hasMore": false }
+}
+```
+
+`maxRedemptions: null` is unlimited. `createdBy` is `null` once that account no longer exists.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `422 VALIDATION_FAILED`: bad page size.
+
+---
+
+## Delete or disable a promo code
+
+Deletes a code nobody has redeemed, so a mistyped code leaves no trace. A code that **has** been
+redeemed is disabled instead: the subscriptions it granted keep their record of where they came
+from, and they keep running, so closing the launch code does not cut off the people who used it.
+A disabled code cannot be redeemed, and there is no re-enabling.
+
+The response says which happened. A redemption that lands at the same moment is never lost: the
+delete only matches a code whose count is still 0, so the code is disabled instead. Disabling an
+already-disabled code keeps its first `disabledAt`.
+
+**API:**
+`DELETE /api/v1/operator/promo-codes/:id`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+No request body
+
+**Response data:** `200 OK`
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0700qw8f2a6d9k3m",
+    "outcome": "disabled",
+    "disabledAt": "2026-11-20T08:00:00.000Z"
+  }
+}
+```
+
+`outcome` is `deleted` (the row is gone, and `disabledAt` is `null`) or `disabled`.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `404 NOT_FOUND`: no such code, including one already deleted.
+
+---
+
+## List an organization's subscriptions
+
+Every period of one organization, oldest first, **voided ones included** — the answer to "why is
+this company on Pro". Each carries its kind, plan and dates, the promo code it was redeemed with,
+and who voided it and when.
+
+`coversNow` is whether this is the period that sets the organization's plan right now: not voided,
+and the moment lies in `[periodStart, periodEnd)`. At most one row has it; none means `free`.
+
+**API:**
+`GET /api/v1/operator/organizations/:id/subscriptions`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+No request body. Not paginated: an organization gets one trial and one period per code, each after
+the last has ended, so the list stays short.
+
+**Response data:**
+
+```json
+{
+  "data": [
+    {
+      "id": "cm9zx4k1p0900qw8f5c1a7e2r",
+      "kind": "trial",
+      "plan": "pro",
+      "periodStart": "2026-11-01T09:30:00.000Z",
+      "periodEnd": "2026-12-01T09:30:00.000Z",
+      "coversNow": true,
+      "promoCode": null,
+      "voidedAt": null,
+      "voidedBy": null,
+      "createdAt": "2026-11-01T09:30:00.000Z"
+    },
+    {
+      "id": "cm9zx4k1p0901qw8f0d4b6h8s",
+      "kind": "promo",
+      "plan": "pro",
+      "periodStart": "2026-12-01T09:30:00.000Z",
+      "periodEnd": "2027-03-01T09:30:00.000Z",
+      "coversNow": false,
+      "promoCode": { "id": "cm9zx4k1p0700qw8f2a6d9k3m", "code": "LAUNCH100" },
+      "voidedAt": "2026-11-03T14:02:11.507Z",
+      "voidedBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+      "createdAt": "2026-11-02T10:15:40.112Z"
+    }
+  ]
+}
+```
+
+- `kind` is `trial`, `promo` or `paid` (nothing writes `paid` yet).
+- `promoCode` is `null` for a trial. A code a period points at can only be disabled, never deleted,
+  so it is always there to name.
+- `voidedBy` is `null` while the period stands, and also once the voiding operator's account no
+  longer exists (`voidedAt` stays).
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `404 NOT_FOUND`: "Organization not found."
+
+---
+
+## Void a subscription
+
+Ends a grant made in error or abused, for that one organization only. A voided period grants
+nothing from then on, current or still to come, but **it is not deleted**, and it still counts:
+
+- a voided trial is still its creator's one trial: `trialAvailable` stays `false` and
+  [Start a trial](#start-a-trial) is still refused, in this organization and in any other the same
+  person creates;
+- a voided promo is still this organization's use of its code: redeeming it again answers
+  `already_redeemed`, and the code's `redemptionCount` does not go down.
+
+The plan reaches the organization's sessions at their next refresh, which reads whatever other
+period covers now, or `free`. Access tokens already issued keep the old plan for up to one
+access-token lifetime (15 minutes by default). Voiding a period that waits behind a kept trial
+leaves the trial running.
+
+**Idempotent.** Voiding an already-voided period is a `200` that changes nothing: the first
+`voidedAt` and `voidedBy` stay.
+
+**API:**
+`POST /api/v1/operator/subscriptions/:id/void`
+
+**Authentication:** required (Bearer), with the `op` claim. Orgless allowed. Not plan-gated.
+
+**Request data:**
+
+No request body
+
+**Response data:** `200 OK` — the period as [List an organization's subscriptions](#list-an-organizations-subscriptions) shows it.
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0901qw8f0d4b6h8s",
+    "kind": "promo",
+    "plan": "pro",
+    "periodStart": "2026-11-02T10:15:40.112Z",
+    "periodEnd": "2027-02-02T10:15:40.112Z",
+    "coversNow": false,
+    "promoCode": { "id": "cm9zx4k1p0700qw8f2a6d9k3m", "code": "LAUNCH100" },
+    "voidedAt": "2026-11-03T14:02:11.507Z",
+    "voidedBy": { "userId": "cm9zx4k1p0000qw8f3h2l7d5t", "displayName": "Gevorg Sargsyan" },
+    "createdAt": "2026-11-02T10:15:40.112Z"
+  }
+}
+```
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: the token has no `op` claim.
+- `404 NOT_FOUND`: "Subscription not found."
+
+---
+
 ## Unsubscribe (no login)
 
 Switching a channel off from inside a delivered message. The authenticated way to do this is
@@ -5102,7 +5948,7 @@ to stop now, with no account and no session.
 
 Building it is self-interest rather than courtesy. Without an unsubscribe button an annoyed
 recipient presses **spam** instead, and mail providers score a sending domain on how often that
-happens — enough of them and every TenderIQ message lands in junk, password resets included. The
+happens — enough of them and every Tendra message lands in junk, password resets included. The
 unsubscribe link is what protects the password resets.
 
 **The token is derived, not stored.** It is an HMAC over the subscription id, keyed on the app
@@ -5282,6 +6128,9 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | POST | `/api/v1/organizations` | Found an organization as its owner; returns a session for it | Yes |
 | GET | `/api/v1/organization` | The session's organization and its fields | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization` | Replace the organization's fields | Yes (`org:manage`) |
+| GET | `/api/v1/organization/subscription` | The current and next subscription period, and whether a trial is available | Yes (`tender:read`) |
+| POST | `/api/v1/organization/subscription/trial` | Start the organization's one Pro trial; returns a session carrying it | Yes (`billing:manage`, owner) |
+| POST | `/api/v1/organization/subscription/redeem` | Redeem a 100% promo code as a period of its plan; keep or end a running trial | Yes (`billing:manage`, owner) |
 | GET | `/api/v1/organization/members` | The roster, joined order, cursor-paginated | Yes (`tender:read`) |
 | PATCH | `/api/v1/organization/members/:userId` | Change a member's role (rank rule, never owner) | Yes (`user:manage`) |
 | DELETE | `/api/v1/organization/members/:userId` | Remove a member; revokes this org's sessions only | Yes (`user:manage`) |
@@ -5294,8 +6143,9 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | GET | `/api/v1/invitations` | Pending offers addressed to me, any organization | Yes (orgless allowed) |
 | POST | `/api/v1/invitations/:id/accept` | Join at the offered role; session only if orgless | Yes (orgless allowed) |
 | POST | `/api/v1/invitations/:id/decline` | Refuse an offer; the sender sees it | Yes (orgless allowed) |
-| GET | `/api/v1/organization/supplier-identity` | The party this org bids as | Yes (`tender:read`) |
-| PUT | `/api/v1/organization/supplier-identity` | Claim or unclaim that party | Yes (`org:manage`) |
+| GET | `/api/v1/organization/supplier-identity` | The parties this org bids as | Yes (`tender:read`) |
+| POST | `/api/v1/organization/supplier-identity` | Claim one more party | Yes (`org:manage`) |
+| DELETE | `/api/v1/organization/supplier-identity/:partyId` | Unclaim one party | Yes (`org:manage`) |
 | GET | `/api/v1/organization/supplier-identity/candidates` | Search parties for the claim | Yes (`tender:read`) |
 | GET | `/api/v1/vault-documents` | List certificates | Yes (`vault:read`) |
 | GET | `/api/v1/vault-documents/summary` | Counts per kind, with lapsed counts | Yes (`vault:read`) |
@@ -5326,5 +6176,10 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | DELETE | `/api/v1/integrations/email/:id` | Switch email alerts off | Yes (`savedsearch:write`) |
 | POST | `/api/v1/integrations/telegram/:id/enable` | Switch a linked chat back on (own only) | Yes (`savedsearch:write`) |
 | POST | `/api/v1/integrations/email/:id/enable` | Switch an address back on (own only) | Yes (`savedsearch:write`) |
+| POST | `/api/v1/operator/promo-codes` | Issue a promo code | Yes (operator) |
+| GET | `/api/v1/operator/promo-codes` | Every code with its redemptions, newest first | Yes (operator) |
+| DELETE | `/api/v1/operator/promo-codes/:id` | Delete an unredeemed code, disable a redeemed one | Yes (operator) |
+| GET | `/api/v1/operator/organizations/:id/subscriptions` | Every period of one organization, voided ones included | Yes (operator) |
+| POST | `/api/v1/operator/subscriptions/:id/void` | Void a period (idempotent); the plan lapses at the next refresh | Yes (operator) |
 
-**59 endpoints** across 9 route modules.
+**93 endpoints** across 14 route modules.

@@ -4,16 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-TenderIQ is supplier-side bid-intelligence SaaS over Armenian public procurement data. It scrapes
+Tendra is supplier-side bid-intelligence SaaS over Armenian public procurement data. It scrapes
 public tender notices, normalizes them into an OCDS-aligned model, and (eventually) turns that into
 discovery, alerts, price benchmarks, and bid workflow. It is not a procurement platform and does not
 replace ARMEPS. Users are **suppliers only** — the companies that bid.
 
 Node.js ESM (`"type": "module"`), no build step, no TypeScript, no transpiler — files run as written.
 
-**Strategic clock:** Armenia's OCDS-based procurement platform launches **2027-01-01**. The
-OCDS-aligned data model exists so that migration is a source-adapter swap, not a rewrite. Scraping is
-the pre-2027 bridge, and it is the system's primary architectural risk.
+**Strategic clock:** the procurement-law amendments creating a unified electronic platform are
+planned to take effect **2027-01-01**, but the government's own OGP commitment (AM0058) puts the
+platform's **testing in July 2027**, and no official source promises OCDS, a public API or migrated
+history (`.scratch/procurement-sources/research.md`, checked 2026-10-18). The OCDS-aligned data
+model still exists so that a new platform is a source adapter, not a rewrite — but do not plan
+around scraping ending on a date. Scraping is the bridge for an unknown length of time, and it is
+the system's primary architectural risk.
 
 Product layers, in dependency order: **Discovery** (the hook) → **Intelligence** (the moat) →
 **Bid workflow** (the glue) → **Post-award**. Build data and intelligence before polishing workflow.
@@ -42,7 +46,8 @@ that would catch a gnumner redesign before customers do.
 
 Migrations are hand-run scripts, not the Knex CLI. `migrate:up` runs `up()` over the whole schema in
 one transaction and is not idempotent; `migrate:down` drops every table. A schema change means
-editing `migrations/create_table.js` *and* `drop_table.js`, or adding a new script.
+editing `migrations/create_table.js` *and* `drop_table.js` — never adding a script (see
+*Current state*, schema changes).
 
 ## Processes
 
@@ -135,14 +140,34 @@ What matters when touching it:
   `sourcePayload.repo.js:record()` returns `false` and the caller skips.
 - **Raw payloads are kept forever.** When a parser improves, normalization replays from storage; the
   source is never re-crawled.
-- **Pagination depth is the tid high-water mark, not `maxListingPages` and not a time window.** The
-  board is a multi-year archive, not a live feed, and its listing table has **no publish-date column** —
-  a time-based rule would compare against a field that does not exist (it did, silently, and made
-  every sweep walk to the page cap). tids ascend with publication and the board is newest-first, so continue
-  to page N+1 only while the page's lowest tid is still above `sweep:tid:{source}:{slug}`. The
-  watermark advances only when a chain terminates, so a sweep that dies mid-chain re-walks the gap
-  rather than skipping it. `maxListingPages` is the cold-start bound only. Loading history is a
-  deliberate backfill with its own page range.
+- **Pagination depth is a high-water mark, not `maxListingPages` and not a time window — one rule,
+  one chain, every board.** Every listing is swept by `workers/listingChain.js`; a source supplies a
+  *board* (page reader, watermark key, mark per notice, notice → job) and the module never branches
+  on a source name. e-auction's mark is the tid (`sweep:tid:{source}:{slug}`): its listing table has
+  **no publish-date column**, so a time-based rule compares against a field that does not exist (it
+  did, silently, and made every sweep walk to the page cap). gnumner's is the publish datetime
+  (`sweep:published:gnumner:{slug}`). Boards are newest-first, so continue to page N+1 only while
+  the page's lowest mark is still above the watermark **and a next page exists** — never the site's
+  reported page total. The watermark advances only when a chain terminates, so a sweep that dies
+  mid-chain re-walks the gap rather than skipping it. **`maxListingPages` bounds a cold start only**
+  (no watermark); with one, the chain walks until it reaches it, bounded only by
+  `SCRAPER.MAX_LISTING_PAGES`, and warns if it stops short. e-auction once capped every chain at 40
+  pages, which after a long outage committed the high mark over pages it never read — a permanent,
+  silent hole. Because the walk is now unbounded by source, a page holding **nothing the chain
+  has not read** throws before storing anything or marking the source healthy: that is a pager
+  that did not advance, and a base URL that already contains the listing path produces exactly
+  that (the site answers the malformed URL with page 1). **The board moves under a chain**
+  (ticket 39): pages after the first go at `PRIORITY.CHAIN`, ahead of everything else on
+  `ingest.fetch`, so a chain runs in seconds; a page repeating the previous page's tail (rows
+  published meanwhile) skips it as read — newer than the oldest mark read, or tied with it
+  (publish times are minute-precision) and named in `lowKeys` — and is no stall; and every page
+  after the first re-reads the previous page *after* its own, so a row pulled up by another
+  leaving the board (an amended e-auction) is still read. The reverse order loses that row, and
+  before this the walk lost it with the watermark committed over it. Loading history is a deliberate backfill with its own page range.
+  **One chain per listing at a time** (ticket 38): the sweep claims `{watermark key}:chain` before
+  queuing page 1, every page re-arms its 60-minute TTL, and the page that ends the chain (or throws
+  for the last time) deletes it; a sweep that finds it skips the listing and writes nothing. Only
+  the holder may refresh or delete it, so a newer chain's marker is never released by an older one.
 - **Never filter rows by deadline in a parser.** Expired tenders are the *most* valuable ones — prices,
   suppliers and awards exist only on finished pages. Filtering also puts a clock in a file that must
   stay pure, which breaks replay-from-storage and makes fixture tests rot. Filter in the query
@@ -252,8 +277,11 @@ POST   /invitations/:id/{accept,decline}
   refuses an orgless token with `NO_ORGANIZATION`, so a route that authenticates and forgets to
   authorize still denies it; the allowlist is explicit and greppable — the routes mounted on
   `authenticateOrgless`: `POST /organizations`, `GET /fields` (its picker), `/invitations` (list, accept, decline),
-  `POST /auth/switch-org` (the way out for a second device still holding an orgless session) and
-  `GET /auth/me`. `POST /auth/refresh` and `/auth/logout` take no bearer token. An orgless refresh
+  `POST /auth/switch-org` (the way out for a second device still holding an orgless session),
+  `GET /auth/me`, and `/operator` behind `authorizeOperator` — there because an operator is a
+  property of the user (`users.is_operator`, the `op` claim, read at mint and refresh like the
+  role), not of any organization, and refused with `ROLE_FORBIDDEN` to every session without it.
+  `POST /auth/refresh` and `/auth/logout` take no bearer token. An orgless refresh
   stays orgless even if a membership has appeared since — moving into a tenant is `switch-org`.
 - **`NO_ORGANIZATION` is its own 403**, beside `EMAIL_UNVERIFIED` and for the same reason: the client
   must tell "your role cannot do this" apart from "you are not in an organization yet" — different
@@ -340,26 +368,36 @@ POST   /invitations/:id/{accept,decline}
   rather than personal messages is what makes that honest; a personally-addressed alert would need
   per-user delivery built first, and that is phase 5's problem (a declined card is not a company
   announcement).
-- **`organizations.tax_id` is the ՀՎՀՀ: unique, NULLABLE, collected only when the customer chooses to
-  pay by invoice.** It is unverifiable — no source this project has carries a *supplier's* tax number
-  — so it was never evidence, only a consistently-claimed identifier. Its one hard requirement is the
-  Armenian VAT invoice, which is a property of the payment method rather than of the sale, so a card
-  payer is never asked for it. This wants a plain `UNIQUE`, whose default `NULLS DISTINCT` lets any
+- **`organizations.tax_id` is the ՀՎՀՀ: unique, NULLABLE, and nothing collects it today.** It was
+  to be asked only of a customer paying by invoice, and bank transfer against a VAT invoice is not a
+  payment method (ADR 0005). Its one hard requirement is the Armenian VAT invoice, and a legal entity
+  paying by card probably still needs one, so when to ask for it is decided with the vPOS slice. It
+  is unverifiable — no source ingested today carries a *supplier's* tax number — so it was never
+  evidence, only a consistently-claimed identifier. This wants a plain `UNIQUE`, whose default `NULLS DISTINCT` lets any
   number of orgs hold NULL — the exact opposite of `notifications_dedupe_uq`, and getting it backwards
   means the second TIN-less organization fails to insert.
-- **De-duplication is therefore best-effort, and that is a knowing trade.** The constraint still turns
-  a collision into "Shinarar LLC already uses TenderIQ — ask an admin there to invite you", but it
-  only fires between two orgs that both reached invoice payment, so two tenants for one company can
-  exist. What makes that survivable is that the expensive case is two *teams*, and invoice payment is
-  the dominant B2B method here, so teams mostly do collide. Merging two tenants by hand is not an
+- **De-duplication is therefore best-effort, and today it never fires.** The constraint turns a
+  collision into "Shinarar LLC already uses Tendra — ask an admin there to invite you", but only
+  between two orgs that both gave a ՀՎՀՀ, and nothing asks for one until the vPOS slice decides
+  when to — so two tenants for one company can exist, and nothing stops them yet. Merging two tenants by hand is not an
   `UPDATE organization_id`: children carry composite `(parent_id, organization_id)` keys, and
   `vault_documents` have objects in a bucket.
-- **The ՀՎՀՀ does NOT link an org to its supplier party, and cannot.** `parties.tax_id` is populated
-  **only for buyers** — `invitation.parser.js` scrapes it out of the invitation ZIP, which is the
-  procuring agency's number, and `tender.repo.js:applyInvitationFacts` writes it to `tender.buyer_id`.
-  Supplier parties come from the bid ledger, which carries names, ranks and prices and no tax number.
-  So `organizations.supplier_party_id` stays a deliberate human claim from a search, and expecting the
-  TIN to automate it is the obvious wrong guess. Storing it is still right: the 2027 OCDS platform
+- **The ՀՎՀՀ does NOT link an org to its supplier party today.** PPCM publishes every bidder's ՀՎՀՀ
+  (ADR 0004), and since ticket 10 an ARMEPS bidder's `ppcm:bo:{ՀՎՀՀ}` party carries it — whether to
+  use it for the claim is an open decision, and until it is made the rule below stands. Buyers get
+  theirs from their invitation documents (e-auction's and ARMEPS's archive through
+  `tender.repo.js:applyInvitationFacts`, paper's invitation at normalize; ticket 19).
+  e-auction and paper supplier parties come from ledgers that carry names, ranks and prices and no
+  tax number. Since ticket 11 an e-auction bidder gains its ՀՎՀՀ from PPCM where tender, lot and
+  exact net match one ledger row, and party resolution is ՀՎՀՀ-first, so a PPCM bidder already
+  seen on e-auction is the same party. A paper contract notice states the **winner's** ՀՎՀՀ
+  (its last table, ticket 32), so a paper winner is keyed by it (`gnumner:bo:{ՀՎՀՀ}`) and reaches
+  the same party too, on every lot of that notice, its losing bids included. Never across notices:
+  a bidder with no number in its own notice stays keyed by its name, and **a name-keyed party
+  never gains a ՀՎՀՀ** (`party.repo.js#nameKeyed`). Writing one onto it would hand every other
+  notice's bidder of that name a stranger's identity.
+  So the supplier identity (`supplier_identities`) stays a set of deliberate human claims from a
+  search, and expecting the TIN to automate it is the obvious wrong guess. Storing it is still right: the 2027 OCDS platform
   identifies parties by `identifier.id`, which for Armenia is the ՀՎՀՀ.
 - **Invitations are in-app; no email is sent.** The owner types an address and always gets the same
   answer — *"if that person is registered, they will get the invitation"* — as a **module constant**,
@@ -409,7 +447,8 @@ POST   /invitations/:id/{accept,decline}
   corrupting the audit trail phase 5 needs. Removal, role change, leaving and transfer stay
   **role-gated only**: gating the growth direction sells the plan, while gating the shrink direction
   means a downgraded customer's only route to removing an ex-employee is to pay again.
-- **A subscription belongs to an organization, and there is only one kind.** Gate 4 reads the plan of
+- **A subscription belongs to an organization, never to a user.** (Its `kind` — trial, promo, paid —
+  says how a period was granted, not whom it is for.) Gate 4 reads the plan of
   the session's organization (`sessionFor` → `planFor(membership.organization_id)`), so a user-level
   subscription would be invisible in the only place a consultant works — inside a client's tenant. A
   consultancy is itself an organization: it registers, buys a plan and works in its own tenant, which
@@ -442,6 +481,13 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
   `is_latest`. Re-notification includes a change summary.
 - **Never fabricate intelligence.** Below the comparables threshold, return `insufficient_data`.
   Benchmarks use only public award data and retain provenance.
+- **Single source: a figure that measures competition excludes it unless the request opts in
+  (`filter[includeSingleSource]=true`); a total counts it and carries a competitive /
+  single-source split** (ticket 31). Competition means win rates, discounts from budget, bidder
+  counts, rivals, price comparisons and benchmarks; totals are a buyer's tenders, spend and
+  suppliers paid, and a supplier's contracts and revenue. The nightly profile rows follow the
+  same line, and one tender's own ledger is never filtered (it is flagged `singleSource`). The
+  filter is `tender.repo.js#competitiveOnlySql`.
 - **Non-competitive / "wired-spec" flags are signals with evidence, never accusations.** This framing
   is mandatory — it is a legal and reputational constraint, not a wording preference.
 - **No duplicate alert** for the same tender/event to the same organization — enforced by
@@ -459,13 +505,15 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
 - **Publish only aggregated/anonymized statistics externally.** Private tenant data (bids, vault)
   never leaves its tenant.
 
-Enum values are constrained at the DB level: `tender.procedure_type ∈ {open, quotation,
-single_source, e_auction, restricted}`; `tender.status ∈ {planned, active, amended, closed, awarded,
-cancelled}`; `tracked_tender.status ∈ {considering, preparing, submitted, won, lost, dropped}`;
-`invitation.status ∈ {pending, accepted, declined}`.
+Enum values constrained at the DB level by a CHECK: `tender.submission_channel ∈ {eauction, armeps,
+paper}`; `tender_sources.role ∈ {discovery, detail, results}`; `tracked_tender.status ∈ {considering,
+preparing, submitted, won, lost, dropped}`; `invitation.status ∈ {pending, accepted, declined}`; `subscription.kind ∈ {trial, promo, paid}`.
+`tender.procedure_type ∈ {open, quotation, single_source, e_auction, restricted}` and `tender.status ∈
+{planned, active, amended, closed, awarded, cancelled}` are pinned only by the Joi schema at the
+normalizer boundary (`validations/schemas/tender.schema.js`) — there is no CHECK on either yet.
 Nullable on purpose: `tenders.deadline_at` (some notices lack it), `awards.supplier_id` (void or
-undisclosed), `vault_documents.valid_until` (non-expiring docs), `organizations.tax_id` (no ՀՎՀՀ
-until invoice payment) — features degrade rather than break.
+undisclosed), `vault_documents.valid_until` (non-expiring docs), `organizations.tax_id` (nothing
+collects a ՀՎՀՀ yet) — features degrade rather than break.
 
 ## AI layer
 
@@ -492,6 +540,13 @@ empty. The rules below are enforced in that service and must hold for anything a
   instructions, and the output is schema-constrained. A PDF saying "ignore previous instructions" is
   just text.
 - **Check `stop_reason` before reading content**; on a refusal, degrade and flag rather than crash.
+- **A throttled model call spends a retry attempt; it is not parked with `moveToDelayed`.** This is
+  the one exception to ingestion's "being throttled must not burn an attempt". A `DelayedError`
+  never increments `attemptsMade`, so a quota that does not reset loops outside the attempt budget
+  in states that all count as live — for the checklist, a row stuck `pending` and every generate a
+  409. On the last attempt `aiExtractor.js` records the throw as `failed` (`rate_limited`,
+  `ai_unavailable`, `internal_error`), and `generate` refuses only while the *job* is live, never
+  on the row's status alone.
 - **AI output is advisory.** Low-confidence checklist items route to human review; nothing AI-produced
   is presented as legally authoritative.
 
@@ -524,8 +579,30 @@ Where reference docs say "Prisma client", read "Knex instance"; where they say "
 
 Ingestion, the HTTP API, discovery, the intelligence layer, the **bid pipeline**, the **AI
 checklist** and the **document vault** all run, and so do **multi-user organizations** (F-05)
-and **relevance ranking** (FR-DISC-4). Billing — the rest of phase 5 — and phase 6 (post-award)
-do not exist.
+and **relevance ranking** (FR-DISC-4). **Subscriptions** (F-02) are being built; card payments —
+the rest of phase 5 — and phase 6 (post-award) do not exist.
+
+**Subscriptions** (spec and tickets in `.scratch/subscriptions/`, ADR 0005, CONTEXT.md § *Plans and
+subscriptions*):
+
+- **A subscription is a dated period, one row each** — a trial, then promo periods, later paid ones.
+  `planFor` answers with the plan of the non-voided row covering now (`subscription.repo.js#current`,
+  the half-open `tstzrange(period_start, period_end) @> now()`), else `free`. **There is no status
+  column and no sweep**: a lapsed period stops granting its plan by the clock alone. The lookup it
+  replaced checked `status = 'active'` and never a date, so a period nothing flipped was Pro forever.
+- **No copy of the plan lives on `organizations`.** Gate 4 reads the plan from the token and
+  `planFor` runs only at mint and refresh, so a copy would buy nothing and be a second answer. The
+  honest cost: a lapse reaches a session at its next refresh, up to one access-token lifetime late.
+- **Periods never overlap, and the database says so**: `subscriptions_no_overlap_excl` (`btree_gist`)
+  over `(organization_id, tstzrange)` on non-voided rows, so a promo starting the instant a trial
+  ends is accepted and `current` is at most one row. `period_end > period_start` is a CHECK, because
+  an empty range overlaps nothing and would slip past the exclusion. A voided row grants nothing and
+  frees its time, but stays as the record of the grant — and still counts as "had a subscription".
+- **Payment is by card through a bank vPOS once one is contracted. Bank transfer against a VAT
+  invoice is not a payment method**, though the reference spec's `technical/Payments
+  Architecture.md` makes it the backbone (ADR 0005). Until card payments exist, launch runs on a
+  trial and 100% promo codes; `invoices` may never get a writer.
+- `GET /organization/subscription` answers `{ current, next, trialAvailable }` to every member.
 
 **Relevance ranking** (`GET /tenders/relevant`, spec and tickets in `.scratch/relevance-ranking/`,
 ADR 0003) — what building it decided, beyond the spec:
@@ -533,10 +610,14 @@ ADR 0003) — what building it decided, beyond the spec:
 - **Relevance is not a Match.** `services/relevance.service.js#rankTenders` is pure and reads
   nothing the alert pipeline reads; the matcher and `MATCH_THRESHOLD` share only `libs/cpv.js`.
   Tuning relevance weights can never change which alerts fire.
-- **One CPV rule, two questions.** `libs/cpv.js` answers the matcher's *covers* (directional) and
-  relevance's *closeness* (exact / group / division). Its `significantPrefix` strips a division's
-  own trailing zero, so a saved search for 30000000 covers every 3x division — kept, because
-  fixing it changes which alerts fire; it wants its own ticket.
+- **One CPV rule, two questions.** `libs/cpv.js` answers *covers* (directional) and relevance's
+  *closeness* (exact / group / division). The alert matcher, `filter[cpv]` and `filter[field]`
+  all ask *covers*, the filters through its SQL twin `tender.repo.js#coversAnySql` — the two
+  must move together — so a filter returns exactly what a saved search on the same code alerts
+  on. `significantPrefix` strips
+  trailing zeros but never below the 2-digit division: 30000000 covers division 30, not 30–39
+  (ticket 26 — it once did, and sent false alerts). `libs/fields.js` refuses a prefix that is not
+  a significant prefix, which is what lets the field filter share the rule.
 - **Fields are `organizations.type`, a `text[]` of ids from `libs/fields.js`, ≤ 3.** That constant
   is the only definition of each field's CPV prefixes and refuses to load if two overlap. There is
   no `other`: optional fields mean "none of these" is choosing none.
@@ -561,18 +642,274 @@ removed as unnecessary. Do not rebuild it from the reference spec's `product/Fea
 (which still lists "Tasks, assignments, roles" as P1) without asking; that is a product
 decision that has already been made.
 
-- **Working:** `source.sweep` (tid watermark) → `tender.detail` → `normalize.tender` writes
+- **Working:** `source.sweep` (watermark chain) → `tender.detail` → `normalize.tender` writes
   `tenders`, `parties`, `awards`, `public_tender_bids`. `tender.refresh` re-checks settled tenders
   hourly. `backfill.js` seeds the historical archive on its own queue and process.
-- **Single source:** `armeps` = eauction.armeps.am, reverse auctions only (`procedure_type` is
-  always `e_auction`). Non-e-auction procedures are not covered; that would mean adding the gnumner
-  notice board as a second source.
-- **PPCM was removed**, not deferred. It is an AngularJS SPA rather than the CSV feed the reference
-  spec assumes, and the eauction bid ledger already supplies the award data it existed for. `awards`
-  and `public_tender_bids` have a `source` column so a second writer can be added safely later.
-- **Empty on purpose:** `contracts` (post-award, phase 6) and `cpv_code` / `parties.tax_id` (both
-  live only inside the invitation ZIP — see the document stage).
-- **Still no writer:** `contracts`, `subscriptions`, `invoices`, `audit_logs` — all phase 5/6.
+- **All three submission channels run:** `eauction` = eauction.armeps.am, reverse auctions only
+  (`procedure_type` always `e_auction`); **ARMEPS** — gnumner discovers it, armeps.am's CfT
+  page creates it (`armeps` source, `procedure_type` `open`/`quotation` from the page; ticket 05);
+  and **paper** — the invitation a gnumner notice uploads creates it (ticket 06, below). Paper
+  results come from gnumner's contract-concluded notices (ticket 08, below). **Decided 2026-10-19 (ADR 0004): three submission channels — e-auction, ARMEPS and
+  paper — assembled from four sources.** gnumner discovers ARMEPS and paper tenders, armeps.am
+  details the ARMEPS ones, and PPCM and gnumner's contract `.docx` supply their results. A tender
+  is one run, never a procedure code; every source a tender came from is a link on it
+  (`tender_sources`, unique on `(source, external_id)`, written in `saveNormalized`'s transaction;
+  `tenders.source_id` stays as the creating link until readers move over). Which tender an
+  observation belongs to, and the tender's status, are decided only in the pure
+  `services/resolution.service.js`; each adapter emits an observation
+  (`eauction/observation.js`) and `workers/normalizer.js` merely orchestrates, so a new source
+  is a parser, never a merge rule. Only a *result* is matched on procedure code — a detail page
+  never is, which is what keeps a re-announcement a second tender. Anything
+  that cannot be attached to exactly one tender is an unmatched result (`unmatched_results`), counted — and in
+  production a missed tender will raise an operator alert (a later feature, live ingestion only).
+  The e-auction source key was `armeps` until 2026-10-19 and is now `eauction`, so that `armeps`
+  can mean armeps.am. Research and verification: `.scratch/procurement-sources/research.md`.
+- **A paper tender is its uploaded invitation, keyed by the file's content hash** (ticket 06,
+  `workers/paper.js`). The same file is sometimes uploaded twice under new paths, so the hash,
+  not the path, is the detail link; each notice is a `paper:{path digest}` discovery link
+  pointing at it. The file says nothing about when it was published, so the normalizer reads
+  the notices too (`services/paperNotice.service.js`): the job's, and on a replay those already
+  linked, re-parsed from their stored listing pages. **The deadline is the Yerevan calendar date
+  of publication + N, at the stated time** — checked against the buyer's own listing close
+  before it was written (34 of 36; N − 1 and working days fit none) — and is never moved off a
+  holiday: buyers who mind already pick their N, and showing a day early is the safe error.
+  Only a `.docx` (or one inside a `.zip`) holding the Armenian template is read; everything else
+  is stored and counted as `unsupported_format` with no tender, on purpose, until the counts say
+  which converter is worth adding — the comment at the format check in `invitation.parser.js` is
+  addressed to the owner and holds the query. A tender with no readable code is created and
+  counted `no_code`. `tenders.submission_address` holds where the envelope goes, and paper is the
+  one source that writes `tenders.description` (the contract subject). A paper file never
+  changes, so `refresh-gnumner` re-normalizes from storage the ones past their deadline, so they
+  close. **One with no deadline closes at a ceiling** (ticket 37, `observation.js#
+  undatedOpenUntil`): publication + 30 days for a quotation, 90 otherwise, about twice the
+  longest seen. `deadline_at` stays null, since nobody stated it, and `deriveStatus` never
+  reopens a `closed` tender on a null deadline. A deadline counted from when the invitation
+  was *sent* is not read: gnumner does not show that day. The stated bid opening is not a
+  fallback either, because it disagreed with the deadline in 8 of 60 files.
+- **A re-posted paper invitation is an amendment of its run** (ticket 07). Paper names no
+  predecessor, so for the paper channel alone a detail joins the stored tender of the same
+  normalized code and buyer when the two overlap — the earlier still open, and not cancelled or
+  awarded, when the later was published. **Dates decide, never the stored status or the order
+  of arrival**: the newer file is the tender (an amendment that supersedes every other current
+  file, under the row lock) and an older one read late — a sweep reads newest first — is a
+  `superseded` link. A tender's `published_at` is its newest file's, which is what lets the lock
+  catch a newer re-post committed in between (it throws, the retry resolves the file as older).
+  `tender_sources.points_to` says which file each notice belongs to: one tender now holds the
+  notices of several files, and a deadline counted from another file's notice is wrong.
+  gnumner's **amendment listing** (`kind: 'amendment'`) carries Article 29 notices, and **a
+  notice's content is not read** except for a code its title lacks (a readable `.docx`'s body):
+  matched on that code across channels (one held only on e-auction/ARMEPS is skipped), it
+  attaches whatever its format — `.doc`, `.rar`, `.pdf`
+  — as a `tender_documents` row of kind `amendment`, beside the invitation and never compared
+  with it, alerted as one added file. `unsupported_format` is only for files whose content must
+  be read (invitations, contract notices).
+- **A paper tender's results are gnumner's contract-concluded notice** (ticket 08,
+  `contract.parser.js`, template 323-Ա, `paper.contract`): every bidder's net, VAT and total
+  per lot, rejections, and the contract's winner, written with `source = 'gnumner'` through
+  `tenders.recordResults` and `awarded` through `deriveStatus`. Its content is read, so `.doc`,
+  `.pdf` and `.rar` are `unsupported_format` with the owner comment. Four things decided while
+  building: the notice names no channel, so its code is looked up in every channel and one held
+  only elsewhere is skipped before the format is asked (`channelUnstated`); rule 3 compares the
+  notice's own **invitation date**, never its publication; the award is the one the contract
+  names, at the winning bid's prices, never row order (and no rank is stored); and a lot is read
+  only when the table places it — a «Հ/Հ» that looks like the lot number was shown not to be.
+  `replaceLedger` replaces only the notice's lots, so two notices of one tender both stand. A
+  notice is keyed by its upload path (`contract:{digest}`), so an unmatched one is re-read from
+  storage when a paper tender of its code is created or a re-post joins one. A re-posted run
+  matches on **any** of its files' publish dates (decided 2026-10-23): `published_at` holds only
+  the newest, and `tender_sources` stores none — they are read back from the files' notices
+  (`paperNotice.service.js#withRunPublications`), only for a run that holds a superseded file. **Most contract notices will never match**:
+  the template says the invitation was "sent or published", most quotations are sent to invited
+  suppliers and never reach gnumner, and ~780 notices (10-07 → 10-21) held one code from the
+  published quotation listing. Ticket 08 records the counts.
+- **A failure notice cancels an ARMEPS or paper tender only once every lot has failed** (ticket
+  09, `failed.parser.js`, template 235-Ա Annex 13, `paper.failed`, ADR 0004). The template's
+  table lists **the failed lots**, and its sentence says the whole procedure failed even when
+  the table lists 13 of 39 — so the sentence is not read. Each notice is a `results` link with
+  `observed_status = 'cancelled'` and `tender_sources.failed_lots`; the tender turns `cancelled`
+  (`resolution.service.js#failureStatus`, through `deriveStatus`) when its notices' lots,
+  together, cover `tender_lots` ∪ the ledger's lots. Partly failed → status untouched; no
+  lots known → not cancelled yet (a wrong cancel is terminal and blocks the award); `awarded`
+  never moves. **Either side may come first, and the second decides**
+  (`services/failure.service.js#rederive`, under the row lock, from stored rows only): a
+  notice linked, or a document set writing lots (`AddendumService.recordDocuments`, the one
+  place lots are written) — so a notice read before the lots cancels the tender when they
+  arrive, with nothing re-read or re-downloaded. The notice
+  states no invitation date, so it matches the ARMEPS/paper tender of its code **announced
+  before it and past its deadline when it was published, the latest** (a code is re-announced
+  only after its run failed, and a live re-announcement is never cancelled by its
+  predecessor's late notice); e-auction codes (held only on e-auction, or `ԷԱՃ` with no
+  ARMEPS/paper tender) are skipped before the format is asked; unreadable files are `unsupported_format`; it never
+  creates. One read before its tender existed is re-read when a paper or ARMEPS tender of its
+  code is created, through the contract notice's path (`paper.js#queueResultRetries`, a
+  `reason: 'retry'` job rebuilt from the stored listing page).
+- **A result of a procedure that was never public is a result-only tender** (ticket 31, ADR 0004's
+  second exception to "results never create"). `resolution.service.js#wasPublic` decides from
+  facts only: an invitation of the code ever on the `open`/`quotation` listings
+  (`listing_notices`, every entry of those listings, ingested or not, written by the listing chain) → public; single source (the code's `ՄԱ`
+  marker or the notice citing article 23, never disagreeing) → never; otherwise only inside the
+  **covered window** — the invitation's day ±1 strictly above every invitation listing's floor
+  (`sweep:published:gnumner:{slug}:floor`, beside the watermark: a cold start's oldest notice,
+  raised past any page-ceiling hole) and at or below its watermark, with no code-less notice
+  published in that span → never; anything else unknown. Never public, with a code, an
+  invitation date (rule 3 needs it to join a later notice), a buyer, a procedure type and an award: a `paper` tender, `awarded`, one `results` link, **no
+  `match.tender` ever**. Every unmatched result records `procedure_type` and `was_public`, so
+  the operator alert reads `no_candidate` **and** `was_public` — the rest is not a miss. Do not
+  widen "never public" to a guess (a title's «ՄԱ գնման» wording, a date near the window): a
+  wrong `false` hides a real miss and creates a tender that should not exist.
+- **A code whose method marker `ՁԲ` runs straight into a digit is the same code with the dash**
+  (ՄԿԻ-ԳՀԱՊՁԲ26/47 = ՄԿԻ-ԳՀԱՊՁԲ-26/47, ticket 07; 14 stored tenders are written that way). The
+  title extractor reads it, and `normalizeCode` and its SQL twin `codeKeySql` put the dash back in
+  that one position and nowhere else — the SQL with a capture and `\1`, never a `(?=`
+  lookahead: knex reads that `?` as a binding and every code lookup throws.
+- **armeps.am serves a different page on every request, and what is stored is canonical.** A
+  fresh `jsessionid` in every link, a clock, a pager key, a calendar: `armeps/cft.parser.js#
+  canonicalPage` strips exactly those, and the stripped page is both hashed and stored, so a
+  key's hash stays the sha256 of its bytes and a re-fetch writes nothing. The session id
+  contains `+`; a character-class regex left a fragment behind and re-stored 29 of 53 pages on
+  the first refresh — match it up to the end of the path. The document ZIP is likewise built per
+  download (fresh entry timestamps, a generated listing PDF), so its identity is
+  `documents.js#documentSetHash` over the buyer's files, not the archive's bytes. armeps.am
+  has no listing, so `tender.refresh` is per source (`REFRESHERS` in `workers/scraper.js`):
+  for armeps it re-reads every *open* tender, because a deadline moves there without the
+  gnumner notice changing. Buyers are keyed per source (`armeps:buyer:…`); a buyer that
+  runs several channels is one party once its ՀՎՀՀ is known (next bullet but one).
+- **PPCM is an ARMEPS tender's results** (ticket 10, `workers/ppcm.js`, `ppcm.results`). Its
+  organized-procedures report is asked by procedure code (`refresh-ppcm`, every 2 h, each code
+  at most daily, claimed in Redis) for ARMEPS tenders past their deadline, within 90 days, not
+  cancelled, and **with a lot that has neither an award nor a recorded failure** — buyers file
+  weeks late or never, and one lot's contract weeks before another's, so `awarded` (which comes
+  with the first) does not stop the asking (decided 2026-10-27). A tender PPCM has not
+  reported simply stays `closed` and a bid on it `not_found`. It spends armeps.am's rate budget
+  (same host) at `PRIORITY.RESULTS`, behind live discovery. The answer is stored whole; each
+  procedure in it (a code is re-announced, so procedures are told apart by announcement) goes
+  through rule 3 — code, ARMEPS channel, announcement = publication day, opening = deadline day
+  — and `ResultsService.record`, the path gnumner contract notices take. Decided while
+  building: `participant_total_price` is **net** and no gross is invented for a bid;
+  `contract_price` is the award's **gross** — what the buyer pays, and spend sums it — which on
+  ~1 lot in 7 is a framework or partial-funds contract well below the offer. **A discount from
+  the budget compares the winner's offer, never the contract** (decided 2026-10-27):
+  `tender.repo.js#awardOfferSql` is the award's `amount` except on a PPCM award whose contract
+  is not the winning net or net + 20%, where it is NULL — every discount figure (benchmark,
+  buyer and supplier profiles, competitor prices) leaves that lot out and counts it
+  (`discountExcludedLots`), and no gross is guessed. Its JS twin is
+  `ppcm/observation.js#pricedAsOffer`; change both; `bid_rejected` is **not read**, it is
+  `true` on winning rows; the report joins every contract of a procedure to a lot its winner bid
+  on, so a lot naming several contracts keeps only the one priced at its winner's own offer
+  (net or + 20%); with none it is not read at all, since its bids without an award would
+  reconcile as every bidder's defeat. An unchanged answer is resolved again while the tender
+  asked about holds no PPCM link, and codes are asked exactly as spelled (the filter is exact). Bidders are `ppcm:bo:{ՀՎՀՀ}` parties carrying `tax_id` — unless a
+  party already holds that ՀՎՀՀ: **party resolution is ՀՎՀՀ-first, per-source id second**
+  (`party.repo.js#upsert`, ticket 11), and two parties holding one ՀՎՀՀ fall back to the
+  per-source id; a shared ՀՎՀՀ is reported when an attach creates it, never merged. Only a
+  holder of the same role or `both` counts — a bidder is never folded into a buyer row by ՀՎՀՀ,
+  nor a buyer into a bidder's. That path is bidders' only: a buyer never takes it (next bullet).
+- **Buyers holding one ՀՎՀՀ are merged, by ՀՎՀՀ, never by name** (ticket 19,
+  `party.repo.js#mergeBuyers`): tenders move to the holder with the most, the other's per-source
+  id becomes an alias (`party_aliases`, which `upsert` resolves third) and its row is deleted.
+  The alias is load-bearing: `buyer_id` is in the amendment hash, so a replay that re-created a
+  merged-away buyer would re-alert every subscriber. Buyer with buyer only (`role = 'buyer'`).
+  **The ՀՎՀՀ decides, a name can only stop it**: a group whose names differ by more than
+  quoting and case is refused and reported, because a branch prints its parent's number (Yerevan
+  State University and its Ijevan branch, 01506928) and telling a branch from a re-spelling is
+  reading the name. A person's answer is `npm run buyers:merge -- --apply --confirm <ՀՎՀՀ>`.
+  The source does not tell them apart either — every buyer's per-source id is its name's. The
+  ՀՎՀՀ is the invitation's bank-guarantee form, field 11 «Շահառուի ՀՎՀՀ» (`libs/taxId.js`), on
+  every Word document of a set: paper's from its invitation at normalize time
+  (`upsertBuyer` resolves by per-source id only, fills that row, then merges — so the name veto
+  holds on every path — before the tender is compared), an
+  ARMEPS buyer's from its document archive, e-auction's from its own rule. Only .docx is read;
+  PPCM states no buyer ՀՎՀՀ except through a by-name lookup, so it is not used.
+  `npm run buyers:merge` (dry run by default) fills and merges from storage.
+- **For an e-auction PPCM writes only the bidders' ՀՎՀՀ** (ticket 11,
+  `services/bidderTaxId.service.js`): never a link, bid, award, status, rank or rejection.
+  Awarded e-auctions with a bidder lacking one fill the room the ARMEPS asks leave in a batch,
+  each code every `taxIdPollHours`. A ՀՎՀՀ attaches only when the tender (rule 3), the lot and
+  the **exact** net offer match one ledger bid and one PPCM bidder; anything else is counted.
+  **PPCM writes an e-auction's times as Yerevan wall clock in UTC** — 4 h ahead of
+  eauction.armeps.am, while its ARMEPS times are true — and `ppcm/observation.js` moves them
+  back, or 5% of e-auctions (announced after 20:00) fail rule 3's day comparison.
+- **PPCM's missed-tender sweep finds what Tendra never had** (ticket 12, `ppcm.sweep`,
+  `missed-ppcm` daily). It reads the organized-procedures report **by announcement day**, per
+  competitive form, 90 days back, every day: every row of a procedure shares its announcement,
+  so a day holds whole procedures, and each goes through the ask by code's own
+  `recordProcedure`. Single source is not swept (never a miss). An unmatched procedure carries
+  ticket 31's `was_public`: **a miss is `no_candidate` and `was_public` true**, and no operator
+  alert reads it yet. A competitive one asks **bid-report** for its armeps.am `resourceId`
+  (`ppcm.repair`, once per code a day) and queues `armeps.detail`; a page bid-report names, not
+  `paperBased`, makes the procedure public whether or not gnumner listed it (`armepsPage`), and
+  its stored answer is read back as that fact by every later sweep. bid-report answers **only
+  the request its own page sends** — every filter field present and an `order` — and
+  `{"status":500}` to anything less, which is all research.md ever sent it; refused, the
+  procedure stays `no_candidate` and the sweep does not fail. A created ARMEPS or e-auction
+  tender asks PPCM about its code again (`queuePpcmRetries`), so a repaired tender takes its
+  result. PPCM lists paper procedures beside ARMEPS ones, so a non-auction row is
+  `channelUnstated`: a code held only on paper or e-auction is `other_channel`, not a miss.
+- **gnumner's e-auction listing is swept as a coverage check, never ingested** (ticket 34):
+  one more slug on the shared chain, with its own `cron` (hourly, `sweep-gnumner-eauction`) and
+  `priority`, its notices in `listing_notices` under ids of their own (`listing:eauction:eauction:{tmid}`: a
+  row keeps the listing that wrote it first, and publicity reads by listing). `sources:verify` holds a
+  notice by its title's code or, for a title naming none (~7 in 10), by an e-auction tender
+  published in the same second, never more notices than that second's tenders. **Its rows are not a publicity fact**: `publicityFacts` reads
+  only the listings it is given (required — an empty list would make `codeSeen` false, which
+  creates tenders), so e-auctions' `was_public` stays null and a span is not made "unknown" by
+  every code-less e-auction title.
+- **Rule 3 refuses a single-source disagreement**: a result and a tender that both state a
+  procedure type and disagree on whether it was single source are not one procedure, so a
+  single-source price never lands on a competitive tender (and into competition figures), nor
+  the reverse. PPCM names single source «Մեկ անձ» / «Հրատապ մեկ անձ»; its negotiated forms
+  map to `single_source` too, as armeps.am's do.
+- **Empty on purpose:** `contracts` (post-award, phase 6) and, for e-auctions, `cpv_code` /
+  `cpv_codes` / `parties.tax_id` (all live only inside the invitation ZIP — see the document stage).
+- **A new document set is an amendment** (ticket 18, `services/addendum.service.js`). An
+  addendum moves no field the amendment hash reads, so the document stage compares the new
+  set's file list with the previous one's (name, CRC, size from `tender_documents.manifest`,
+  never the archive bytes) and, on any difference, raises `version` in the transaction that
+  writes the new document row, turns `active` into `amended` while the tender is open (an
+  alertable status, deadline ahead), and queues the
+  ordinary amendment alert with `changedFields: []` and `documentChanges` — the alert names
+  files, never a field. Past the deadline, closed, awarded or cancelled: version only, no alert. A
+  tender's first set is not an addendum, and an unknown previous list raises nothing.
+  `deriveStatus` keeps `amended` over a page that says "open". Both sources, one rule, but it
+  only ever fires for ARMEPS: an e-auction invitation is written once and never re-issued
+  (ticket 27). The previous set is read by tender, not by the archive's ref.
+- **An e-auction amendment is a new tid that joins the old one's tender** (ticket 29, ADR
+  0004). The page names its predecessors under «Աճուրդի սկզբնական հրավեր(ներ)»; the old page
+  turns Փոփոխված and leaves the listing. **The pointer decides, never the code**: a same-code
+  tender with no block is a re-announcement. The named runs become `superseded` links
+  (`tender_sources.observed_status`, sticky, written with no request) — Փոփոխված is a link
+  status, not a tender status, and is deliberately absent from `detail.parser.js#STATUS`. A
+  superseded link is never refreshed, and a page or archive read through one writes only the
+  link. **Readers that fetch by id follow the current link** (`tender.repo.js#currentLink`):
+  the refresh, the document stage, `documents:backfill`; `tenders.source_id` stays the creating
+  link and may be a dead run. The join's one alert waits for the replacement's archive (the
+  document job carries `amendment`) so it can name moved fields and changed files together, and
+  is raised without the files if the download never lands. Predecessors on two tenders: the
+  replacement is created as a new run, the join is an `ambiguous` unmatched result naming
+  both, and nothing is merged.
+- **An amendment reaches trackers too** (ticket 28): the matcher's recipients for an amendment
+  are the matched organizations ∪ those tracking the tender at `considering`, `preparing` or
+  `submitted` (`AMENDMENT_PURSUITS`) — `submitted` because a sealed ARMEPS or paper bid can be
+  withdrawn before the deadline. One job, one producer, one `(amendment, v{version})` dedupe
+  key, so matching and tracking is one alert. Ingest alerts stay saved-search only. The matcher
+  applies the open rule (deadline ahead) to every amendment, the normalizer's included.
+- **A tender keeps every CPV code its source states** (ticket 17): `tenders.cpv_codes`, a sorted
+  `text[]` beside `cpv_code`, which stays the primary one. armeps.am lists a tender's codes without
+  saying which lot is which, so a code can be on the tender and on no lot — and it is still a fact
+  about the tender. The matcher, the discovery CPV and field filters and relevance all read
+  primary ∪ `cpv_codes` ∪ lot codes: `libs/cpv.js#tenderCodes` in JS, its SQL twin
+  `tender.repo.js#tenderCodesSql`, which must move together. A page-stated list (armeps.am) that
+  moves is an amendment; a **blank** stored list filled by a re-read is not, or the first refresh
+  after the deploy would re-notify every old tender. An e-auction's list is replaced by its
+  invitation archive and raises no event, like its lots. Its ingest match runs before the archive
+  arrives, so every document set stored for an **open** tender re-runs it — `TenderIngested`, one
+  `match-{id}-docs-…` job per stored archive, any priority — and dedupe silences what it already
+  said (ticket 25). Open is the whole guard: backfills store closed tenders.
+  `npm run cpv:backfill` fills old rows from storage, writes the column only and raises no alert
+  (dry run by default; it reports the alerts the codes would have raised).
+- **Still no writer:** `contracts`, `invoices`, `audit_logs` — phase 5/6, and `invoices` perhaps
+  never (ADR 0005). `subscriptions` is read by `planFor`; the trial and promo redemption (F-02) write
+  it.
 - **Telegram and email are the two live delivery channels**, driven by one policy engine.
   `services/notifier.service.js` owns recipient resolution, outcome mapping and delivery
   recording for both; `TRANSPORTS` in that file holds the only per-channel differences, and it
@@ -699,13 +1036,14 @@ decision that has already been made.
     notification and queues `notify.deliver` on ALERTS, so no HTTP response waits on Telegram or SMTP.
     A notification recorded but never delivered is re-queued on the next raise. `user_id` is the
     actor. BullMQ refuses a custom job id containing `:` unless it splits into exactly three parts —
-    use hyphens (`checklist.service.js` still uses `checklist:${id}`, which throws).
+    use hyphens. A finished job keeps its id, so re-queueing under a fixed id removes a
+    completed or failed one first (`checklist.service.js#generate`).
   - **Deleting an organization** refuses while a pending vault upload is younger than the upload-URL
     TTL, and locks the organization row `FOR UPDATE` before re-checking vault keys and membership, so
     nothing registered concurrently is cascaded away with its object left in the bucket.
   - **Plan gating on invitations** uses `authorize('user:manage', { planGate: 'invitations' })`; every
-    other `user:manage` action stays role-gated. No subscription writer exists yet, so every
-    organization reads `free` and sending an invitation answers 402 for everyone until F-02.
+    other `user:manage` action stays role-gated. A trial or promo organization can therefore
+    invite; a lapsed one keeps its members but cannot invite more — growth-gated, shrink-free.
 - **Reset codes have an attempt ceiling, and that is the actual lock.** Six digits is a million
   possibilities — roughly a minute of scripted guessing — so a code that merely waits out its TTL
   under unlimited tries is a delay, not a factor. `authStore.js` burns the code on the fifth failure;
@@ -748,20 +1086,37 @@ decision that has already been made.
   need **no CPV**, which is why they work across the whole corpus.
 - **Bid pipeline (phase 4a/4b) is built:** `tracked_tenders` and `bids` have writers.
   `/tracked-tenders` serves the board, the pursuit state machine, the draft bid and the
-  submit lock; `/organization/supplier-identity` claims the party this org bids AS.
+  submit lock; `/organization/supplier-identity` claims the parties this org bids AS.
   `bids.reconcile` (half-hourly, on the ALERTS queue) resolves submitted bids against the
   public ledger into `won` / `lost` / `not_found`, storing `winning_price` at resolution time.
   Deadline reminders now run **two** sweeps: the matched safety net plus a tighter
   pipeline countdown on `considering`/`preparing` pursuits only.
-- **`organizations.supplier_party_id` is the join that makes win/loss possible.** Awards and
-  the public bid ledger identify a bidder by `parties.id`; without this column there is no way
-  to ask "did we win". It is claimed explicitly by a human from a search — **never auto-matched
-  on name**. Party names are scraped Armenian legal names with inconsistent quoting, and a
-  fuzzy link would attach one company's win record to another account invisibly.
+- **`supplier_identities` is the join that makes win/loss possible.** Awards and the public
+  bid ledger identify a bidder by `parties.id`; without a claim there is no way to ask "did we
+  win". Each party is claimed explicitly by a human from a search — **never auto-matched on
+  name**. Party names are scraped Armenian legal names with inconsistent quoting, and a fuzzy
+  link would attach one company's win record to another account invisibly. **A set** (ticket
+  32, replacing `organizations.supplier_party_id`): one company is several parties until a
+  ՀՎՀՀ joins them, so reconciliation, the win rate and relevance read every claim, and a lot is
+  won when ANY claimed party holds its award (`publicBid.repo.js#supplierEntriesForTender`).
+  A party is claimed by one organization at most (`supplier_identities_party_uq`), and an
+  organization claims at most 10: a claim is exclusive, so uncapped it locks other companies
+  out of their own win records.
 - **`not_found` is a real bid outcome, not an error.** The org says they bid, the ledger does
   not list them: either it was never submitted, or the ledger is not published yet. Recording
   `lost` there would fabricate a defeat. It stays unresolved on a non-cancelled tender so the
   next sweep retries.
+- **A bid is decided per lot, by the lot's award** (decided 2026-10-27, every source):
+  `won` only if the org's party holds the lot's award, `lost` only if another party does — or
+  the lot's failure is on record (`publicBid.repo.js#supplierEntriesForTender` `lot_failed`: the
+  tender cancelled, a failure notice naming the lot in `tender_sources.failed_lots`, or the
+  source rejecting every bid on it), which keeps the old handling, `lost` with no winning price.
+  A lot with bids and neither is a result still to come — PPCM publishes an ARMEPS lot's bids
+  before its contract, and they are stored as soon as published — so `decide` returns no outcome
+  and the sweep retries, like `not_found`; `resolveOne` (on submit) writes nothing then either.
+  A bid naming no lot is `won` if any of its lots is won, otherwise undecided while any is open.
+  The rejected-every-bid reading of "failed" is what keeps e-auction as it was: all 751 of its
+  lots without an award on a live tender are exactly that, and would otherwise never resolve.
 - **A win comes from `awards`, never from `rank = 1`** — the same rule the ingestion layer
   learned the hard way. The source ranks rejected submissions too.
 - **Every offer has two prices, and each question uses one.** The ledger publishes the value
@@ -838,9 +1193,11 @@ decision that has already been made.
   requirement still exists, it is simply unmet again.
 - **A vault alert has no tender**, which broke BR-9 dedupe — `(org, type, tender_id)` collapses
   every expiring document in an org into one notification. `notifications.subject_id` is the
-  dedupe key for non-tender alerts and stays NULL for everything else. BR-9 is now a
+  dedupe key for non-tender alerts, and for an `amendment` it is `v{version}` (ticket 18):
+  with it NULL, the first amendment of a tender was the only one any organization was ever
+  told about. It stays NULL for everything else. BR-9 is now a
   constraint rather than a convention: `notifications_dedupe_uq` on `(organization_id, type,
-  tender_id, subject_id)` **`NULLS NOT DISTINCT`** — every row has a NULL in that key by
+  tender_id, subject_id)` **`NULLS NOT DISTINCT`** — almost every row has a NULL in that key by
   design, so under the default NULLS DISTINCT the index would accept every duplicate it
   exists to stop while looking correct in `\d notifications`. `createIfNew` reads first and
   inserts `ON CONFLICT DO NOTHING`, so the loser of a concurrent raise reads back the
@@ -855,23 +1212,16 @@ decision that has already been made.
   is harmless: it excludes the cursor row correctly and can only drop a row created inside the
   same millisecond. The next ascending one needs `date_trunc('milliseconds', …)` in the keyset
   AND the ORDER BY, which must agree.
-- **Schema changes against the live database go in a throwaway additive script**, never in
-  `create_table.js` directly — that file builds the whole schema in one transaction and cannot
-  be re-run against a database that already holds data. The workflow is four steps, and the
-  last one is the part that surprises people:
-
-  1. Write `migrations/add_<thing>.js`: `IF NOT EXISTS` throughout, and `ADD CONSTRAINT`
-     guarded by a `pg_constraint` lookup, since constraints have no `IF NOT EXISTS` of their
-     own. It must be safe to run twice.
-  2. Run it against every live database.
-  3. **Mirror the identical change into `create_table.js`** so a fresh database comes out the
-     same shape. This is the durable record — the additive script is not.
-  4. **Delete the script.** Once applied everywhere it is dead weight, and a directory of
-     historical one-shots invites someone to re-run one or to read it as current schema.
-
-  So `migrations/` holds only `create_table.js` and `drop_table.js` at rest. If you find an
-  `add_*.js` there, it is in flight — step 2 or 3 has not finished. Past migrations are
-  recoverable from git history if ever needed; they are not kept on disk.
+- **Schema changes go straight into `create_table.js` and `drop_table.js` — no additive
+  scripts** (decided 2026-11-01, overruling the earlier four-step add-script workflow). This is
+  development: a database is rebuilt from `create_table.js` (`migrate:down` then `migrate:up`)
+  rather than altered in place, so a one-shot `add_<thing>.js` is a second copy of the schema
+  that can only drift from the first. Write the change in `create_table.js` — table, CHECKs and
+  partial indexes in `indexes()` — and the matching drop in `drop_table.js`, in dependency order.
+  To check it, build a scratch database from `create_table.js` and drop it with
+  `drop_table.js`. Applying a change to an existing database without a rebuild is a hand-run
+  `ALTER`, never a file in `migrations/`. `migrations/` holds only those two files; revisit this
+  once a database holds data that a rebuild would lose.
 
 ## Docs
 
@@ -903,8 +1253,10 @@ sheet. Consult it before designing anything new; it almost certainly already spe
 | `frontend/`, `ux/` | The planned Next.js client — not started |
 | `business/`, `research/` | Why a decision was made; market and pricing context |
 
-Two caveats when reading it: it assumes Prisma/Zod/feature-folders (see *Deliberate deviations*), and
-its AI model IDs predate the current Claude generation (see *AI layer*). Everything else transfers.
+Three caveats when reading it: it assumes Prisma/Zod/feature-folders (see *Deliberate deviations*),
+its AI model IDs predate the current Claude generation (see *AI layer*), and its payments
+architecture rests on bank transfer and VAT invoices, which are ruled out (ADR 0005 — card through a
+bank vPOS). Everything else transfers.
 
 ## Agent skills
 

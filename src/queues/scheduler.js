@@ -1,5 +1,5 @@
 import config from '../configs/variables.config.js';
-import { listEnabledSources, getSourceConfig } from '../configs/sources.config.js';
+import { listEnabledSources, getSourceConfig, hasListing } from '../configs/sources.config.js';
 import redis from '../libs/redis.js';
 import { ingestFetchQueue, maintenanceQueue, alertsQueue, closeQueues } from './index.js';
 import { JOB } from './names.js';
@@ -17,18 +17,52 @@ const register = async () => {
   for (const source of listEnabledSources()) {
     const { listingCron, refreshCron, displayName } = getSourceConfig(source);
 
-    await ingestFetchQueue.upsertJobScheduler(
-      `sweep-${source}`,
-      { pattern: listingCron },
-      { name: JOB.SOURCE_SWEEP, data: { source } }
-    );
+    if (hasListing(source)) {
+      await ingestFetchQueue.upsertJobScheduler(
+        `sweep-${source}`,
+        { pattern: listingCron },
+        { name: JOB.SOURCE_SWEEP, data: { source } }
+      );
+      logger.info(`[scheduler] ${displayName}: sweep scheduled "${listingCron}"`);
 
-    logger.info(`[scheduler] ${displayName}: sweep scheduled "${listingCron}"`);
+      // A listing nothing waits on runs on a clock of its own (gnumner's
+      // e-auction listing, ticket 34), and the source's sweep leaves it out
+      // (listingChain.js#listingsToSweep).
+      const ownClock = getSourceConfig(source).listingPaths.filter((l) => l.cron);
+      for (const listing of ownClock) {
+        await ingestFetchQueue.upsertJobScheduler(
+          `sweep-${source}-${listing.slug}`,
+          { pattern: listing.cron },
+          { name: JOB.SOURCE_SWEEP, data: { source, slug: listing.slug } }
+        );
+        logger.info(`[scheduler] ${displayName}: "${listing.slug}" sweep scheduled "${listing.cron}"`);
+      }
+      // A listing that lost its `cron`, or left the config, keeps no schedule
+      // of its own: it would sweep beside the source's sweep under another
+      // lock, or throw on every firing.
+      const keep = new Set(ownClock.map((l) => `sweep-${source}-${l.slug}`));
+      for (const { key } of await ingestFetchQueue.getJobSchedulers()) {
+        if (key.startsWith(`sweep-${source}-`) && !keep.has(key)) {
+          await ingestFetchQueue.removeJobScheduler(key);
+          logger.info(`[scheduler] ${displayName}: removed the stale "${key}" schedule`);
+        }
+      }
+    } else {
+      // A source with no listing (armeps.am) is reached only by id. Removing
+      // the id rather than skipping it matters: until 2026-10-19 `armeps` was
+      // e-auction's key, and its `sweep-armeps` schedule is still in any Redis
+      // that ran then, firing a sweep no board answers.
+      if (await ingestFetchQueue.removeJobScheduler(`sweep-${source}`)) {
+        logger.info(`[scheduler] ${displayName}: removed a stale sweep schedule`);
+      }
+    }
 
     // Discovery and settlement are two different questions and run on two
     // different clocks — see JOB.TENDER_REFRESH. Without this second schedule,
     // awards are only ever ingested for tenders that happen to settle while
-    // still inside the sweep's tid watermark window.
+    // still inside the sweep's tid watermark window, and an ARMEPS deadline
+    // moved on armeps.am would never be seen. Upserting `refresh-armeps` also
+    // replaces the schedule e-auction left under that id before the rename.
     if (refreshCron) {
       await ingestFetchQueue.upsertJobScheduler(
         `refresh-${source}`,
@@ -36,6 +70,19 @@ const register = async () => {
         { name: JOB.TENDER_REFRESH, data: { source } }
       );
       logger.info(`[scheduler] ${displayName}: result re-check scheduled "${refreshCron}"`);
+    }
+
+    // A third question: what did the source report that Tendra holds no
+    // tender for? PPCM's missed-tender sweep (ticket 12), read by date rather
+    // than asked per tender — the only way to see a tender Tendra never had.
+    const { missedSweep } = getSourceConfig(source);
+    if (missedSweep?.cron) {
+      await ingestFetchQueue.upsertJobScheduler(
+        `missed-${source}`,
+        { pattern: missedSweep.cron },
+        { name: JOB.PPCM_SWEEP, data: { source } }
+      );
+      logger.info(`[scheduler] ${displayName}: missed-tender sweep scheduled "${missedSweep.cron}"`);
     }
   }
 
@@ -100,6 +147,16 @@ const register = async () => {
     { name: JOB.VAULT_EXPIRY, data: {} }
   );
   logger.info('[scheduler] vault expiry sweep scheduled "11 6 * * *"');
+
+  // Daily, beside the vault sweep and for its reason: a period ends on a day,
+  // and three days' notice needs no finer clock. Offset so the two do not
+  // land on one tick.
+  await alertsQueue.upsertJobScheduler(
+    'subscription-ending',
+    { pattern: '17 6 * * *' },
+    { name: JOB.SUBSCRIPTION_ENDING, data: {} }
+  );
+  logger.info('[scheduler] subscription ending sweep scheduled "17 6 * * *"');
 
   // Nightly full recompute. Repairs anything the targeted path missed, and
   // promotes categories that only now cleared the comparables threshold

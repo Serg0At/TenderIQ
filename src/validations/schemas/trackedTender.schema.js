@@ -126,11 +126,14 @@ export const updateChecklistItemSchema = Joi.object({
   .min(1)
   .required();
 
-export const supplierIdentitySchema = Joi.object({
-  // null unclaims the identity, which must stay possible — an org that linked
-  // the wrong party has to be able to undo it.
-  supplierPartyId: Joi.string().trim().max(40).allow(null).required(),
+/** One more party this organization bids as. Unclaiming is `DELETE …/:partyId`. */
+export const supplierClaimSchema = Joi.object({
+  partyId: Joi.string().trim().max(40).required(),
 }).required();
+
+export const supplierClaimParamsSchema = Joi.object({
+  partyId: Joi.string().trim().max(40).required(),
+});
 
 export const supplierSearchSchema = Joi.object({
   q: Joi.string().trim().min(2).max(200).required(),
@@ -145,6 +148,7 @@ export default {
   trackedTenderQuerySchema,
   saveBidSchema,
   submitBidSchema,
-  supplierIdentitySchema,
+  supplierClaimSchema,
+  supplierClaimParamsSchema,
   supplierSearchSchema,
 };

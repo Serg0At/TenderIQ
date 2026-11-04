@@ -35,13 +35,24 @@ const TIERS = [
   { basis: 'cpv_family', exact: false, useBuyer: false },
 ];
 
+/*
+ * Single-source awards (ticket 31) are left out of every tier, the same way:
+ * a price a buyer agreed with one supplier says nothing about what a market
+ * bids, and most of them come from gnumner contract notices of procedures
+ * never announced at all. Each tier counts only competitive awards against
+ * the same threshold, so a category whose awards are mostly single-source is
+ * `insufficient_data` rather than benchmarked on them. A caller who wants them
+ * anyway asks (`includeSingleSource`): the answer is then computed live —
+ * materialised rows never hold them — and says `includesSingleSource`.
+ */
+
 export default class BenchmarkService {
   /**
    * Compute (but do not store) the best available benchmark for a category.
    *
    * @returns {{status:'ok'|'insufficient_data', basis?:string, ...stats}}
    */
-  static async compute({ cpvCode, buyerId = null, sinceMonths = INTELLIGENCE.RECENCY_MONTHS }) {
+  static async compute({ cpvCode, buyerId = null, sinceMonths = INTELLIGENCE.RECENCY_MONTHS, includeSingleSource = false }) {
     if (!cpvCode) {
       return { status: 'insufficient_data', reason: 'tender has no CPV code', sampleSize: 0 };
     }
@@ -56,11 +67,12 @@ export default class BenchmarkService {
         exact: tier.exact,
         buyerId: tier.useBuyer ? buyerId : null,
         sinceMonths,
+        includeSingleSource,
       });
 
       widest = { ...stats, basis: tier.basis };
       if (stats.sampleSize >= INTELLIGENCE.MIN_COMPARABLES) {
-        return { status: 'ok', ...stats, basis: tier.basis, sinceMonths };
+        return { status: 'ok', ...stats, basis: tier.basis, sinceMonths, ...(includeSingleSource ? { includesSingleSource: true } : {}) };
       }
     }
 
@@ -73,6 +85,7 @@ export default class BenchmarkService {
       sampleSize: widest?.sampleSize ?? 0,
       required: INTELLIGENCE.MIN_COMPARABLES,
       basis: widest?.basis,
+      ...(includeSingleSource ? { includesSingleSource: true } : {}),
     };
   }
 
@@ -89,11 +102,15 @@ export default class BenchmarkService {
     return result;
   }
 
-  /** Read path for the API: the stored row, or an honest refusal. */
-  static async forCategory({ cpvCode, buyerId = null }) {
+  /**
+   * Read path for the API: the stored row, or an honest refusal. Asked to
+   * include single-source awards, it computes live: the stored rows hold none.
+   */
+  static async forCategory({ cpvCode, buyerId = null, includeSingleSource = false }) {
     if (!cpvCode) {
       return { status: 'insufficient_data', reason: 'tender has no CPV code', sampleSize: 0 };
     }
+    if (includeSingleSource) return BenchmarkService.compute({ cpvCode, buyerId, includeSingleSource });
 
     const stored = await benchmarks.find({ cpvCode, buyerId });
     if (stored && stored.sample_size >= INTELLIGENCE.MIN_COMPARABLES) {
@@ -109,6 +126,9 @@ export default class BenchmarkService {
         maxPrice: stored.max_price === null ? null : Number(stored.max_price),
         // Number() strips the numeric type's trailing zeros: '6.88' not '6.8800'.
         avgDiscountPct: stored.avg_discount_pct === null ? null : Number(stored.avg_discount_pct),
+        // Lots with a budget the discount left out: their contract is not the
+        // winning offer. Null on a row computed before the count was kept.
+        discountExcludedLots: stored.discount_excluded ?? null,
         computedAt: stored.computed_at,
         basis: 'materialized',
       };

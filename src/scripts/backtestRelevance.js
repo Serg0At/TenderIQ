@@ -55,6 +55,7 @@ const candidateOf = (row) => ({
   title: row.title,
   referenceCode: row.reference_code,
   cpvCode: row.cpv_code,
+  cpvCodes: row.cpv_codes ?? [],
   buyerId: row.buyer_id,
   estimatedValue: row.estimated_value === null ? null : Number(row.estimated_value),
   deadlineAt: row.deadline_at,
@@ -143,7 +144,7 @@ const run = async () => {
         fields: [],
         savedSearches: [],
         pipeline: [],
-        ledger: { partyId, items },
+        ledger: { partyIds: [partyId], items },
         textProfile: [...new Set(items.map((i) => i.tenderId))].map((id) => texts.get(id)).filter(Boolean),
       };
       const order = rankTenders(ranked, signals, { now: cutoff, recencyMonths: months });

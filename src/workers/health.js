@@ -1,7 +1,7 @@
 import config from '../configs/variables.config.js';
-import { listEnabledSources, getSourceConfig } from '../configs/sources.config.js';
+import { listEnabledSources, getSourceConfig, hasListing } from '../configs/sources.config.js';
 import { queues } from '../queues/index.js';
-import { lastSuccessfulSweep } from './scraper.js';
+import { lastSuccessfulSweep } from '../utils/sweepState.js';
 import { JOB } from '../queues/names.js';
 import { logger } from '../utils/logger.js';
 
@@ -44,7 +44,10 @@ const worst = (levels) =>
 const checkFreshness = async () => {
   const checks = [];
 
-  for (const source of listEnabledSources()) {
+  // Swept sources only. A source with no listing (armeps.am) never writes
+  // `sweep:ok`, and would read as "never swept" forever; its pages arrive
+  // through gnumner's sweep, whose freshness is the one that matters.
+  for (const source of listEnabledSources().filter(hasListing)) {
     const at = await lastSuccessfulSweep(source);
     const { displayName } = getSourceConfig(source);
 

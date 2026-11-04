@@ -53,3 +53,7 @@ has bid on one tender. That is a data problem, resolved in ticket 10, not a reas
 > P95 not yet measured where it counts: ~20 ms server-side execution and ~2 ms ranking, but
 > wall-clock from a development machine to Neon us-east-2 was 3–9 s, all network. Measure from
 > the deployed API before ticking.
+
+> 2026-10-31: p95 884 ms through the full API on the local Postgres, ledger signals included,
+> with a 3,305-lot identity. Inside budget today. The ledger *scoring* is what costs (≈600 ms of
+> it), not the ledger queries, and it scales with ledger size. Details in ticket 05.

@@ -1,3 +1,5 @@
+import { sha256 } from '../utils/hash.js';
+
 /**
  * Producers (scheduler, API) and consumers (workers) live in different
  * processes, so a mistyped queue or job name does not crash anything — it
@@ -39,9 +41,12 @@ export const JOB = {
    */
   TENDER_DETAIL: 'tender.detail',
   /**
-   * Database-driven re-check of tenders whose auction has passed. The listing
-   * sweep stops at its tid watermark and so only ever sees newly published
-   * tenders; this is what catches a month-old tender turning into an award.
+   * Database-driven re-check of a source's unsettled tenders, one schedule per
+   * source (`refresh-{source}`). For e-auction it is the tenders whose auction
+   * has passed: the listing sweep stops at its tid watermark and so only ever
+   * sees newly published tenders, and this is what catches a month-old tender
+   * turning into an award. For armeps.am it is every open tender, because
+   * there a deadline moves without the gnumner notice changing.
    */
   TENDER_REFRESH: 'tender.refresh',
   /**
@@ -50,6 +55,82 @@ export const JOB = {
    * budget.
    */
   TENDER_DOCUMENTS: 'tender.documents',
+  /**
+   * One armeps.am tender page, keyed by `resourceId`: discovered on gnumner,
+   * or re-checked by the ARMEPS refresh. Rides ingest.fetch like every other
+   * detail fetch.
+   */
+  ARMEPS_DETAIL: 'armeps.detail',
+  /**
+   * One armeps.am tender's contract documents, as the single ZIP the page
+   * offers: the files, and the Tender Structure XML its lots come from. Its
+   * own job rather than TENDER_DOCUMENTS because nothing about it is shared
+   * but the queue — another client, another archive layout.
+   */
+  ARMEPS_DOCUMENTS: 'armeps.documents',
+  /**
+   * One uploaded paper invitation on gnumner, with the listing's publish
+   * datetime its deadline is counted from (workers/paper.js). Also the paper
+   * refresh's job (`reason: 'refresh'`), which makes no request and only
+   * re-normalizes the stored file so a tender past its deadline closes.
+   */
+  PAPER_INVITATION: 'paper.invitation',
+  /**
+   * A paper tender's invitation, stored and listed as its document, and its
+   * lots written. Reads the file the invitation fetch stored — no request —
+   * so it shares nothing with the other document jobs but the queue.
+   */
+  PAPER_DOCUMENTS: 'paper.documents',
+  /**
+   * One upload on gnumner's amendment listing: a buyer's notice that it
+   * changed a paper invitation (ticket 07). Stored, matched to its tender on
+   * code and dates, and recorded as an addendum document (workers/paper.js).
+   */
+  PAPER_AMENDMENT: 'paper.amendment',
+  /**
+   * One upload on gnumner's contract-concluded listing: a paper tender's
+   * bidders, prices and winner (ticket 08). Stored, matched to its tender on
+   * code and dates, and written as its results (workers/paper.js). Also the
+   * re-read of an unmatched one from storage once its tender appears
+   * (`reason: 'retry'`), which makes no request.
+   */
+  PAPER_CONTRACT: 'paper.contract',
+  /**
+   * One upload on gnumner's failed-procedure listing: the lots of an ARMEPS
+   * or paper tender that failed (ticket 09). Stored, matched to its tender on
+   * code and dates, and recorded as a link that cancels the tender once its
+   * notices name every lot (workers/paper.js).
+   */
+  PAPER_FAILED: 'paper.failed',
+  /**
+   * One ARMEPS tender's results, asked of PPCM by its procedure code (ticket
+   * 10): the report's rows stored, resolved per procedure, and written as the
+   * tender's bids and awards (workers/ppcm.js). Queued by the PPCM refresh;
+   * `reason: 'replay'` re-reads the stored answer with no request. Rides
+   * ingest.fetch: armeps.am's host and budget.
+   */
+  PPCM_RESULTS: 'ppcm.results',
+  /**
+   * The missed-tender sweep (ticket 12), scheduled daily as `missed-ppcm`:
+   * queues one PPCM_SWEEP_DAY per swept form and announcement day of the
+   * window. Makes no request itself.
+   */
+  PPCM_SWEEP: 'ppcm.sweep',
+  /**
+   * One form's procedures announced on one day, read off PPCM's
+   * organized-procedures report, stored, and resolved one by one: a tender's
+   * results, or an unmatched result — and, for an ARMEPS procedure Tendra
+   * has no tender for, its armeps.am page asked of bid-report and fetched
+   * (workers/ppcm.js). Rides ingest.fetch: armeps.am's host and budget.
+   */
+  PPCM_SWEEP_DAY: 'ppcm.sweep.day',
+  /**
+   * One procedure code's armeps.am page, asked of PPCM's bid-report for a
+   * procedure the sweep found no tender for (ticket 12), and fetched
+   * (`armeps.detail`) when it names one. Queued by the sweep, at most once
+   * per code per `bidReport.repairPollHours`.
+   */
+  PPCM_REPAIR: 'ppcm.repair',
   /** One page of the historical seed. Chains to the next page. */
   BACKFILL_PAGE: 'backfill.page',
   NORMALIZE_TENDER: 'normalize.tender',
@@ -112,6 +193,14 @@ export const JOB = {
    */
   VAULT_EXPIRY: 'vault.expiry',
   /**
+   * Daily sweep of subscription periods: an organization-wide announcement
+   * three days before a period ends and one once it has, unless another period
+   * starts at that end (workers/subscriptionEnding.js). Rides ALERTS like the
+   * vault sweep: what it produces is the warning before the 402s, not
+   * housekeeping.
+   */
+  SUBSCRIPTION_ENDING: 'subscription.ending',
+  /**
    * Deliver one already-recorded notification to every destination its
    * organization has.
    *
@@ -136,8 +225,46 @@ export const JOB = {
  * a sweep that re-filled the wait list every five minutes.
  */
 export const PRIORITY = {
-  LIVE: 1,
+  /**
+   * A listing chain's next page (ticket 39), and nothing else: ahead of every
+   * detail, document and refresh job, so a chain finishes in seconds. At LIVE
+   * it waited 15–30 minutes per page behind them while the board shifted
+   * under it — new rows repeated the previous page's tail, and a row leaving
+   * the board moved one up onto a page already read. 1 is BullMQ's highest
+   * explicit priority; the wait list above it is the starvation trap described
+   * above, and holds only the scheduler's dispatchers. Bounded by itself: one
+   * chain per listing at a time (ticket 38). Not a queue of its own: the rate
+   * budget is per source either way, so a second queue would add a worker and
+   * concurrency pointed at the source, not throughput.
+   */
+  CHAIN: 1,
+  LIVE: 2,
+  /**
+   * Results asked of a source that shares a host with live discovery (PPCM
+   * on armeps.am): behind every discovery fetch on the one rate budget, since
+   * a result a few hours late costs nothing and a tender found late costs
+   * the customer the bid; ahead of history.
+   */
+  RESULTS: 5,
   BACKFILL: 10,
 };
 
-export default { QUEUE, JOB, PRIORITY };
+/**
+ * The match job of one tender version. Every producer of an amendment builds
+ * its id here — the normalizer for a moved field, the document stage for an
+ * addendum — because both advance one version counter, and two spellings of
+ * this id would match the same amendment twice.
+ */
+export const matchJobId = (tenderId, version) => `match-${tenderId}-v${version}`;
+
+/**
+ * The match that runs again when a tender's archive is stored (ticket 25): an
+ * e-auction's CPV codes, and both sources' lot names, arrive with it, after the
+ * ingest match has run. One per stored archive, keyed on its storage key —
+ * which names the archive's identity — so a retry reuses the id and a re-issue
+ * gets its own. Hashed because the key holds slashes.
+ */
+export const documentsMatchJobId = (tenderId, storageKey) =>
+  `match-${tenderId}-docs-${sha256(storageKey).slice(0, 12)}`;
+
+export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId };

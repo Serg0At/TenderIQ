@@ -16,9 +16,10 @@ import { logger } from '../utils/logger.js';
  *
  * Run it after a seed, or any time `backfillDocuments` was off while tenders
  * were ingested. Idempotent: tenders that already have a document row are not
- * selected, and the handler's content hash skips a re-download anyway.
+ * selected, and the handler makes no request for a tid whose archive is
+ * already stored (ticket 35).
  *
- *   node src/scripts/backfillDocuments.js [--limit 500] [--source armeps]
+ *   node src/scripts/backfillDocuments.js [--limit 500] [--source eauction]
  *
  * Cost is one request per tender against the shared 20/min budget, so ~500
  * tenders is about 25 minutes of polite fetching alongside whatever else runs.
@@ -29,7 +30,7 @@ const arg = (name, fallback) => {
 };
 
 const run = async () => {
-  const source = String(arg('source', 'armeps'));
+  const source = String(arg('source', 'eauction'));
   const limit = Number(arg('limit', 500));
 
   if (!getSourceConfig(source).downloadDocuments) {
@@ -45,7 +46,8 @@ const run = async () => {
 
   let queued = 0;
   for (const tender of pending) {
-    const sourceId = tender.source_id.slice(source.length + 1);
+    // The current link: an amended e-auction's creating id is a dead run (ticket 29).
+    const sourceId = tender.external_id;
     await ingestFetchQueue.add(
       JOB.TENDER_DOCUMENTS,
       { source, sourceId, invitationUrl: tender.invitation_url },

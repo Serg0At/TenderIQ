@@ -1,6 +1,7 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 import { PERMISSIONS } from '../libs/permissions.js';
+import subscriptions from './subscription.repo.js';
 
 /**
  * Roster cursor: which group the last row belonged to (members, then pending
@@ -406,13 +407,6 @@ export default class OrganizationRepository {
   }
 
   /**
-   * Plan name for entitlement checks, defaulting to 'free'.
-   *
-   * An organization with no subscription row is on the free tier, not
-   * unentitled-and-broken — the plan gate must fail closed to paid features
-   * while still letting the account work.
-   */
-  /**
    * One organization by id. Used by the Telegram link flow to name the org in
    * the confirmation the user sees — without it the bot can only say "your
    * organization", which is unhelpful for a consultant linked to several.
@@ -423,41 +417,18 @@ export default class OrganizationRepository {
   }
 
   /**
-   * Claim the supplier party this organisation bids as.
+   * Plan name for entitlement checks: the plan of the non-voided subscription
+   * covering now, else 'free'.
    *
-   * Deliberately a deliberate, explicit act rather than something inferred
-   * from a name match. Party names in the corpus are scraped Armenian legal
-   * names with inconsistent punctuation and quoting; a fuzzy auto-link would
-   * eventually attach one company's win record to another company's account,
-   * and the failure would be invisible — the numbers would just be wrong.
-   *
-   * The partial unique index refuses a party already claimed elsewhere, so the
-   * conflict surfaces here as a driver error the service turns into a 409
-   * rather than as two orgs quietly sharing one identity.
+   * Read from the period's dates, never a status (ADR 0005) — it once checked
+   * `status = 'active'` and no date, so a period nothing remembered to flip
+   * would have granted its plan forever. No subscription is the free tier, not
+   * unentitled-and-broken: the plan gate fails closed to paid features while
+   * the account still works. Runs at session mint and refresh only; gate 4
+   * reads the plan from the token.
    */
-  static async setSupplierParty(organizationId, supplierPartyId, trx = db) {
-    const updated = await trx('organizations')
-      .where({ id: organizationId })
-      .update({ supplier_party_id: supplierPartyId });
-    return updated ? trx('organizations').where({ id: organizationId }).first() : null;
-  }
-
-  static async supplierPartyFor(organizationId, trx = db) {
-    const row = await trx('organizations as o')
-      .leftJoin('parties as p', 'p.id', 'o.supplier_party_id')
-      .where('o.id', organizationId)
-      .select('o.supplier_party_id', 'p.name as supplier_name', 'p.tax_id as supplier_tax_id')
-      .first();
-    return row ?? null;
-  }
-
   static async planFor(organizationId, trx = db) {
-    const row = await trx('subscriptions as s')
-      .join('plans as p', 'p.id', 's.plan_id')
-      .where('s.organization_id', organizationId)
-      .andWhere('s.status', 'active')
-      .select('p.name')
-      .first();
-    return row?.name ?? 'free';
+    const row = await subscriptions.current(organizationId, trx);
+    return row?.plan ?? 'free';
   }
 }

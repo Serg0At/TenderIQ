@@ -75,7 +75,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
  * claims to replace; plain ASCII; bytes that happen to be valid UTF-8 (7-Zip
  * and macOS write those without the flag); and only then cp866.
  *
- * Today every armeps entry name is ASCII — the source names files itself —
+ * Today every eauction entry name is ASCII — the source names files itself —
  * so this is the path for archives that are not yet stored or not yet
  * scraped, not a fix for something observed.
  */

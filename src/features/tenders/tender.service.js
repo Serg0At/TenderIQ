@@ -1,4 +1,5 @@
 import tenders from '../../repositories/tender.repo.js';
+import { SUPERSEDED } from '../../repositories/tenderSource.repo.js';
 import relevance from '../../repositories/relevance.repo.js';
 import { rankTenders, basisOf, compareRanked, isPursued, hasAnyCode } from '../../services/relevance.service.js';
 import { purchaseKindOf, purchaseKindLabels } from '../../libs/purchaseKinds.js';
@@ -23,6 +24,7 @@ const filtersOf = (f = {}) => ({
   buyerId: f.buyerId ?? null,
   region: f.region ?? null,
   procedureType: f.procedure ?? null,
+  submissionChannels: toList(f.submissionChannel),
   status: f.status ?? null,
   minValue: f.minValue ?? null,
   maxValue: f.maxValue ?? null,
@@ -97,6 +99,7 @@ const candidateOf = (row) => ({
   title: row.title,
   referenceCode: row.reference_code,
   cpvCode: row.cpv_code,
+  cpvCodes: row.cpv_codes ?? [],
   buyerId: row.buyer_id,
   estimatedValue: row.estimated_value === null ? null : Number(row.estimated_value),
   deadlineAt: row.deadline_at,
@@ -227,8 +230,13 @@ export default class TenderService {
       title: row.title,
       referenceCode: row.reference_code,
       cpvCode: row.cpv_code,
+      cpvCodes: row.cpv_codes ?? [],
       procedureType: row.procedure_type,
+      submissionChannel: row.submission_channel,
       purchaseKind: purchaseKindOf(row.goods_works_services),
+      evaluationMethod: row.evaluation_method ?? null,
+      // Where a paper bid is delivered; null for a tender bid online.
+      submissionAddress: row.submission_address ?? null,
       status: row.status,
       sourceStatus: row.source_status,
       estimatedValue: row.estimated_value === null ? null : Number(row.estimated_value),
@@ -244,11 +252,22 @@ export default class TenderService {
     return {
       ...TenderService.present(row),
       buyer: { id: row.buyer_id, name: row.buyer_name, taxId: row.buyer_tax_id ?? null, region: row.buyer_region ?? null },
+      // What is being bought, as the source states it beside the title. Only
+      // a paper invitation states one today; null elsewhere.
+      description: row.description ?? null,
       qnaDeadlineAt: row.qna_deadline_at,
       invitationUrl: row.invitation_url,
       version: row.version,
       lots: (row.lots ?? []).map((l) => ({ lotNumber: l.lot_number, cpvCode: l.cpv_code, name: l.name })),
       documents: TenderDocumentService.present(row),
+      // Where this tender was read from. The external id stays internal: the
+      // URL is what a supplier can use, and the id is our join key. A
+      // superseded run is left out: its page is the amended-away version, and
+      // offering it as a source would send a supplier to the old deadline
+      // (ticket 29).
+      sources: (row.sources ?? [])
+        .filter((s) => s.observed_status !== SUPERSEDED)
+        .map((s) => ({ source: s.source, url: s.url, role: s.role })),
     };
   }
 }

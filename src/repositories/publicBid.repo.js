@@ -1,5 +1,6 @@
 import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
+import { awardOfferSql, competitiveOnlySql } from './tender.repo.js';
 
 const TABLE = 'public_tender_bids';
 
@@ -108,6 +109,20 @@ export default class PublicBidRepository {
   }
 
   /**
+   * One source's bids on one tender, each with its bidder's ՀՎՀՀ — what a PPCM
+   * row is joined to by lot and exact net offer, so the bidder gains the ՀՎՀՀ
+   * PPCM states (ticket 11). Every bid, rejected ones included: PPCM lists
+   * them too, and its own rejected flag is not read.
+   */
+  static async netOffersForTender(tenderId, source, trx = db) {
+    return trx(`${TABLE} as b`)
+      .join('parties as p', 'p.id', 'b.supplier_id')
+      .where({ 'b.tender_id': tenderId, 'b.source': source })
+      .orderBy([{ column: 'b.lot_number' }, { column: 'b.supplier_id' }])
+      .select('b.lot_number', 'b.final_offer_net', 'b.supplier_id', 'p.tax_id');
+  }
+
+  /**
    * The award for each lot of one tender, with the lot's category and the
    * winning supplier named.
    *
@@ -119,27 +134,32 @@ export default class PublicBidRepository {
    * missing.
    */
   /**
-   * Where one supplier appears in one tender's ledger.
+   * Where one organization's claimed parties appear in one tender's ledger.
    *
    * The join that answers "did WE win this" — `bids` stores a tenant's own
-   * price, this stores who actually won, and `organizations.supplier_party_id`
-   * is the bridge between them.
+   * price, this stores who actually won, and `supplier_identities` is the
+   * bridge between them. Several parties because one company is several until
+   * a ՀՎՀՀ joins them (ticket 32), and a lot one of them won is won even on
+   * the row of another: `is_winner` asks whether the award is held by ANY of
+   * them, not by the row's own bidder.
    *
-   * Returns every lot the party bid on, because a multi-lot procurement can be
+   * Returns every lot those parties bid on, because a multi-lot procurement can be
    * won and lost at the same time and the caller has to decide which lot it
    * meant. `is_winner` comes from `awards`, not from `rank = 1`: the source
    * ranks REJECTED submissions too, and awarding on rank alone once recorded
    * 21% of awards to companies the buyer had thrown out.
    */
-  static async supplierEntriesForTender(tenderId, supplierPartyId, trx = db) {
-    if (!supplierPartyId) return [];
+  static async supplierEntriesForTender(tenderId, partyIds, trx = db) {
+    if (!partyIds?.length) return [];
     return trx(`${TABLE} as b`)
+      .join('tenders as t', 't.id', 'b.tender_id')
       .leftJoin('awards as a', function joinAward() {
         this.on('a.tender_id', '=', 'b.tender_id')
           .andOn('a.lot_number', '=', 'b.lot_number')
           .andOn('a.source', '=', 'b.source');
       })
-      .where({ 'b.tender_id': tenderId, 'b.supplier_id': supplierPartyId })
+      .where('b.tender_id', tenderId)
+      .whereIn('b.supplier_id', partyIds)
       .select(
         'b.lot_number',
         'b.rank',
@@ -151,9 +171,25 @@ export default class PublicBidRepository {
         'a.supplier_id as award_supplier_id',
         'a.amount as award_amount',
         'a.net_amount as award_net_amount',
-        trx.raw('coalesce(a.supplier_id = b.supplier_id, false) as is_winner')
+        trx.raw('coalesce(a.supplier_id = any(?::text[]), false) as is_winner', [partyIds]),
+        /**
+         * The lot's failure is on record, so no award is coming: the tender
+         * was cancelled, a failure notice named the lot
+         * (`tender_sources.failed_lots`), or its source rejected every bid on
+         * it — e-auction's own accept/reject column, which is the authority
+         * there; PPCM's bids are never stored rejected, so it cannot fire on
+         * them. Without it, a lot with no award is a result still to come.
+         */
+        trx.raw(
+          `(t.status = 'cancelled'
+            or exists (select 1 from tender_sources s
+                        where s.tender_id = b.tender_id and b.lot_number = any(s.failed_lots))
+            or not exists (select 1 from public_tender_bids o
+                            where o.tender_id = b.tender_id and o.lot_number = b.lot_number
+                              and o.source = b.source and o.status = 'accepted')) as lot_failed`
+        )
       )
-      .orderBy('b.lot_number');
+      .orderBy(['b.lot_number', 'b.supplier_id']);
   }
 
   static async awardsForTender(tenderId, trx = db) {
@@ -171,6 +207,9 @@ export default class PublicBidRepository {
         'p.region as supplier_region',
         'a.amount',
         'a.net_amount',
+        // The winning offer with VAT, what a discount compares; NULL where the
+        // contract (`amount`) is not that offer (tender.repo.js#awardOfferSql).
+        trx.raw(`${awardOfferSql('a')} as offer_price`),
         'a.estimated_value',
         'a.currency',
         'a.awarded_at',
@@ -239,9 +278,12 @@ export default class PublicBidRepository {
    * @param {boolean} opts.exact       true = this code only; false = its family
    * @param {string|null} opts.buyerId restrict to one buying agency
    * @param {number} opts.sinceMonths  recency window
+   * @param {boolean} opts.includeSingleSource  count single-source lots too
+   *   (explicit only): one supplier by design is not a market that drew one
+   *   bidder, and would read as a sole-bidder rate (ticket 31)
    */
   static async expectedCompetition(
-    { cpvCode = null, exact = true, buyerId = null, sinceMonths = 24 } = {},
+    { cpvCode = null, exact = true, buyerId = null, sinceMonths = 24, includeSingleSource = false } = {},
     trx = db
   ) {
     // Family match walks up the CPV hierarchy by stripping trailing zeros, the
@@ -266,6 +308,7 @@ export default class PublicBidRepository {
           .groupBy('b.tender_id', 'b.lot_number');
 
         if (buyerId) qb.andWhere('t.buyer_id', buyerId);
+        if (!includeSingleSource) qb.andWhereRaw(competitiveOnlySql('t'));
         if (cpvCode && exact) qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) = ?', [cpvCode]);
         if (cpvCode && !exact) {
           qb.andWhereRaw('coalesce(l.cpv_code, t.cpv_code) like ?', [`${prefix}%`]);

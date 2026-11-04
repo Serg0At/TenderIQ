@@ -1,15 +1,19 @@
 import { DelayedError, UnrecoverableError } from 'bullmq';
 import { getSourceConfig } from '../configs/sources.config.js';
 import { getStorage, tenderDocKey, tenderDocTextKey } from '../libs/storage/index.js';
-import { fetchDocument, RateLimitedError } from '../libs/adapters/source/armeps/client.js';
-import { parseInvitation } from '../libs/adapters/source/armeps/invitation.parser.js';
+import { fetchDocument } from '../libs/adapters/source/eauction/client.js';
+import { RateLimitedError } from '../utils/rateLimiter.js';
+import { parseInvitation } from '../libs/adapters/source/eauction/invitation.parser.js';
 import { bufferSource } from '../libs/adapters/archive/zip.js';
 import TenderDocumentService from '../services/tenderDocument.service.js';
+import AddendumService from '../services/addendum.service.js';
+import ChecklistExtractionService from '../services/checklistExtraction.service.js';
 import sourcePayloads from '../repositories/sourcePayload.repo.js';
-import tenders from '../repositories/tender.repo.js';
 import { sha256 } from '../utils/hash.js';
+import { JOB } from '../queues/names.js';
 import { MAX_DOCUMENT_BYTES } from '../utils/http.js';
 import { logger } from '../utils/logger.js';
+import { endsJob } from '../utils/attempts.js';
 
 /**
  * Invitation archive -> CPV code, buyer tax ID, per-lot item descriptions.
@@ -30,8 +34,52 @@ import { logger } from '../utils/logger.js';
 
 const DOC_REF = (sourceId) => `invitation:${sourceId}`;
 
+/**
+ * The document stage's job for a normalized e-auction tender, or null.
+ *
+ * Only when the tender changed, and keyed on the invitation URL, NOT on the
+ * detail payload hash. A tender walks Հրապարակված → Նախաաճուրդային → Աճուրդ →
+ * Շնորհում → Ավարտված, so it is queued about five times. The id dedupes only
+ * while a job with it still exists, so most of those reach the handler, which
+ * ends them before any request once the tid's archive is stored (ticket 35).
+ * Queued anyway rather than asked here, because knowing would cost a query on
+ * every normalize, and each later event is the retry of a download that never
+ * landed.
+ */
+export const eauctionDocumentsJob = (observation, { sourceId, result, priority }) => {
+  const { source } = observation;
+  const { invitationUrl } = observation.tender;
+  if (!result.event || !invitationUrl) return null;
+  return {
+    name: JOB.TENDER_DOCUMENTS,
+    data: { source, sourceId, invitationUrl },
+    opts: { jobId: `${source}-docs-${sourceId}-${sha256(invitationUrl).slice(0, 12)}`, priority },
+  };
+};
+
+/**
+ * A job carrying a replacement's join (`data.amendment`, ticket 29) owes the
+ * tender one amendment alert, and owes it whatever becomes of the archive: a
+ * download that is disabled, already stored, refused or out of attempts still
+ * raises it, only without the file list. A throttle is not an end — the job
+ * comes back — so it raises nothing.
+ */
 export const handleTenderDocuments = async (job, token) => {
-  const { source, sourceId, invitationUrl } = job.data;
+  const { amendment = null } = job.data;
+  const owed = () => AddendumService.raiseJoin(amendment, { priority: job.opts?.priority });
+  let result;
+  try {
+    result = await storeInvitation(job, token);
+  } catch (error) {
+    if (amendment && endsJob(job, error)) await owed();
+    throw error;
+  }
+  if (amendment && !result.amendmentRaised) await owed();
+  return result;
+};
+
+const storeInvitation = async (job, token) => {
+  const { source, sourceId, invitationUrl, amendment = null } = job.data;
   const log = logger.child({ job: job.name, source, sourceId });
 
   if (!source || !sourceId || !invitationUrl) {
@@ -65,6 +113,19 @@ export const handleTenderDocuments = async (job, token) => {
     );
   }
 
+  // Stored once, never again (ticket 35). The site writes an invitation once,
+  // at publication, and an amendment is a new tid (tickets 27 and 29), so a
+  // tid that has an archive has its only one. Everything a stored archive
+  // feeds — the manifest, lots, CPV codes, the buyer's ՀՎՀՀ, the open tender's
+  // re-match (ticket 25) — was done before its row was recorded, below; a
+  // second download ended at the content-hash check and did none of it again
+  // either. What this saves is the request, out of the budget discovery uses.
+  // ARMEPS re-issues its sets (ticket 18) and has its own job.
+  const ref = DOC_REF(sourceId);
+  if (await sourcePayloads.existsByRef(source, ref)) {
+    return { skipped: 'already_stored' };
+  }
+
   let result;
   try {
     result = await fetchDocument(invitationUrl);
@@ -84,9 +145,10 @@ export const handleTenderDocuments = async (job, token) => {
     );
   }
 
-  // Content-hash dedupe, identical to the detail stage: a re-issued invitation
-  // is a new object, an unchanged one costs a request and nothing more.
-  const ref = DOC_REF(sourceId);
+  // Content-hash dedupe, identical to the detail stage, for two jobs of one tid
+  // that both passed the check above — one shared job id rules that out within
+  // a queue, so it is `ingest.fetch` against `ingest.backfill`. It narrows that
+  // window; the unique constraint behind `record()` is what decides it.
   const hash = sha256(bytes);
   if (await sourcePayloads.existsWithHash(source, ref, hash)) {
     return { unchanged: true };
@@ -106,11 +168,15 @@ export const handleTenderDocuments = async (job, token) => {
   }
 
   // The extracted text is the input the AI checklist stage will read, so it is
-  // stored beside the archive rather than re-derived on every use.
+  // stored beside the archive rather than re-derived on every use. Its hash
+  // goes on the document row, so a checklist can tell whether its items came
+  // from this text without reading it (ticket 24).
+  let textHash = null;
   if (parsed.text) {
     await storage.put(tenderDocTextKey({ source, sourceId, hash }), parsed.text, {
       contentType: 'text/plain; charset=utf-8',
     });
+    textHash = ChecklistExtractionService.documentHash(parsed.text);
   }
 
   // The archive's file list, for the tender page. Taken here, from bytes
@@ -125,15 +191,25 @@ export const handleTenderDocuments = async (job, token) => {
     log.warn(`invitation archive could not be listed: ${error.message}`);
   }
 
-  const facts = await tenders.applyInvitationFacts({
-    source,
-    sourceId: `${source}:${sourceId}`,
-    url: invitationUrl,
-    storageKey: archiveKey,
-    taxId: parsed.taxId,
-    cpvCode: parsed.dominantCpv,
-    lots: parsed.lots,
-    manifest,
+  // The invitation lives at one URL for the tender's whole life. If its files
+  // ever differ from the set stored last, that is an addendum — but e-auction
+  // amends by publishing a new tid, not a new file here (ticket 29).
+  const facts = await AddendumService.recordDocuments({
+    facts: {
+      source,
+      externalId: sourceId,
+      sourceId: `${source}:${sourceId}`,
+      url: invitationUrl,
+      storageKey: archiveKey,
+      taxId: parsed.taxId,
+      cpvCode: parsed.dominantCpv,
+      cpvCodes: parsed.cpvCodes,
+      lots: parsed.lots,
+      manifest,
+      textHash,
+    },
+    priority: job.opts?.priority,
+    amendment,
   });
 
   // Rows parsed but not one usable lot number means the first column of the
@@ -175,4 +251,4 @@ export const handleTenderDocuments = async (job, token) => {
   };
 };
 
-export default { handleTenderDocuments };
+export default { handleTenderDocuments, eauctionDocumentsJob };

@@ -1,6 +1,6 @@
 # Scraper Workflow
 
-> How raw public-procurement data becomes normalized, deduped OCDS entities in TenderIQ.
+> How raw public-procurement data becomes normalized, deduped OCDS entities in Tendra.
 > Companion document: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Purpose
@@ -8,7 +8,7 @@
 Define the end-to-end ingestion pipeline: what triggers a scrape, what each stage does, where
 data lands, how failures are contained, and which knobs control behaviour.
 
-Ingestion is the moat. Everything else in TenderIQ (discovery, alerts, price intelligence, bid
+Ingestion is the moat. Everything else in Tendra (discovery, alerts, price intelligence, bid
 workflow) is a read model over what this pipeline produces. A missed tender is the single
 failure mode customers churn over, so the workflow is designed around **idempotency,
 raw-payload retention, and freshness alerting** rather than raw throughput.
@@ -22,14 +22,21 @@ self-contained adapter — when a site changes layout, exactly one parser file c
 
 | Key | Kind | Cadence | Produces |
 |---|---|---|---|
-| `armeps` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
-| `ppcm` | **parked** — AngularJS SPA, not a file export | — | would add `contracts` only |
-| `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `armeps` upstream; downstream unchanged |
+| `eauction` | HTML scrape of eauction board | `*/5 * * * *` sweep, `17 * * * *` result re-check | `tenders`, `parties` (buyer **and** supplier), `awards`, `public_tender_bids` |
+| `gnumner` | HTML scrape of the announcement, amendment, contract-concluded and failed-procedure listings, and the files they upload; its e-auction listing is indexed only (ticket 34) | `*/5 * * * *` sweep, `23 * * * *` e-auction listing, `41 * * * *` paper close-out | `armeps.detail` / `paper.invitation` / `paper.amendment` / `paper.contract` / `paper.failed` jobs and a `gnumner` link on each tender; paper `tenders` (`submission_channel = 'paper'`), buyer and supplier `parties`, `tender_lots`, `tender_documents`, paper `awards` and `public_tender_bids` |
+| `armeps` | armeps.am CfT pages, by `resourceId` only — **no listing** | `29 */3 * * *` refresh of every open ARMEPS tender | `tenders` (`submission_channel = 'armeps'`), buyer `parties`, `tender_lots`, `tender_documents` |
+| `ppcm` | PPCM's organized-procedures report (JSON behind armeps.am/ppcm), by procedure code and by announcement day — **no listing**, results only | `13 */2 * * *` refresh of ARMEPS tenders past their deadline, not cancelled, with a lot that has neither an award nor a recorded failure; `29 1 * * *` missed-tender sweep | ARMEPS `awards` and `public_tender_bids` (`source = 'ppcm'`), supplier `parties` with their ՀՎՀՀ, a `ppcm` results link, `awarded`; `unmatched_results` for procedures Tendra has no tender for, and `armeps.detail` jobs that repair them |
+| `ocds` *(2027)* | OCDS JSON feed | TBD | replaces `eauction` upstream; downstream unchanged |
 
 Per-source knobs: `enabled`, `baseUrl`, `listingCron`, `refreshCron`, `rateLimit`, `concurrency`,
-`maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`.
+`maxListingPages`, `refreshWindowDays`, `maxRefreshBatch`, `downloadDocuments`; per listing in
+`listingPaths`, an optional `cron` (the listing is swept only on its own schedule,
+`sweep-{source}-{slug}`, and the source's sweep leaves it out) and `priority` (a `PRIORITY` key
+for its page 1, default `LIVE`; every later page goes at `CHAIN`); for `ppcm`,
+`rateLimitSource` (whose budget it spends), `pollIntervalHours`, the report's ids and columns,
+`missedSweep` (the sweep's cron, window and forms) and `bidReport` (`repairPollHours`).
 
-There is deliberately no `lookbackHours` on `armeps`: the eauction listing table has no publish-date
+There is deliberately no `lookbackHours` on `eauction`: the eauction listing table has no publish-date
 column, so depth is driven by the tid high-water mark instead (stage 3).
 Cross-source defaults live under `config.SCRAPER` in
 [src/configs/variables.config.js](src/configs/variables.config.js).
@@ -80,7 +87,7 @@ scheduler re-registers rather than duplicates.
 A sweep job carries:
 
 ```js
-{ source: 'armeps', mode: 'incremental', since: <now - lookbackHours>, cursor: null }
+{ source: 'eauction', mode: 'incremental', since: <now - lookbackHours>, cursor: null }
 ```
 
 `mode: 'backfill'` overrides `lookbackHours` with an explicit date range and is enqueued at low
@@ -99,7 +106,7 @@ HTML page rather than a 404 status. Politeness rests entirely on the rate limit 
 identity in `SCRAPER.USER_AGENT`. A future source that does publish crawl rules needs this decision
 revisited.
 
-Identity is always the declared bot UA (`TenderIQBot/1.0 (+https://tenderiq.am/bot; …)`). The
+Identity is always the declared bot UA (`TendraBot/1.0 (+https://Tendra.am/bot; …)`). The
 scraper does not rotate user agents, spoof browsers, or bypass access controls — it reads
 public pages at a polite rate and identifies itself.
 
@@ -121,12 +128,57 @@ Pagination is *chained*: each page's handler decides whether to enqueue the next
    Gazprom Armenia open-offer requests, ministry quotation requests). Only the first kind has a
    stable id; v1 skips the second and *counts* it, so coverage loss is visible rather than
    silent. The parser returns `blocksSeen` and `skipped` alongside `rows` for exactly this.
-5. **Continue to page N+1 only while the page still holds notices newer than `since`.**
-   The board is a 9-year archive reaching back to 2017, so `lookbackHours` — not
-   `maxListingPages` — must be the depth control. A routine sweep touches 1–2 pages; a
-   post-outage sweep goes as deep as the window requires, with no config change. Loading
-   history is a deliberate backfill with its own date range.
-6. Enqueue one `normalize.tender` job per row whose fingerprint changed.
+5. **Continue to page N+1 only while the page's lowest watermark value is still above the
+   board's high-water mark, and a next page exists.** One shared chain
+   ([src/workers/listingChain.js](../src/workers/listingChain.js)) applies this to every board;
+   each source supplies only its page reader, its mark (e-auction: tid; gnumner: publish
+   datetime) and its notice → job mapping.
+   - The mark is read once by `source.sweep` and carried down the chain with the highest mark
+     page 1 saw. Whichever page ends the chain commits that high mark — never earlier, so a chain
+     that dies mid-way re-walks the gap.
+   - `maxListingPages` bounds a **cold start only** (no watermark yet). With a watermark the chain
+     walks until it reaches it — after an outage that is the gap to re-read — bounded only by
+     `SCRAPER_MAX_LISTING_PAGES`, and logs a warning naming how far it got if it stops short.
+   - **One chain per listing at a time** (ticket 38). The sweep claims a marker beside the
+     watermark (`{watermark key}:chain`, the chain's id) before it queues page 1; every page
+     re-arms it, and the page that ends the chain — or throws for the last time — deletes it. A
+     sweep that finds it skips that listing, logs it and writes nothing, freshness included. The
+     marker's TTL (60 min, the longest a queued page was measured to wait, plus margin) is all
+     that a chain which vanished without ending costs: the sweep after it re-walks the gap.
+     Backfills never take it.
+   - "A next page exists" comes from the pager (e-auction's `→` arrow, gnumner's `a.e` link), never
+     from the reported page total.
+   - **The board moves while a chain walks it, and the chain reads every notice anyway** (ticket
+     39). Pages after the first are queued at `PRIORITY.CHAIN`, ahead of every detail, document and
+     refresh job, so a chain runs in seconds rather than the 15–30 minutes a page waited at `LIVE`.
+     Rows published meanwhile push the board down and a page repeats the previous page's tail:
+     those entries are skipped as already read (newer than the oldest mark read, or at it and
+     named in the job's `lowKeys` — ties straddle a page break). A row leaving the board (an
+     amended e-auction) pulls it up and moves a row onto a page already read: so every page after
+     the first re-reads the previous page **after** reading its own, which covers one insertion or
+     removal at any moment of the chain. The cost is one request per page after the first; a chain
+     that stops on page 1 pays nothing. Not covered: a removal and then an insertion within the
+     two requests of one page job, or a page's worth of rows moving at once.
+   - A page holding nothing the chain has not read throws before it stores, enqueues or marks
+     anything healthy: the pager did not advance (a base URL that already contains the listing
+     path does this — the site answers with page 1 for every N).
+
+   A routine sweep touches 1–2 pages. Loading history is a deliberate backfill with its own page
+   range.
+
+   A listing nothing waits on can run on its own clock: gnumner's **e-auction listing** (ticket
+   34) has a `cron` of its own (hourly) and its page 1 at `PRIORITY.RESULTS`, behind live
+   discovery on the same rate budget. Its notices are written to `listing_notices` under ids of their own
+   (`listing:eauction:eauction:{tmid}`, so a row never counts for whichever listing saw it first) and
+   nothing on it is ingested — eauction.armeps.am stays the only source of an e-auction tender.
+   It exists for `sources:verify`'s count of gnumner's e-auction notices against the e-auction
+   tenders held, the one check on the e-auction sweep that does not come from that site: a
+   notice is held by its title's code, or, a title naming none (about 7 in 10), by an e-auction
+   tender published in the same second — and only while that second holds at least as many
+   e-auction tenders as notices, so the match fails toward "not held".
+6. Enqueue one job per notice whose fingerprint changed — `tender.detail` for e-auction,
+   `armeps.detail` / `paper.invitation` for gnumner — **before** recording the fingerprint. The
+   listing writes no domain rows; the detail page is the single writer.
 
 **Browser fallback.** If the parser yields zero rows on a page that returned HTTP 200 and the
 markup contains a known JS-app marker, the job re-runs through Playwright with
@@ -147,6 +199,252 @@ job fails loudly rather than silently returning nothing.
 
 Raw payloads are **kept forever**. When a parser improves, normalization is replayed from
 storage — no re-crawl of the source.
+
+### 4b. ARMEPS detail — `armeps.detail` and `armeps.documents`
+
+armeps.am has no listing, so a CfT page is fetched only by `resourceId`: from a gnumner notice
+(the job carries the notice as `discovery`), or from the refresh. Code:
+`libs/adapters/source/armeps/` (client, pure `cft.parser.js`, `observation.js`, pure
+`documents.js`) and `workers/armeps.js`.
+
+1. A page that is not a CfT — the site answers an unknown or non-public id with a 200 carrying
+   its "you must log in" home page — is **not stored**; the job fails and the failed set is the
+   record.
+2. **The stored page is canonical, not byte-for-byte.** Every response carries a fresh
+   `jsessionid` in its links, a clock, a server-side pager key, and (across days) a calendar and
+   a "Last update" date. `canonicalPage` removes exactly those, and that is what is hashed *and*
+   stored, so the key's hash is still the sha256 of the bytes behind it and an unchanged tender
+   writes nothing. Ref `detail:{resourceId}`, so replay and reindex treat it like any detail page.
+3. The normalizer resolves the observation (role `detail`, creates the tender), then resolves the
+   gnumner notice it carried (role `discovery`, a pointer to the `resourceId`) onto that tender:
+   one tender, two links, never two records. A notice for a page already stored is linked by the
+   detail handler itself, since no normalize runs.
+4. The page states no status. armeps.am owns "open" and the deadline for the ARMEPS channel, so
+   status comes from the deadline (`active` → `closed`); awarded and cancelled are PPCM's and
+   gnumner's (ADR 0004). Because a deadline passing changes no page, a refresh that finds the
+   page unchanged re-runs normalize over the stored copy (hourly id), and a `closed` that only
+   the deadline said reopens when the deadline moves ahead. Documents are queued only for a
+   newly stored page or a changed tender, never for a replay or a refresh re-normalize.
+5. **Documents are one ZIP** (`downloadCftResourceItems.do`), queued on every normalize under a
+   job id carrying the document table's fingerprint — an addendum adds a row without moving any
+   field the amendment check reads. The archive is generated per download, with fresh entry
+   timestamps and a generated "List of Contract Documents" PDF, so its identity is the hash of
+   the buyer's files (path, CRC, size), which names the stored object and dedupes
+   `source_payloads` (ref `documents:{resourceId}`). File languages come from the page's own
+   HY/EN/RU column. Lots come from the `c4t_*.xml` Tender Structure XML; a tender bought as one
+   contract (`num-of-lots="0"`) gets no lots rather than an invented lot 1.
+6. **A new document set is an addendum** (ticket 18), for ARMEPS and e-auction alike: see
+   *Addendum* under failure scenarios.
+
+**Refresh.** `tender.refresh` is per source. For armeps it re-reads every unsettled ARMEPS tender
+whose deadline is ahead or within `refreshWindowDays` behind, stalest link first, as
+`armeps.detail` jobs with ids `armeps-refresh-{resourceId}-{hour}` — never `armeps-detail-…`,
+so a refresh cannot swallow a discovery. The scheduler registers no sweep for a source without a
+listing and removes any `sweep-{source}` left over (e-auction's key was `armeps` until
+2026-10-19).
+
+### 4c. Paper invitation — `paper.invitation` and `paper.documents`
+
+A paper tender has no page: the file a gnumner notice uploads (`/website/images/original/…`) is
+the whole of it. Code: `libs/adapters/source/gnumner/` (pure `invitation.parser.js`,
+`observation.js`, `invitation.files.js`), `services/paperNotice.service.js` and
+`workers/paper.js`.
+
+1. The URL is rebuilt from the configured base and the notice's path. A response that is HTML
+   (gnumner's 200 for a path it does not have) is **not stored**; the job fails.
+2. **Every file is stored**, readable or not, under ref `detail:{sha256 of the bytes}`, with the
+   sniffed format as the key's extension. The content hash, not the path, is the identity: a
+   buyer sometimes uploads the same file twice under new paths (five byte-identical pairs among
+   56 uploads on 2026-10-19/20). The second is one more `discovery` link on the same tender,
+   reached by re-normalizing the stored file with that notice, a minute later so the two creates
+   do not race.
+3. The normalizer reads the file with the notices that listed it: the job's, and on a replay
+   those already linked as pointing at that file (`tender_sources.points_to`), each re-read from
+   the listing page its `source_payloads` row points at. Not every notice of the tender: once a
+   re-post has joined (below) it holds another file's notices too.
+   The earliest notice is the publication: the title, the procedure type (the listing's
+   `procedureType` in `sources.config.js`) and the publish datetime the deadline is counted from.
+4. **The format check** (`invitation.parser.js`): only a `.docx`, or a `.docx` one level inside
+   a `.zip`, in which the Armenian announcement template is found, is readable. Everything else
+   — `.doc`, `.rar`, `.7z`, `.pdf`, a zip whose Armenian invitation is itself inside a `.rar`, a
+   pasted scan — becomes an `unsupported_format` unmatched result and no tender. Counted on
+   purpose, and meant to become supported once the counts show which formats matter.
+5. From the template: procedure code (`Ընթացակարգի ծածկագիրը`, else the title's), buyer
+   (`Պատվիրատուն` …), subject (`կնքել … պայմանագիր`, stored as `description`), submission
+   address and deadline (the sentence after «փաստաթղթային ձևով»), and lots from the first
+   `Չափաբաժին…` table. A tender with no readable code is created and recorded `no_code`.
+6. **The deadline is the Yerevan calendar date of publication + N days, at the stated time**,
+   or a date the invitation states. Checked on live notices before it was written (ticket 06):
+   the buyer's own listing close is publication + N in 34 of 36; publication + N − 1 and working
+   days fit none. A day on a holiday is shown as it is. The listing's close is the fallback when
+   the sentence is missing, and a disagreement between the two is logged.
+7. `paper.documents` (no request) stores the invitation as the tender's document — the `.zip` as
+   it is, a `.docx` wrapped in a one-entry ZIP — lists it and writes the lots, through the same
+   `recordDocuments` as the other sources.
+
+**A re-posted invitation joins its run (ticket 07).** A buyer who changes a paper invitation
+uploads a new file under the same code, and nothing in it names the old one. So a new file whose
+normalized code, channel and buyer match a stored paper tender joins it when the two overlap: the
+earlier was still open (deadline ahead, not cancelled or awarded) when the later was published.
+Dates, not the stored status, decide, so a replay a month later decides the same.
+
+- The **newer** file is the tender from then on: an amendment (`version + 1`, `amended` while
+  open, deadline counted from its own notice), every other current file of the tender superseded
+  under the row lock, and one alert, raised by `paper.documents` once the new set can be compared
+  with the old (ticket 18). A lock that finds a newer file already committed throws, and the
+  retry resolves this one as the older.
+- An **older** file read after the newer one — a sweep reads newest first, so a cold start sees
+  the re-post first — is a `superseded` link, its notice still linked, and writes nothing else.
+- Two runs it could join: created as a new run, with an `ambiguous` unmatched result naming both.
+  Once the run has closed or been cancelled, the same code is a re-announcement and a new run.
+
+### 4d. Amendment listing — `paper.amendment`
+
+«Հրավերում կատարված փոփոխություններ» (`listingPaths` entry `kind: 'amendment'`) is swept by the
+same chain and watermark as the invitation listings. Its date paragraph carries no `tender_time`
+class, and an upload there has no close («…-ից անժամկետ»). ARMEPS links re-read the armeps.am
+page at once; e-auction links are counted; uploads become `paper.amendment` jobs:
+
+1. Fetched and stored under ref `amendment:{sha256}`, whatever its format.
+2. **Its content is not read, except for a code the title lacks** (decided 2026-10-21): the
+   code is the title's; only when the title has none, and the file is a readable `.docx` (or one
+   in a `.zip`), is the code read from its body («Ընթացակարգի ծածկագիրը …»); otherwise
+   `no_code`. Nothing else is taken from the file. Nearly every one is the Article 29 notice,
+   whose reasons are prose; a moved date in it would be a guess — a moved deadline reaches the
+   tender through the re-posted invitation. So a `.doc`, `.rar` or `.pdf` attaches like a
+   `.docx`, and a notice is never `unsupported_format`; that reason is for files whose content
+   Tendra must read (invitations, contract notices).
+3. Resolution matches that code across channels: rule 1; no code known → `no_code`; a code held only on e-auction or ARMEPS → skipped (its own source carries the
+   amendment); one paper tender announced before the notice and still open when it was
+   published → linked (`amendment:{sha256}`, role `discovery`); none → `no_candidate`; two →
+   `ambiguous`.
+4. `AddendumService.recordNotice` stores the file as the one entry of a ZIP (an archive of files
+   as it is) as a `tender_documents` row of kind `amendment` — beside the invitation, never
+   compared with it — raises `version`, sets `amended` while open and alerts
+   `documentChanges.added: [<file>]`, once: the version moves only when the document row is new.
+
+### 4e. Contract-concluded listing — `paper.contract`
+
+«Կնքված պայմանագրի մասին հայտարարություն» (`listingPaths` entry `kind: 'contract'`, ticket 08)
+is the paper channel's results: the only public record of a paper tender's bidders and prices.
+Same chain and watermark as the other listings; about 50 notices a day, 6 a page, and every
+procedure type files there — ARMEPS, e-auction and single-source procedures too — as uploads. An
+ARMEPS link on it is counted and not read (PPCM owns those results). Uploads become
+`paper.contract` jobs:
+
+1. Fetched and stored under ref `contract:{digest of the upload path}` — the path, like an
+   invitation's notice, not the content, so that a notice left unmatched can be re-read later
+   from the listing page it was stored with.
+2. **Its content is read** (`contract.parser.js`, template 323-Ա): per lot every bidder's
+   name, net price, VAT and total; rejected bids and their reasons; the lot budget; the contract
+   (winner, number, date signed, price); and the date the invitation was published. Only the
+   Armenian half is read — many notices repeat themselves in Russian, or glue the translation
+   onto every cell. A blank VAT cell is a non-VAT payer, whose net is its total. A row that
+   cannot be placed in one lot is not read (a lot range «1-47» priced as one; 36 rows numbered
+   like the 36 lots that do not belong to them). **The format check** carries the same owner
+   comment as the invitation's: only a `.docx` (or one in a `.zip`) holding the price table is
+   readable; `.doc`, `.pdf`, `.rar` are `unsupported_format`, counted, and replay from storage
+   once a converter exists.
+3. The code is the title's, else the body's («… ծածկագրով գնման ընթացակարգի արդյունքում …»).
+   Resolution is rule 3 with one addition: the notice names no channel, so the code is looked up
+   in every channel, and one held only on e-auction or ARMEPS is skipped — asked before the
+   format, so another channel's `.doc` is never counted as an unreadable paper result. Otherwise
+   it matches a paper tender on code and the **invitation's** publication day (the notice's
+   «Հրավեր ուղարկելու կամ հրապարակելու ամսաթիվը», compared with the tender's `published_at` —
+   for a run a re-post joined, with **any** of its files' publications, read back from their
+   notices' stored listing pages), with lots that fit; none is `no_candidate`, two `ambiguous`, no code `no_code`. A result
+   creates a tender only when its procedure was **never public** (step 6).
+   Every unmatched row records the procedure (`procedure_type`) and whether it was public
+   (`was_public`: true, false, or null for unknown).
+4. `TenderRepository.recordResults`, under the row lock: a `results` link, the lots' bids and
+   awards with `source = 'gnumner'` — net into the `*_net` columns, total into the gross ones,
+   no rank (a sealed bid list is not a ranking), the award the contract names at the winning
+   bid's prices — replacing **only the lots this notice covers**, so two notices for different
+   lots both stand. With an award written, the tender becomes `awarded` through `deriveStatus`
+   (gnumner owns paper's award), `version + 1`, `TenderAmended`; benchmarks recompute. The
+   evaluation table is not a rejection list: a row is a rejection only when a criterion fails.
+5. **A later-appearing tender picks it up.** When the normalizer creates a paper tender, or a
+   re-posted file joins one, every unresolved `contract:` row of its code (`no_candidate`, `ambiguous`) is queued again as a
+   `paper.contract` retry: no request, the notice rebuilt from its stored listing page.
+6. **A procedure never announced publicly becomes a result-only tender** (ticket 31). Most
+   contract notices are of quotations sent straight to invited suppliers, or of single-source
+   purchases: there was never an invitation to miss. `resolution.service.js#wasPublic` decides
+   from facts only:
+   - an invitation of the code was ever listed on `open` or `quotation` (never the e-auction
+     listing's rows, which are a coverage count) — `listing_notices`, by
+     the title's code or, for a title naming none, the code of the tender its link created —
+     → **public** (a `no_candidate` here is a tender Tendra missed: the operator alert's row);
+   - a single-source procedure (the code's method marker `ՄԱ`, or the notice's procedure row
+     citing article 23 — the two must not disagree) → **never public**;
+   - otherwise only inside the **covered window**: the invitation's day, and one day either
+     side, lies strictly above every invitation listing's **floor** and at or below its
+     **watermark**. A cold start sets the floor to the oldest notice it read; a chain that reaches
+     the watermark leaves it; a chain stopped by the page ceiling raises it to what it read (the
+     hole below is forgotten, not vouched for). Floors live beside the watermarks in Redis
+     (`sweep:published:gnumner:{slug}:floor`). Inside the window, with no notice of the code and
+     no code-less notice published in that span, → **never public**;
+   - anything else (outside the window, an e-auction code, no invitation date) → **unknown**:
+     `no_candidate` with `was_public` null, as before.
+
+   A never-public notice with a code, an invitation date, a buyer, a procedure type and an award
+   creates a tender of
+   its own: `submission_channel = 'paper'`, its procedure type, `awarded`, a `gnumner` link of
+   role `results`, `published_at` the invitation's day, and the bids and awards — no deadline,
+   CPV, lots or address, because the notice states none. Same lock on the code as a paper
+   invitation's create. It is **never biddable and never alerted**: no `match.tender` job is
+   queued, now or by a later notice (its status is terminal from the start). A later notice of
+   the same procedure joins it by rule 3, its lots not checked (they are only what notices have
+   named so far), and a paper invitation never joins it as a re-post. The cold start's depth is
+   only `maxListingPages` (five pages of `quotation` were about ten hours on 2026-10-19), so the
+   window starts at the first sweep and competitive notices start qualifying a few weeks later,
+   once contracts for invitations sent inside it are filed.
+
+### 4f. Failed-procedure listing — `paper.failed`
+
+«Չկայացած գնման ընթացակարգի մասին հայտարարություն» (`listingPaths` entry `kind: 'failed'`,
+ticket 09) is the ARMEPS and paper channels' cancellation source (ADR 0004). Same chain and
+watermark as the other listings; about ten notices a day, 6 a page, all uploads, e-auctions'
+among them. An ARMEPS link on it is counted and not read, as on the contract listing.
+Uploads become `paper.failed` jobs:
+
+1. Fetched and stored under ref `failed:{digest of the upload path}`, as a contract notice is.
+2. **Its content is read** (`failed.parser.js`, template 235-Ա Annex 13): the table's lot
+   numbers, which are **the lots that failed** — not the procedure's. The template's sentence
+   ("the procedure is declared failed") is left in place by buyers whose notice lists some lots,
+   so it is not read. A row with a blank lot cell is counted and not read. Only the Armenian
+   table is read: a `.zip` whose Armenian notice is a `.doc` beside a Russian `.docx` is
+   unreadable. `.doc`, `.pdf`, `.rar` and scans are `unsupported_format`, with the owner
+   comment, counted under the `failed` kind of the format-count query.
+3. The code is the title's, else the body's. Resolution (`resolveFailure`): rule 1; the code
+   looked up in every channel, and an e-auction's skipped before the format is asked (held only
+   on e-auction, or an `ԷԱՃ` code with no ARMEPS or paper tender); then the ARMEPS or paper
+   tender of the code **announced before the notice and past its deadline when the notice was
+   published, and of those the latest** — the notice states no invitation date, a failure is
+   declared after bids open, and a code is re-announced only after its run failed. Two at one
+   moment → `ambiguous`; none → `no_candidate` (a run still open, or with no deadline, is never
+   it); lots the notice names that a run lacks rule it out. `was_public` asks only whether the code was ever listed.
+   It never creates.
+4. `FailureService.recordNotice`, under the row lock: a `results` link with `observed_status
+   = 'cancelled'` and `failed_lots` the lots it named. **The tender becomes `cancelled`**
+   (`failureStatus`, through `deriveStatus`) **only when its notices, together, name every lot
+   it has** (`tender_lots` ∪ the ledger's lots); then `version + 1`, `TenderAmended`, and the
+   matcher skips it as `status_cancelled`. A partly failed tender keeps its status. An awarded
+   one stays awarded. A tender with no known lots is not cancelled yet.
+5. **The lots may come second.** Every document set that writes lots
+   (`AddendumService.recordDocuments`, for every source) asks `FailureService.rederive` in the
+   same transaction: the tender's stored `failed_lots` against its lots, now. A notice read
+   before an ARMEPS archive or a paper tender's `paper.documents` cancels the tender when they
+   land — nothing is re-read or re-downloaded. Both sides decide under the row lock from stored
+   rows, so whichever comes second decides, and two at once cannot each miss the other.
+6. **A later-appearing tender picks it up**, through the contract notice's path: when the
+   normalizer creates a paper or ARMEPS tender (or a re-post joins one), `queueResultRetries`
+   queues every unresolved `contract:` and `failed:` row of its code as a `reason: 'retry'` job,
+   rebuilt from its stored listing page, no request. Resolution decides again.
+
+**Refresh.** A paper file never changes, and its status comes from its deadline, so the gnumner
+refresh (`refresh-gnumner`, hourly) re-normalizes from storage — no request — the paper tenders
+whose deadline has passed while they still say `active` or `amended`, so they close. It reads the
+tender's current file only: a superseded one would write its old deadline back.
 
 ### 5. Document download — `document.download`
 
@@ -185,7 +483,7 @@ Three findings that would change how anyone approaches these:
   repeated across tenders. The useful content is the small file.
 - **The formats vary wildly and include `.rar`.** Across 43 sampled entries: 18 `.xls`,
   11 `.rar`, 11 `.docx`, 3 `.xlsx` (see the header comment in
-  `libs/adapters/source/armeps/invitation.parser.js`). `adm-zip` cannot read `.rar`, so roughly
+  `libs/adapters/source/eauction/invitation.parser.js`). `adm-zip` cannot read `.rar`, so roughly
   a quarter of them need a decoder that is not currently a dependency. That, not the parsing,
   is the real cost of this work.
 
@@ -194,9 +492,13 @@ Three findings that would change how anyone approaches these:
 stage reads only the `.txt` derived from `hraver.docx`. Wiring the technical specifications in
 would sharpen it, and the natural destination is a **lot-level** field, not `tenders.description`.
 
-#### `tenders.description` has no source and is never written
+#### `tenders.description` has no source for e-auction, and is not written for it
 
-`normalize.tender` sets it to `null` unconditionally, and `applyInvitationFacts` — the only
+A paper invitation (ticket 06) is the one source that states a subject apart from its title —
+its notice headline is a long sentence, and the contract-subject line is not a copy of it — so
+paper tenders carry it. What follows is about e-auction, and still holds.
+
+For e-auction `normalize.tender` sets it to `null` unconditionally, and `applyInvitationFacts` — the only
 other writer — has no parameter for it. The comment beside it in `workers/normalizer.js` pairs
 it with `cpvCode` and promises both arrive at "a later stage"; that promise is kept for CPV and
 never kept for `description`.
@@ -218,41 +520,165 @@ The only stage that writes domain entities. Runs in its own queue so a parser bu
 and replayed without re-fetching.
 
 1. Read the raw payload from storage by `storageKey`.
-2. Map source fields → OCDS-aligned entities: `parties` (buyer), `tenders`, and for the importer
-   `awards` / `contracts`.
-3. Validate the mapped record with `joi`. Invalid → DLQ with the payload key attached; never a
-   partial write.
-4. **Upsert `tenders` by `source_id`** (unique index) inside a transaction.
-5. **Amendment detection** — compare a canonical field hash (deadline, value, CPV, status, spec
+2. The source's adapter turns it into an **observation** — one source's view of one tender
+   (`libs/adapters/source/<source>/observation.js`). Everything source-specific about
+   normalization lives there; `workers/normalizer.js` is an orchestrator and knows no page.
+3. **Resolve** it (`services/resolution.service.js`, pure, ADR 0004): an existing
+   `(source, external_id)` link wins, then a pointer to another source's id, then — for result
+   sources only — normalized procedure code + submission channel + dates and lots. The answer is
+   link to a tender, create one, or unmatched. Unmatched goes to `unmatched_results` with its
+   reason (`no_candidate`, `ambiguous`, `no_code`, `unsupported_format`) and is counted, never
+   guessed onto a tender. A detail source is never matched on its code, so a re-announcement
+   under the same code is a second tender.
+4. **Derive status** in the same module: only the source that owns a state for the submission
+   channel decides it, and status only moves forward.
+5. Validate the mapped record with `joi`. Invalid → DLQ with the payload key attached; never a
+   partial write. Write the tender, its link and its ledger inside one transaction.
+6. **Amendment detection** — compare a canonical field hash (deadline, value, CPV, status, spec
    refs) against the stored latest version:
    - unchanged → touch `fetched_at` only, emit nothing;
    - changed → set previous row `is_latest = false`, insert a new row with `version + 1` and
      `is_latest = true`, emit `TenderAmended` with the field diff.
-6. Emit `TenderIngested` (new) or `TenderAmended` (changed) / `AwardIngested`.
+7. Emit `TenderIngested` (new) or `TenderAmended` (changed) / `AwardIngested`.
 
 Downstream consumers — matcher, notifier, intelligence recompute — are separate workers
 subscribed to those events, and are out of scope for this document.
 
-### 7. PPCM import — parked, not built
+### 7. ARMEPS results — `ppcm.results`
 
-The steps previously described here (download the daily CSV/Excel export, hash the file, stream
-rows) described a source that does not exist in that form. Verified 2026-08-16:
+PPCM ("Procurement Plan & Contracts Management", `armeps.am/ppcm`) is an AngularJS app whose
+public JSON endpoints carry the ARMEPS channel's results (ticket 10, ADR 0004: PPCM owns
+`awarded` for ARMEPS). One report is read: «Կազմակերպված գնման ընթացակարգեր» (organized
+procedures), one row per bidder per lot — bidder, ՀՎՀՀ, net offer, the winner, contract price
+and dates. Its id, the code parameter's id and the 36 column names are in
+`sources.config.js#ppcm.organizedProcedures`; a row is a bare array in that order.
 
-- PPCM is **"Procurement Plan & Contracts Management"**, served at `armeps.am/ppcm` — **not**
-  `gnumner.minfin.am`, which is what `sources.config.js` claimed.
-- It is an **AngularJS SPA** (`#/report/<uuid>`). `/ppcm/public/contracts` and
-  `/ppcm/public/bid-report` both return the app shell as `text/html`, so ingesting it requires
-  reverse-engineering its XHR API or driving a headless browser.
-- The reference spec never enumerates a single PPCM column; it records the question as open
-  (`research/Open Questions.md` Q4, *"Exactly what award data is public and when?"*).
+1. **Refresh** (`refresh-ppcm`, every 2 hours): ARMEPS tenders past their deadline, deadline
+   within 90 days, not cancelled, and with a lot — its lots or its ledger's — that has neither an
+   award nor a failure a notice recorded (`tenders.findAwaitingResults`), oldest first. `awarded`
+   arrives with the first lot's contract, and a buyer files the others weeks later, so an
+   awarded tender is asked about until every lot is settled.
+   PPCM gives nothing whose age says when a tender was last asked about, so each code is claimed
+   in Redis (`ppcm:asked:{code}`, `pollIntervalHours` = 24; a failed ask waits out the claim) as the batch (60) is picked: the batch
+   rotates through the whole window. Jobs carry `PRIORITY.RESULTS`, behind live discovery.
+   Whatever room the batch has left goes to **e-auctions** for their bidders' ՀՎՀՀ (ticket 11):
+   not cancelled, holding an award, with an eauction-ledger bidder whose party has none
+   (`tenders.findAwaitingTaxIds`), same window, each code at most every `taxIdPollHours` (72).
+2. **Ask** (`libs/adapters/source/ppcm/client.js`): the reports page is loaded once for a
+   `JSESSIONID`, then `POST /ppcm/public/reports/get-report` with
+   `{ reportId, values: [{ paramId, value: "<plain string>" }], page: { index, size }, order: null }`
+   — an array `value` is a 400, any other `page` silently caps at 15 rows. Pages of 100 until a
+   short one, at most 20. A refused answer (non-zero `status`, or not JSON) renews the session and
+   asks once more — an HTTP error status counts as refused too; a fresh session refused again,
+   dropped so the retry opens another, is a failure for the job's retry, never another
+   page load. The code filter is exact and case-sensitive. Rate limit first: PPCM spends
+   armeps.am's budget (`rateLimitSource: 'armeps'`), one host, one allowance.
+3. **Store** the pages as received, inside the query (`results:{code}`, `.json`, the code
+   exactly as asked — another spelling is another query; the object key carries a digest of the
+   code, since a URL-encoded Armenian code overflows `storage_key`). An identical answer writes nothing,
+   unless the tender asked about still holds no PPCM link: then it is resolved again, so a
+   procedure that did not fit before (dates since corrected) attaches without waiting for PPCM's
+   rows to change. The payload row is written after the procedures are, so a run that fails
+   part-way is read again next time.
+4. **Observe** (`ppcm/observation.js`, pure): every row must be of the code asked for, or the
+   filter stopped applying and the job fails. Rows are grouped into procedures by announcement
+   (a code is re-announced; the id is `{code}@{announced}`), each a `results` observation in the
+   ARMEPS channel — an e-auction form is the `eauction` channel, its times moved back 4 hours
+   (PPCM writes an e-auction's Yerevan wall clock as UTC; its ARMEPS times are true). Every
+   observation also lists its raw bidders — lot, ՀՎՀՀ, net — before any contract is placed. Per lot: each
+   bidder's `participant_total_price` is its **net** offer (no gross is invented); the award is
+   the named winner at `contract_price` (**gross**, what the buyer pays) with its own offer as
+   net. `bid_rejected` is not read — it is `true` on winning rows. A lot the report joins to
+   several contracts keeps the one priced at its winner's own offer, net or + 20% VAT; with none,
+   the lot is not read at all — bids without an award would reconcile as the winner's defeat.
+5. **Resolve** (rule 3): our code, the ARMEPS channel, announcement = `published_at` day, opening
+   = `deadline_at` day, lots that fit, and no disagreement on single source. A miss or two
+   candidates is an unmatched result; PPCM never creates a tender.
+6. **Write** through `ResultsService.record` — the path a gnumner contract notice takes:
+   `tenders.recordResults` (link, bids, awards, status under the row lock), `awarded` through
+   `deriveStatus` when a winner is named, the match job, a benchmark recompute. Bidders become
+   `ppcm:bo:{ՀՎՀՀ}` parties carrying `tax_id`. A tender PPCM has not reported is untouched, and
+   `bids.reconcile` leaves a bid on it `not_found` and retryable. The award's `amount` is the
+   contract (spend); a discount from the budget compares the winning offer instead
+   (`tender.repo.js#awardOfferSql`), and leaves out and counts a lot whose contract is not it.
 
-**Award history no longer depends on it.** Stage 4 parses the `Գնառաջարկներ` ledger off every
-finished tender's detail page — per lot: every bidder, rank, budget price, initial and final offer,
-VAT, accepted/rejected — which is finer-grained than a tender-level export. That writes `awards`,
-`public_tender_bids` and supplier `parties` directly.
+7. **An e-auction gains only its bidders' ՀՎՀՀ** (`services/bidderTaxId.service.js`, ADR 0004):
+   resolved by rule 3 in the `eauction` channel, then each PPCM bidder is joined to the eauction
+   ledger by lot and **exact** net offer (in cents), and its party's blank `tax_id` is filled —
+   only when that (lot, net) is one bidder on PPCM's side and one bid on ours, and the party is
+   not matched to two ՀՎՀՀ. Everything else is counted (`no_tax_id`, `ambiguous`, `no_bid`,
+   `several_bids`, `conflicting`, `holds_other`) and attaches nothing. No link, bid, award,
+   status, rank or rejection is written. A ՀՎՀՀ two parties then hold is logged and returned in
+   `shared`, never merged. An e-auction PPCM has no tender for, or two, is an unmatched result,
+   and one that attaches resolves its row.
 
-PPCM's one unique contribution is **signed contract values**, which can diverge from the auction's
-final offer after renegotiation. That feeds post-award (phase 6); `contracts` stays empty until then.
+`reason: 'replay'` re-records the latest stored answer with no request.
+
+A PPCM row that is not an auction does not say whether it was an ARMEPS or a paper procedure —
+PPCM lists both, and says which only in bid-report's `paperBased` — so its code is looked up in
+every channel (`channelUnstated`, as for a gnumner contract notice): a code Tendra holds only as a
+paper or e-auction tender is that tender's (`other_channel`), not an ARMEPS tender it missed.
+
+### 8. Missed tenders — `ppcm.sweep`
+
+The refresh asks PPCM about tenders Tendra holds; it can never see one Tendra lacks. The sweep
+(ticket 12, ADR 0004: *a `no_candidate` result means Tendra missed a tender*) reads the same
+report by date instead.
+
+1. **Fan out** (`missed-ppcm`, daily at 01:29 UTC, `handlePpcmSweep`): one `ppcm.sweep.day` per
+   swept form and announcement day, today and the 90 days before. The forms are the competitive
+   ones — open, urgent open, quotation, two-stage, e-auction (`missedSweep.forms`, the exact
+   `get-form-list` names; the `p_form` filter is exact). Single source is not swept: a procedure
+   with no invitation is never one Tendra missed, and it is half of everything filed. Ids carry
+   the run's day, so a second run that day queues nothing.
+2. **Ask** (`fetchDayRows`): the form and `announcement_date` = `"D,D"` (a DATE parameter is
+   `"from,to"`, both ends inclusive — the reports page's own encoding), pages of 1,000. **By
+   announcement day** because every row of a procedure shares its announcement, so a day's
+   answer holds whole procedures, and a buyer's late filing lands in a day already being read.
+   On 2026-10-27, 90 days of the four competitive forms held about 8,000 rows and the busiest day
+   291: one request per form and day, about 450 a day, nearly all of them answering what they
+   answered yesterday.
+3. **Store** the pages inside the query (`sweep:{day}:{form}`); an identical answer stores
+   nothing, and only the procedures not linked yet are resolved again — a tender may have
+   appeared, the covered window grown, bid-report come back — so `last_seen_at` moves and nothing
+   linked is rewritten. The payload row is written last, as for an ask by code.
+4. **Observe** (`observeDay`): the rows grouped by code, each code read exactly as an answer by
+   code is (`observeProcedures`). A row with no code is counted, not read.
+5. **Resolve and write** through the ask by code's own path (`recordProcedure`), with ticket
+   31's publicity facts — gnumner's invitation listings and their covered window — so every
+   unmatched procedure carries `was_public`. A tender's results are written as by the refresh, an
+   e-auction's ՀՎՀՀ attached, and a procedure with no candidate is a `no_candidate` row keyed by
+   its procedure id: re-seen, the same row. **A miss is `no_candidate` and `was_public` true**;
+   `false` (never public) and `null` (unknown: outside the window, or an e-auction gnumner never
+   listed) are not, and the operator alert that reads this (a later, production-only feature) is
+   not built.
+6. **Repair** (`repairGap`, then `ppcm.repair`): a `no_candidate` procedure that is not an auction
+   and not single source asks PPCM's **bid-report** for its code's tenders. bid-report answers
+   only the shape its own page sends (every filter field present and an `order`) and
+   `{"status":500}` to anything else. The entry of the exact code whose bids opened on the
+   procedure's opening day (`cftTendersOpeningDate` = the report's `t_opening_date`, 86 of 86;
+   `datePublished` is often a later re-publication, and matched the announcement on only 29)
+   gives its `armepsId`, the armeps.am `resourceId`: when it is not `paperBased`, the page is queued
+   (`armeps.detail`, at most once per `repairPollHours` per page, claimed as
+   `ppcm:page:{resourceId}`) and the procedure is public — a CfT page on
+   armeps.am is an announcement whether or not gnumner listed it (`armepsPage`). The answer is
+   stored (`bid-report:{code}`) and read back as a fact by every later read of the procedure —
+   the sweep's and an ask by code's — so `was_public` says the same on every read. A code is asked at most once per `repairPollHours` (24), claimed
+   in Redis (`ppcm:cft:{code}`) before the request. bid-report refusing completes the job: the
+   procedure stays `no_candidate` and counted, and the sweep never fails for it. Throttled is
+   delayed. e-auctions are never repaired: nothing maps their code to a tid.
+7. **Attach** (`queuePpcmRetries`): when the normalizer creates an ARMEPS or e-auction tender, every
+   PPCM procedure left unmatched under its code is asked about again by code (`ppcm.results`
+   with the tender's id, once per spelling PPCM used) — the tender a repair fetched among them.
+   The tender holds no PPCM link, so even an unchanged answer is resolved again; exactly one
+   fitting candidate links, writes the results and sets `resolved_tender_id` and `resolved_at`.
+
+Party resolution (`party.repo.js#upsert`) is **by ՀՎՀՀ first, per-source id second**: a bidder
+stating a ՀՎՀՀ exactly one party holds reuses that party — an ARMEPS bidder an e-auction ledger
+already identified is the same row, keeping its own source's name. Two holders fall back to the
+per-source id and are reported, not chosen between. Only a holder of the same role (or `both`)
+counts: a supplier is never folded into a buyer row by ՀՎՀՀ — that is ticket 19's decision, and
+a branch can carry its parent's ՀՎՀՀ.
 
 ---
 
@@ -262,12 +688,14 @@ Every stage is safe to re-run, which is what makes at-least-once queue delivery 
 
 | Stage | Idempotency key | Effect of a repeat |
 |---|---|---|
-| `source.sweep` | cron job ID | overlapping sweep is skipped by a Redis lock |
+| `source.sweep` | cron job ID; chain marker per listing | overlapping sweep is skipped by a Redis lock; a listing whose chain is still queued or running starts no second one |
 | `listing.page` | `(source, page, etag)` | `304` → no work |
 | `tender.detail` | `(source, ref, hash)` | known hash → no storage write, no enqueue |
 | `document.download` | content hash | same object key → overwrite-in-place, one DB row |
-| `normalize.tender` | `tenders.source_id` + field hash | upsert; no new version unless fields changed |
+| `normalize.tender` | `tender_sources (source, external_id)` + field hash | resolves to the same tender; no new version unless fields changed |
 | `import.ppcm` | file hash, then award reference | row-level upsert |
+| `ppcm.sweep.day` | `(source, ref, hash)`, then `unmatched_results (source, external_ref)` | known hash → nothing stored, unlinked procedures resolved again; an unmatched one is one row, `last_seen_at` moved |
+| `ppcm.repair` | Redis claims per code (`ppcm:cft:`) and per page (`ppcm:page:`) | one bid-report ask per code and one page fetch per page a day, at most |
 
 Storage keys are deterministic by design: a retried job writes the *same* key, so a partial
 failure leaves a correct object rather than a duplicate.
@@ -325,7 +753,7 @@ why zero-row sweeps alert rather than log.
 
 | Setting | Where | Default | Controls |
 |---|---|---|---|
-| `SCRAPER_USER_AGENT` | env | `TenderIQBot/1.0 …` | bot identity sent on every request |
+| `SCRAPER_USER_AGENT` | env | `TendraBot/1.0 …` | bot identity sent on every request |
 | `SCRAPER_HTTP_TIMEOUT_MS` | env | `30000` | axios timeout |
 | `SCRAPER_BROWSER_TIMEOUT_MS` | env | `60000` | Playwright fallback timeout |
 | `SCRAPER_MAX_ATTEMPTS` | env | `5` | retries before DLQ |
@@ -352,6 +780,49 @@ while years of awards load.
 the row (`is_latest` flips) and emits `TenderAmended` → notifier re-alerts everyone tracking it
 with the diff.
 
+**Addendum.** The buyer adds, replaces or removes a document and no field moves. The document
+stage stores the new set beside the old one, and `services/addendum.service.js` compares the two
+file lists (`tender_documents.manifest`: name, CRC, size — never the archive's bytes, which
+armeps.am regenerates per download). Any difference raises `version` in the transaction that
+writes the new document row, turns `active` into `amended` while the tender is open (an alertable
+status, deadline ahead), and queues
+`match.tender` with `event: TenderAmended`, `changedFields: []` and `documentChanges` (`added`,
+`replaced`, `removed` file names) under the normalizer's `match-{tenderId}-v{version}` id. Past
+the deadline, closed, awarded or cancelled, the version is recorded and nothing is queued. A tender's
+first set is its documents, not an addendum, and a set whose previous list is unknown raises
+nothing (logged). `deriveStatus` keeps `amended` over a page that says "open", or the next
+re-normalize would revert it and alert a status change. The previous set is the tender's, not
+the archive ref's, so a joined e-auction replacement (below) is compared with its predecessor's.
+
+**e-auction amendments** (ticket 29, ADR 0004). An invitation file is written once at
+publication (266 of 266 open tenders, ticket 27), so the addendum rule above never fires for a
+tid. An amendment is a **new tid** whose page lists every run it replaced under
+«Աճուրդի սկզբնական հրավեր(ներ)»; the old page turns Փոփոխված and leaves the listing. The
+replacement's observation carries `supersedes`, resolution joins it to the tender those runs
+belong to (rule 2), and `saveNormalized` writes the named runs as `superseded` links in the same
+transaction, with no request even for a run never fetched. The join raises `version`, takes its
+status from the replacement alone (`amended` while open), and its alert waits for the
+replacement's archive: the document job carries `amendment`, compares the new set with the
+predecessor's, and raises one `TenderAmended` with `changedFields` and `documentChanges`. A
+download that is disabled, already stored, refused or out of attempts raises it without the file
+list. Superseded links are sticky and never refreshed, and a page or archive read through one
+writes the link and nothing else; a Փոփոխված page no tender links is skipped. The refresh, the
+document stage and `documents:backfill` read the **current link**, never `tenders.source_id`.
+
+**What arrives with the archive.** An e-auction page states no CPV; the codes are in the
+invitation archive, whose download waits on the politeness budget while the ingest match runs at
+once, so that match never sees them. So every document set stored for an **open** tender (alertable
+status, deadline ahead) queues a second `match.tender` with `event: TenderIngested`, under
+`match-{tenderId}-docs-{sha256(storageKey)[:12]}` — one per stored archive, so a retry reuses the
+id and a re-issue gets its own. It is a `tender-match`, since the organizations it adds have never
+heard of the tender, and silent for one already alerted (notification dedupe). Whether codes were
+there before is deliberately not asked: there is no state for a crash between commit and enqueue
+to fall between. Both sources do it; ARMEPS lot names arrive the same way. The ingest match is not
+held back for it: that would delay every e-auction alert by the archive queue's wait, and a
+download that failed for good would mean no alert at all. Open is the only guard against history,
+and it is enough — what `documents:backfill` and the archive seed store is long closed — while an
+open tender whose live download `documents:backfill` recovers is exactly the one to alert on.
+
 **Redis outage.** Producers fail fast, queues are durable, workers resume on recovery. The API
 keeps serving last-known data from PostgreSQL.
 
@@ -369,7 +840,7 @@ downstream consumer stay as they are.
 | Storage port + S3/local drivers, deterministic key helpers | done |
 | Schema + composite unique `(source, ref, hash)` on `source_payloads` | done |
 | `utils/{logger,hash,http,rateLimiter}.js` | done, verified live |
-| ARMEPS adapter: `listing.parser.js` + `client.js` | done, verified live |
+| e-auction adapter: `listing.parser.js` + `client.js` | done, verified live |
 | `repositories/sourcePayload.repo.js` | done |
 | `queues/{names,index,scheduler}.js` | done |
 | `workers/{scraper,index}.js` — sweep + chained listing pagination | **done, proven idempotent** |

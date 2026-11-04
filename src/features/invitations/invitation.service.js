@@ -13,7 +13,7 @@ import { logger } from '../../utils/logger.js';
  *
  * One frozen object, returned from one place. Any difference in wording, status
  * or shape between "that person has an account" and "they do not" would make
- * this endpoint a register of who uses TenderIQ, readable by any customer on an
+ * this endpoint a register of who uses Tendra, readable by any customer on an
  * entitled plan — and two branches that each build their own response are how
  * that difference eventually appears. Nothing about the invitee is looked up
  * when sending, so there is nothing to vary it by anyway.

@@ -16,7 +16,7 @@ import * as cheerio from 'cheerio';
  * The table carries no publish date — only a deadline. `publishedAt` is a
  * detail-page-only field, so nothing here may depend on it. The sweep's
  * pagination depth is driven by the tid high-water mark instead (see
- * workers/scraper.js); tids are assigned in ascending order and the board is
+ * workers/listingChain.js); tids are assigned in ascending order and the board is
  * sorted newest-first, which makes them a reliable "have I seen this far
  * back already?" signal.
  */
@@ -100,6 +100,7 @@ export const parseListing = (html) => {
   });
 
   // Highest numbered link in the pager; page 1 carries no numeric suffix.
+  // Only a backfill's page range reads this. A live chain asks hasNextPage.
   const pageNumbers = $('a')
     .map((_, a) => {
       const m = $(a).attr('href')?.match(/\/start\/(\d+)/);
@@ -116,6 +117,12 @@ export const parseListing = (html) => {
     blocksSeen: detailLinks.length,
     skipped: { noTid: skippedNoTid, duplicate: skippedDuplicate },
     pagination: { lastPage: pageNumbers.length ? Math.max(...pageNumbers) : 1 },
+    // The pager's "→" arrow (a.pg_b, beside a "←" of the same class). Its
+    // presence is the answer, not its href, which on page 1 is malformed
+    // (…/tender/hy/public/start/2). Checked live 2026-10-19: the arrow
+    // overstates the tail — pages 1016 and 1017 of 1017 are empty and still
+    // carry it — which only a chain walking the whole archive would reach.
+    hasNextPage: $('a.pg_b').filter((_, a) => $(a).text().trim() === '→').length > 0,
   };
 };
 

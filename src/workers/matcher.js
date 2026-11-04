@@ -3,51 +3,79 @@ import { JOB } from '../queues/names.js';
 import savedSearches from '../repositories/savedSearch.repo.js';
 import notifications from '../repositories/notification.repo.js';
 import tenders from '../repositories/tender.repo.js';
+import trackedTenders from '../repositories/trackedTender.repo.js';
 import { getChannel, channelsForOrg } from '../services/delivery.service.js';
-import { matchesByOrganization, channelsForMatches } from '../services/matcher.service.js';
+import {
+  matchesByOrganization,
+  alertRecipients,
+  channelsForMatches,
+  matchCandidate,
+  ALERTABLE_STATUSES,
+  AMENDMENT_PURSUITS,
+  isOpen,
+} from '../services/matcher.service.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * Fan a newly ingested or amended tender out to the saved searches it matches.
+ * Fan a newly ingested or amended tender out to the saved searches it matches,
+ * and an amendment also to the organizations tracking the tender.
  *
  * Runs as a job rather than inline in the normalizer for two reasons: matching
  * against every profile is unbounded work that must not slow ingestion, and a
  * bug here must not roll back a tender that was correctly parsed.
  *
  * Amendments re-notify with a change summary — a moved deadline is exactly the
- * kind of thing a supplier needs to hear twice — but only for the fields that
- * actually moved, which is why `changedFields` rides along on the event.
+ * kind of thing a supplier needs to hear twice — but only for what actually
+ * moved, which is why `changedFields` (and, for an addendum, `documentChanges`
+ * from services/addendum.service.js) ride along on the event.
  */
 export const handleTenderMatched = async (job) => {
-  const { tenderId, event = 'TenderIngested', changedFields = [] } = job.data;
+  const { tenderId, event = 'TenderIngested', changedFields = [], documentChanges = null } = job.data;
   if (!tenderId) throw new UnrecoverableError('match.tender requires tenderId');
 
   const tender = await tenders.findDetail(tenderId);
   if (!tender) return { skipped: 'unknown_tender' };
 
-  // Only live tenders are worth interrupting someone for: an award or a
-  // cancellation is history, and alerting on it trains people to ignore alerts.
-  if (!['active', 'planned', 'amended'].includes(tender.status)) {
+  if (!ALERTABLE_STATUSES.includes(tender.status)) {
     return { skipped: `status_${tender.status}` };
   }
 
-  const candidate = {
-    cpvCode: tender.cpv_code,
-    lotCpvCodes: (tender.lots ?? []).map((l) => l.cpv_code).filter(Boolean),
-    lotNames: (tender.lots ?? []).map((l) => l.name).filter(Boolean),
-    title: tender.title,
-    referenceCode: tender.reference_code,
-    estimatedValue: tender.estimated_value,
-    buyerRegion: tender.buyer_region,
-  };
-
-  const profiles = await savedSearches.listAll();
   const type = event === 'TenderAmended' ? 'amendment' : 'tender-match';
+  /**
+   * Ticket 18's open rule, whichever producer queued the amendment: a deadline
+   * that has passed is one nobody can act on, so a correction made after it
+   * interrupts nobody. The addendum producer already checks this; the
+   * normalizer's field amendments did not, and trackers must not hear about a
+   * results page as an "amendment" — results reach them through reconciliation.
+   */
+  if (type === 'amendment' && !isOpen({ status: tender.status, deadlineAt: tender.deadline_at }, new Date())) {
+    return { skipped: 'deadline_passed' };
+  }
+
+  const candidate = matchCandidate(tender);
+  const profiles = await savedSearches.listAll();
+  /**
+   * One amendment is one version, so the version is its dedupe key
+   * (`notifications_dedupe_uq` on org, type, tender, subject). With a NULL
+   * subject, as before ticket 18, the first amendment of a tender was the
+   * only one any organization was ever told about: the second deadline move
+   * or addendum hit the first one's row. A retried job carries the same
+   * version and stays deduped. A job queued before `version` rode along
+   * falls back to the tender's current one.
+   */
+  const subjectId = type === 'amendment' ? `v${job.data.version ?? tender.version}` : null;
   const groups = matchesByOrganization(candidate, profiles);
+  // Same type and subject for both, so an organization that matches AND tracks
+  // is one recipient, and a retry is deduped for either reason.
+  const recipients = alertRecipients(
+    groups,
+    type === 'amendment' ? await trackedTenders.trackersOf(tenderId, AMENDMENT_PURSUITS) : []
+  );
 
   // `matched` counts searches and `notified` counts organizations alerted, so a
   // log line cannot read five matching searches in one org as five alerts sent.
   let matched = 0;
+  let trackers = 0;
   let notified = 0;
   let delivered = 0;
   // Throttled by a provider, not lost — counted separately so a run that
@@ -55,14 +83,17 @@ export const handleTenderMatched = async (job) => {
   // channel.
   let deferred = 0;
 
-  for (const { organizationId, matches } of groups) {
+  for (const { organizationId, matches, pipelineStatus } of recipients) {
     matched += matches.length;
+    if (pipelineStatus) trackers += 1;
+    // Absent for a tracker no search matched: it is told because it tracks.
     const [best] = matches;
 
     const { created, notification } = await notifications.createIfNew({
       organizationId,
       type,
       tenderId,
+      subjectId,
       payload: {
         title: tender.title,
         referenceCode: tender.reference_code,
@@ -77,19 +108,22 @@ export const handleTenderMatched = async (job) => {
         sourceUrl: tender.invitation_url ?? null,
         // The best match's, kept at the top level so a reader written before
         // `matchedSearches` existed still finds them.
-        score: best.score,
-        reasons: best.reasons,
+        score: best?.score ?? null,
+        reasons: best?.reasons ?? [],
         // Every search that matched, as named when the alert was raised: the
         // payload is the notification's record, so a later rename does not
         // rewrite what a past alert said.
         matchedSearches: matches.map(({ id, name, score, reasons }) => ({ id, name, score, reasons })),
+        // Why a tracker hears about it, rendered as the pipeline line both
+        // channels already show on a countdown.
+        ...(pipelineStatus ? { pipelineStatus } : {}),
         // The "what changed" summary the spec asks for on re-notification.
-        ...(type === 'amendment' ? { changedFields } : {}),
+        ...(type === 'amendment' ? { changedFields, ...(documentChanges ? { documentChanges } : {}) } : {}),
       },
     });
 
-    // Already told them: dedupe is per (org, tender, type), so a re-run of the
-    // matcher is silent rather than a second ping.
+    // Already told them: dedupe is per (org, type, tender, subject), so a
+    // re-run of the matcher is silent rather than a second ping.
     if (!created) continue;
     notified += 1;
 
@@ -102,7 +136,7 @@ export const handleTenderMatched = async (job) => {
      * Each channel sends once however many searches named it: a channel fans
      * out to every destination itself, so a second call would be a second copy.
      */
-    const { named, useOrgDefault } = channelsForMatches(matches);
+    const { named, useOrgDefault } = channelsForMatches(matches, { tracking: Boolean(pipelineStatus) });
     const channels = useOrgDefault
       ? [...new Set([...named, ...(await channelsForOrg(organizationId))])]
       : named;
@@ -118,15 +152,15 @@ export const handleTenderMatched = async (job) => {
     }
   }
 
-  if (matched) {
+  if (matched || trackers) {
     logger.info(
       `[matcher] ${tender.reference_code}: ${matched} match(es) across ${groups.length} org(s), ` +
-        `${notified} notified, ${delivered} delivered` +
+        `${trackers} tracking, ${notified} notified, ${delivered} delivered` +
         (deferred ? `, ${deferred} deferred` : '')
     );
   }
 
-  return { tenderId, event, profiles: profiles.length, matched, notified, delivered, deferred };
+  return { tenderId, event, profiles: profiles.length, matched, trackers, notified, delivered, deferred };
 };
 
 /**
@@ -158,6 +192,8 @@ export const processMatch = async (job) => {
     // function directly is how the other two would silently never fire.
     case JOB.VAULT_EXPIRY:
       return (await import('./vaultExpiry.js')).processVaultExpiry();
+    case JOB.SUBSCRIPTION_ENDING:
+      return (await import('./subscriptionEnding.js')).processSubscriptionEnding();
     case JOB.DELIVER_NOTIFICATION:
       return (await import('./notifier.js')).handleDeliverNotification(job);
     case JOB.MATCH_TENDER:

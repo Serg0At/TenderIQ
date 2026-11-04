@@ -9,7 +9,10 @@ import {
   isVaultType,
   isTeamType,
   teamAnnouncement,
+  isSubscriptionType,
+  subscriptionAnnouncement,
   matchedSearchesLine,
+  changeLine,
 } from './notification.present.js';
 
 /**
@@ -65,7 +68,7 @@ const button = (url, text) =>
  * link is the recipient pressing the spam button — which costs the sending
  * domain's reputation and takes every other customer's alerts down with it.
  */
-const WHY = 'You are receiving this because tender alerts are switched on for your TenderIQ account.';
+const WHY = 'You are receiving this because tender alerts are switched on for your Tendra account.';
 
 /**
  * The visible unsubscribe line, not just the header.
@@ -83,12 +86,12 @@ const WHY = 'You are receiving this because tender alerts are switched on for yo
 const footer = (unsubscribeUrl) =>
   unsubscribeUrl
     ? `${WHY}\n\nStop these emails: ${unsubscribeUrl}`
-    : `${WHY} Manage them in TenderIQ under Integrations.`;
+    : `${WHY} Manage them in Tendra under Integrations.`;
 
 const footerHtml = (unsubscribeUrl) => {
   const body = unsubscribeUrl
     ? `${escapeHtml(WHY)} <a href="${escapeHtml(unsubscribeUrl)}" style="color:#6b7280">Stop these emails</a>.`
-    : `${escapeHtml(WHY)} Manage them in TenderIQ under Integrations.`;
+    : `${escapeHtml(WHY)} Manage them in Tendra under Integrations.`;
   return `<p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280">${body}</p>`;
 };
 
@@ -155,6 +158,16 @@ const teamBody = (notification, payload) => {
   };
 };
 
+/** A subscription announcement: the same shape, pointing at the subscription. */
+const subscriptionBody = (notification, payload) => {
+  const sentence = subscriptionAnnouncement(notification.type, payload);
+  const url = appLink('/organization/subscription');
+  return {
+    text: url ? `${sentence}\n\n${url}` : sentence,
+    html: [paragraph(sentence), url ? button(url, 'Open subscription') : ''].filter(Boolean).join('\n'),
+  };
+};
+
 const tenderBody = (notification, payload, now) => {
   const facts = [];
   if (payload.buyerName) facts.push(['Buyer', payload.buyerName]);
@@ -168,8 +181,8 @@ const tenderBody = (notification, payload, now) => {
   // Computed by the reminder worker against the threshold it fired at, which is
   // more precise than re-deriving it from the deadline at send time.
   if (payload.hoursRemaining) facts.push(['Remaining', `${payload.hoursRemaining}h`]);
-  // The pipeline stage, on countdowns only. "still considering" three hours out
-  // is a different message from "preparing".
+  // The pipeline stage, on countdowns and on an amendment to a tracked tender.
+  // "still considering" three hours out is a different message from "preparing".
   if (payload.pipelineStatus) facts.push(['Your pipeline status', payload.pipelineStatus]);
 
   const lines = [];
@@ -189,8 +202,8 @@ const tenderBody = (notification, payload, now) => {
 
   // An amendment with no "what changed" is indistinguishable from a duplicate,
   // which is how people learn to ignore the whole stream.
-  if (notification.type === 'amendment' && payload.changedFields?.length) {
-    const changed = payload.changedFields.join(', ');
+  const changed = notification.type === 'amendment' ? changeLine(payload) : null;
+  if (changed) {
     lines.push('', `Changed: ${changed}`);
     html.push(
       `<p style="margin:16px 0 0;font-size:14px"><strong>Changed:</strong> ${escapeHtml(changed)}</p>`
@@ -240,7 +253,9 @@ export const formatNotification = (notification, { now = new Date(), unsubscribe
     ? vaultBody(notification, payload, now)
     : isTeamType(notification.type)
       ? teamBody(notification, payload)
-      : tenderBody(notification, payload, now);
+      : isSubscriptionType(notification.type)
+        ? subscriptionBody(notification, payload)
+        : tenderBody(notification, payload, now);
 
   return {
     subject: subjectFor(notification, payload),

@@ -14,6 +14,18 @@ function up(pg) {
       table.string('tax_id');
       table.string('role').notNullable(); // buyer | supplier | both
       table.string('region');
+      // Not unique: two parties holding one ՀՎՀՀ are reported, not refused (ticket 11).
+      table.index(['tax_id'], 'parties_tax_id_idx');
+    })
+
+    // party_aliases — The per-source id of a buyer merged into another by ՀՎՀՀ (ticket 19), so
+    // the next read of that source resolves to the survivor instead of re-creating the buyer the
+    // merge removed.
+    .createTable('party_aliases', table => {
+      table.string('source_id').primary();
+      table.string('party_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
+      table.timestamp('merged_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['party_id'], 'party_aliases_party_idx');
     })
 
     // tenders — One row per procurement notice — the OCDS-aligned core that every downstream
@@ -24,8 +36,18 @@ function up(pg) {
       table.text('title').notNullable();
       table.text('description');
       table.string('buyer_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
+      // The primary CPV code: the one the source leads with (armeps.am) or the most frequent
+      // across the lots (e-auction's invitation).
       table.string('cpv_code');
+      // Every CPV code the source states, the primary one included, whether or not it can be
+      // put on a lot. Never NULL — "none recorded" is the empty list. GIN index in indexes().
+      table.specificType('cpv_codes', 'text[]').notNullable().defaultTo('{}');
       table.string('procedure_type').notNullable();
+      // How a supplier submits: eauction | armeps | paper (CHECK in indexes()). No
+      // default — a source that forgets to say must fail its insert rather than file a
+      // paper tender as an e-auction. Independent of procedure_type: a quotation runs
+      // on ARMEPS or on paper. ADR 0004.
+      table.string('submission_channel').notNullable();
       table.string('status').notNullable();
       // The source's own lifecycle label, verbatim. eauction publishes ten
       // states (Նախաաճուրդային, Աճուրդ, Շնորհում, …) which collapse into the
@@ -36,6 +58,12 @@ function up(pg) {
       table.string('reference_code');
       table.index(['reference_code'], 'tenders_reference_code_idx');
       table.string('goods_works_services');   // Ապրանք | Աշխատանք | Ծառայություն
+      // How the winner is chosen (lowest_price, …), as armeps.am states it. NULL for
+      // e-auctions, whose pages state none.
+      table.string('evaluation_method');
+      // Where a paper bid is delivered, as the invitation states it. NULL for e-auction and
+      // ARMEPS tenders, which are bid online.
+      table.text('submission_address');
       table.timestamp('auction_at');
       table.string('invitation_url');
       table.string('currency').notNullable().defaultTo('AMD');
@@ -44,8 +72,75 @@ function up(pg) {
       table.timestamp('qna_deadline_at');
       table.integer('version').notNullable().defaultTo(1);
       table.boolean('is_latest').notNullable().defaultTo(true);
-      // Buyer profiles and buyer-scoped benchmarks both filter on this.
       table.index(['buyer_id'], 'tenders_buyer_idx');
+      table.index(['submission_channel'], 'tenders_submission_channel_idx');
+    })
+
+    // tender_sources — Every source a tender came from, one row per link (ADR 0004). A tender
+    // is one run assembled from several sites, and `tenders.source_id` names only the one that
+    // created it. UNIQUE (source, external_id) is the dedupe anchor: re-seeing a link is an
+    // update, and a concurrent insert that loses the race is success, as for source_payloads.
+    // Public data: no organization_id.
+    .createTable('tender_sources', table => {
+      table.string('id').primary();
+      table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
+      table.string('source').notNullable();
+      table.string('external_id').notNullable();    // eauction tid, armeps.am resourceId, gnumner URL, …
+      table.text('url');
+      table.string('role').notNullable();           // discovery | detail | results (CHECK in indexes())
+      table.string('observed_status');              // what this source last said, verbatim — or `superseded`, sticky (ticket 29)
+      table.string('points_to');                    // a discovery link: `{source}:{external id}` of the link it is a notice of (ticket 07)
+      // A gnumner failed-procedure notice's link: the lots it declared failed (ticket 09). NULL on
+      // every other link. The tender is cancelled only once its notices name every lot it has.
+      table.specificType('failed_lots', 'integer[]');
+      table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.timestamp('last_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.unique(['source', 'external_id'], { indexName: 'tender_sources_source_external_uq' });
+      table.index(['tender_id'], 'tender_sources_tender_idx');
+    })
+
+    // unmatched_results — A result row from a source that could not be attached to exactly one
+    // tender (ADR 0004): kept with its reason and counted, never guessed onto a tender. Unique on
+    // (source, external_ref), so a re-seen result updates its row rather than adding one. The
+    // reader is the operator alert. Public data: no organization_id.
+    .createTable('unmatched_results', table => {
+      table.string('id').primary();
+      table.string('source').notNullable();
+      table.string('external_ref').notNullable();
+      table.string('procedure_code');
+      table.string('reason').notNullable();         // no_candidate | ambiguous | no_code | unsupported_format
+      // The procedure, as far as the result says (`single_source`, `quotation`, …): the unreadable
+      // count is split on it (ticket 31).
+      table.string('procedure_type');
+      // A result's procedure was announced publicly: true (so a `no_candidate` is a tender Tendra
+      // missed — the operator alert's row), false (never public), NULL (not known). Ticket 31.
+      table.boolean('was_public');
+      table.specificType('candidate_tender_ids', 'text[]').notNullable().defaultTo('{}');
+      table.string('payload_hash').notNullable();   // the stored raw payload it was read from
+      table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.timestamp('last_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.string('resolved_tender_id').references('id').inTable('tenders').onDelete('SET NULL');
+      table.timestamp('resolved_at');
+      table.unique(['source', 'external_ref'], { indexName: 'unmatched_results_source_ref_uq' });
+    })
+
+    // listing_notices — Every notice gnumner's invitation listings have shown, with the code its
+    // title names and when it was published (ticket 31): what "no invitation of this code was ever
+    // seen" is asked of, since a notice whose job failed or whose file was unreadable leaves no
+    // tender behind. `external_id` is the notice's discovery-link id (`paper:{digest}`,
+    // `armeps:{resourceId}`), so a notice whose title has no code finds its tender's through
+    // `tender_sources`. Also gnumner's e-auction listing (ticket 34), a coverage count only, under
+    // ids of its own (`listing:eauction:eauction:{tmid}`). Written by the listing chain. Public
+    // data: no organization_id.
+    .createTable('listing_notices', table => {
+      table.string('id').primary();
+      table.string('source').notNullable();
+      table.string('external_id').notNullable();
+      table.string('listing').notNullable();        // the listing's slug: open | quotation | eauction
+      table.string('procedure_code');               // the title's, raw; NULL when it names none
+      table.timestamp('published_at').notNullable();
+      table.timestamp('first_seen_at').notNullable().defaultTo(pg.fn.now());
+      table.unique(['source', 'external_id'], { indexName: 'listing_notices_source_external_uq' });
     })
 
     // awards — The winner of each individual lot, with the price it won at alongside the
@@ -61,14 +156,9 @@ function up(pg) {
       table.string('currency').notNullable().defaultTo('AMD');
       table.timestamp('awarded_at');
       table.string('status').notNullable();
-      table.string('source').notNullable().defaultTo('armeps');
+      table.string('source').notNullable().defaultTo('eauction');
       table.unique(['tender_id', 'lot_number', 'source'], { indexName: 'awards_tender_lot_source_uq' });
-      // The parent side of the key `contracts` anchors on. Trivially satisfied — `id` is
-      // already the primary key — and it exists only so a composite FK can reference the
-      // pair, which is what stops a contract naming an award from a different tender.
       table.unique(['id', 'tender_id'], { indexName: 'awards_id_tender_uq' });
-      // Supplier profiles filter by party; without this every win-rate read is
-      // a sequential scan. Mirrored in add_intelligence_indexes.js.
       table.index(['supplier_id'], 'awards_supplier_idx');
     })
 
@@ -90,23 +180,16 @@ function up(pg) {
       table.decimal('final_offer_price', 18, 2);    // "Վերջին առաջարկ — Գին", with VAT
       table.decimal('final_offer_net', 18, 2);      // the same offer's value cell, without VAT — what ranks
       table.float('vat_pct');
-      // 'accepted' | 'rejected', mapped from "Մասնակցի կարգավիճակ" (blank on
-      // the source page = accepted). Left a string, like every other status
-      // column here, rather than a Postgres ENUM.
-      table.string('status').notNullable();
+      table.string('status').notNullable(); // 'accepted' | 'rejected', mapped from "Մասնակցի կարգավիճակ"
       table.string('application_url');
       table.string('currency').notNullable().defaultTo('AMD');
-      table.string('source').notNullable().defaultTo('armeps');
+      table.string('source').notNullable().defaultTo('eauction');
       table.timestamp('fetched_at').notNullable();
-      // A company cannot occupy two ranks in one lot. Also the idempotency key
-      // for the wholesale ledger replace on re-normalize.
       table.unique(['tender_id', 'lot_number', 'supplier_id', 'source'], {
         indexName: 'public_tender_bids_tender_lot_supplier_source_uq',
       });
       table.index(['tender_id'], 'public_tender_bids_tender_idx');
       table.index(['supplier_id'], 'public_tender_bids_supplier_idx');
-      // The competitor-price read walks one tender's ledger ordered by lot then
-      // rank; this serves the ordering, not just the filter.
       table.index(['tender_id', 'lot_number', 'rank'], 'public_tender_bids_tender_lot_rank_idx');
     })
 
@@ -128,7 +211,7 @@ function up(pg) {
       // scoped by source, so a second writer's row must not collide with the
       // first's. Both key columns are NOT NULL because a NULL never collides in
       // a Postgres unique index, which would silently reopen the duplicate.
-      table.string('source').notNullable().defaultTo('armeps');
+      table.string('source').notNullable().defaultTo('eauction');
       table.unique(['tender_id', 'lot_number', 'item_sequence', 'source'], {
         indexName: 'tender_lots_tender_lot_item_source_uq',
       });
@@ -139,10 +222,6 @@ function up(pg) {
     // post-award tracking is built (phase 6).
     .createTable('contracts', table => {
       table.string('id').primary();
-      // The anchor is the TENDER, not the award. Requiring an award asserted that every
-      // contract follows a separately published one, which is false for single-source and
-      // direct awards, and it inverts OCDS — a release is keyed by the process (`ocid`,
-      // the tender) and `awardID` is a pointer within it.
       table.string('tender_id').notNullable().references('id').inTable('tenders').onDelete('CASCADE');
       // Nullable, and carrying NO single-column FK of its own: it is half of the composite
       // key in indexes(), and an independent FK beside that key is what lets the two
@@ -165,6 +244,13 @@ function up(pg) {
       // The files inside the stored archive, listed once at ingest so a tender page never
       // reads the archive to show them. NULL means not listed yet, never "no files".
       table.jsonb('manifest');
+      // A tender holds one row per document set it was ever issued (an addendum is a new
+      // set), and the newest is the one it holds now.
+      table.timestamp('stored_at').notNullable().defaultTo(pg.fn.now());
+      // Hash of the extracted text stored beside the archive, the same hash a checklist
+      // records in checklists.document_hash — comparing the two says whether a checklist's
+      // AI items come from this document without reading the text. NULL: no text stored.
+      table.string('text_hash');
       // Lets the database arbitrate the concurrent-insert race instead of a
       // read-then-insert, which two jobs can both pass. Same principle as
       // source_payloads.
@@ -191,16 +277,16 @@ function up(pg) {
       table.string('id').primary();
       table.string('email').notNullable().unique();
       table.string('password_hash').notNullable();
-      // What a colleague is called on the roster. NOT NULL because the alternative is a member
-      // list of email addresses, which is what the roster exists to stop being.
       table.string('display_name').notNullable();
       table.string('locale').notNullable().defaultTo('hy');
-      // Verification is a durable fact, so it lives here; only the one-time token lives
-      // in Redis. Login refuses a NULL, so a fresh account is unusable until confirmed.
       table.timestamp('email_verified_at');
+      // A person running Tendra itself (CONTEXT.md, Operator), never a role in an organization.
+      // Set by hand, never through the API; read at session mint and refresh like the role and
+      // carried as the `op` claim, so clearing it lands within one access-token lifetime.
+      table.boolean('is_operator').notNullable().defaultTo(false);
     })
 
-    // organizations — A supplier company using TenderIQ, and the tenant boundary that every
+    // organizations — A supplier company using Tendra, and the tenant boundary that every
     // private table is scoped by.
     .createTable('organizations', table => {
       table.string('id').primary();
@@ -210,10 +296,24 @@ function up(pg) {
       // claimed" is the empty list, so readers have one shape to handle.
       table.specificType('type', 'text[]').notNullable().defaultTo('{}');
       table.string('created_by').notNullable().references('id').inTable('users').onDelete('RESTRICT');
-      // The party this tenant bids AS. `awards` and `public_tender_bids` identify a bidder by
-      // parties.id, so without this column there is no way to ask "did we win this" and bid
-      // outcomes cannot be resolved. Nullable: an org that has never bid has no party yet.
-      table.string('supplier_party_id').references('id').inTable('parties').onDelete('SET NULL');
+    })
+
+    // supplier_identities — The parties this tenant bids AS. `awards` and `public_tender_bids`
+    // identify a bidder by parties.id, so without a claim there is no way to ask "did we win
+    // this". A set (ticket 32): a paper bidder is keyed by its name and an e-auction bidder by
+    // its operator id, so one company is several parties until a ՀՎՀՀ joins them, and each is
+    // a separate human claim from a search — never matched on name. Replaced
+    // organizations.supplier_party_id.
+    .createTable('supplier_identities', table => {
+      table.string('id').primary();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      table.string('party_id').notNullable().references('id').inTable('parties').onDelete('CASCADE');
+      table.string('claimed_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('claimed_at').notNullable().defaultTo(pg.fn.now());
+      // One organization per party, as the single claim was: two orgs claiming one party
+      // would each resolve an outcome from the same ledger rows, and one of them would be wrong.
+      table.unique(['party_id'], { indexName: 'supplier_identities_party_uq' });
+      table.index(['organization_id'], 'supplier_identities_org_idx');
     })
 
     // roles — Named permission sets (owner, admin, coordinator, viewer, consultant) that
@@ -251,8 +351,6 @@ function up(pg) {
       table.string('user_id').notNullable().references('id').inTable('users').onDelete('CASCADE');
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
       table.string('role_id').notNullable().references('id').inTable('roles').onDelete('RESTRICT');
-      // When this person joined — the roster's "joined" column and its sort key. A re-joined
-      // member gets a fresh row and a fresh date: removal is a DELETE, not a status (ADR 0001).
       table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
       table.unique(['user_id', 'organization_id']);
     })
@@ -266,11 +364,9 @@ function up(pg) {
     .createTable('invitations', table => {
       table.string('id').primary();
       table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
-      // Stored lowercased (see the CHECK below), so matching an address is an equality.
       table.string('email').notNullable();
       table.string('role_id').notNullable().references('id').inTable('roles').onDelete('RESTRICT');
       table.string('status').notNullable().defaultTo('pending');
-      // SET NULL: an offer does not become invalid because whoever sent it left.
       table.string('invited_by').references('id').inTable('users').onDelete('SET NULL');
       table.timestamp('responded_at');
       table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
@@ -295,9 +391,6 @@ function up(pg) {
       table.timestamp('created_at').defaultTo(pg.fn.now());
       table.timestamp('updated_at').defaultTo(pg.fn.now());
       table.unique(['organization_id', 'tender_id']);
-      // Redundant against the primary key, and required anyway: a foreign key can only
-      // reference a uniquely-constrained set of columns, and every child table points at this
-      // pair so its own organization_id cannot drift from its parent's. See indexes() below.
       table.unique(['id', 'organization_id'], { indexName: 'tracked_tenders_id_org_uq' });
     })
 
@@ -434,8 +527,7 @@ function up(pg) {
       // How many distinct TENDERS those awards came from. sample_size counts
       // awards and awards are per lot, so one multi-lot procurement can clear
       // the comparables threshold alone — this is what separates "33 awards
-      // across 33 buys" from "33 lots of one buy". Mirrored in
-      // add_intelligence_indexes.js.
+      // across 33 buys" from "33 lots of one buy".
       table.integer('distinct_tenders');
       table.decimal('min_price', 18, 2);
       table.decimal('median_price', 18, 2);
@@ -443,6 +535,10 @@ function up(pg) {
       // decimal, not float: a percentage stored as float4 reads back with
       // seven digits of single-precision noise (6.8833737 for 6.88).
       table.decimal('avg_discount_pct', 6, 2);
+      // Awards with a budget that avg_discount_pct left out because their contract is not the
+      // winning offer (a PPCM framework or partial contract): counted, never given a guessed gross.
+      // NULL on a row computed before the count was kept.
+      table.integer('discount_excluded');
       table.timestamp('computed_at').notNullable();
       // Deliberately not unique: a NULL never collides in a Postgres unique
       // index, so a unique constraint would silently permit duplicate global
@@ -521,7 +617,6 @@ function up(pg) {
       table.string('link_token');
       table.timestamp('token_expires_at');
       table.timestamp('verified_at');
-      // Kept rather than deleted, so re-linking is an update and the trail survives.
       table.timestamp('revoked_at');
       table.integer('failure_count').notNullable().defaultTo(0);
       table.text('last_error');
@@ -552,13 +647,55 @@ function up(pg) {
       table.specificType('features', 'text[]').notNullable();
     })
 
-    // subscriptions — Which plan an organisation is on, and when it renews.
+    // promo_codes — A code an operator issues and an owner redeems for a period of a plan.
+    //
+    // `code` is stored upper-cased and trimmed (CHECK in indexes()), so a lookup is an equality
+    // and a code typed off a flyer matches whatever its case. `plan_id` never names `free`, which
+    // the boundary refuses: plans are keyed by CUID, so no CHECK can. `max_redemptions` NULL is
+    // unlimited, and `redemption_count` is moved by a conditional UPDATE so the database holds
+    // the limit under concurrent redemptions. A redeemed code is disabled, never deleted — the
+    // periods it granted keep their record of where they came from.
+    .createTable('promo_codes', table => {
+      table.string('id').primary();
+      table.string('code').notNullable();
+      table.string('plan_id').notNullable().references('id').inTable('plans').onDelete('RESTRICT');
+      table.integer('percent_off').notNullable();
+      table.integer('duration_months').notNullable();
+      table.integer('max_redemptions');
+      table.integer('redemption_count').notNullable().defaultTo(0);
+      table.timestamp('redeemable_until');
+      table.timestamp('disabled_at');
+      table.string('created_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.unique(['code'], { indexName: 'promo_codes_code_uq' });
+    })
+
+    // subscriptions — One period during which an organisation holds one plan (ADR 0005). An
+    // organisation accumulates them — a trial, then promo periods, then paid ones — and its plan
+    // is the non-voided row covering now, else free. Current or lapsed is read from the dates;
+    // there is no status, because a stored one needs a sweep to flip it, and a missed sweep
+    // leaves an organisation on Pro forever. No overlap: subscriptions_no_overlap_excl.
     .createTable('subscriptions', table => {
       table.string('id').primary();
-      table.string('organization_id').notNullable().unique().references('id').inTable('organizations').onDelete('CASCADE');
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
       table.string('plan_id').notNullable().references('id').inTable('plans').onDelete('RESTRICT');
-      table.string('status').notNullable();
-      table.timestamp('renews_at');
+      table.string('kind').notNullable(); // trial | promo | paid
+      // Half-open: a period starting the moment another ends follows it, never overlaps it.
+      table.timestamp('period_start').notNullable();
+      table.timestamp('period_end').notNullable();
+      // The code a promo period was redeemed with. RESTRICT: a redeemed code is disabled, never
+      // deleted, and this is the database holding that. Once per organization:
+      // subscriptions_promo_code_org_uq.
+      table.string('promo_code_id').references('id').inTable('promo_codes').onDelete('RESTRICT');
+      // A trial copies its organisation's created_by here, so one trial per creator can be an
+      // index rather than a join: subscriptions_trial_creator_uq.
+      table.string('trial_creator_id').references('id').inTable('users').onDelete('SET NULL');
+      // Voiding is what an operator does to a grant made in error. A voided row grants nothing
+      // and is left out of the overlap rule, but stays as the record that it was granted.
+      table.timestamp('voided_at');
+      table.string('voided_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['organization_id', 'period_start'], 'subscriptions_org_start_idx');
     })
 
     // invoices — Billing history per organisation.
@@ -631,14 +768,37 @@ async function indexes(pg) {
      CHECK (email = lower(email))`);
   await pg.raw(`CREATE INDEX IF NOT EXISTS invitations_email_idx ON invitations (email)`);
 
-  // Two orgs claiming one supplier party would each resolve an outcome from the same ledger
-  // rows, and one of them would be wrong. Partial so the column can stay NULL until claimed.
-  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS organizations_supplier_party_uq
-     ON organizations (supplier_party_id) WHERE supplier_party_id IS NOT NULL`);
+  // Promo codes: the normalized text is the identity, and the limit can never be passed.
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_code_chk
+     CHECK (code = upper(btrim(code)) AND code <> '')`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_percent_off_chk
+     CHECK (percent_off BETWEEN 1 AND 100)`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_duration_chk
+     CHECK (duration_months >= 1)`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_max_redemptions_chk
+     CHECK (max_redemptions IS NULL OR (max_redemptions >= 1 AND redemption_count <= max_redemptions))`);
+  await pg.raw(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_redemption_count_chk
+     CHECK (redemption_count >= 0)`);
+
   // Three fields, not more: past that the list matches everything and ranks nothing. The ids
   // themselves are validated against the code list, which a CHECK could only duplicate.
   await pg.raw(`ALTER TABLE organizations ADD CONSTRAINT organizations_type_max_chk
      CHECK (cardinality(type) <= 3)`);
+
+  // The discovery CPV filter asks for overlap (`&&`) with a set of codes.
+  await pg.raw('CREATE INDEX IF NOT EXISTS tenders_cpv_codes_idx ON tenders USING gin (cpv_codes)');
+  await pg.raw(`ALTER TABLE tenders ADD CONSTRAINT tenders_submission_channel_chk
+     CHECK (submission_channel IN ('eauction','armeps','paper'))`);
+  // A paper invitation reads its own notices through it (ticket 07).
+  await pg.raw(`CREATE INDEX IF NOT EXISTS tender_sources_points_to_idx
+     ON tender_sources (source, points_to) WHERE points_to IS NOT NULL`);
+  await pg.raw(`ALTER TABLE tender_sources ADD CONSTRAINT tender_sources_role_chk
+     CHECK (role IN ('discovery','detail','results'))`);
+  await pg.raw(`ALTER TABLE unmatched_results ADD CONSTRAINT unmatched_results_reason_chk
+     CHECK (reason IN ('no_candidate','ambiguous','no_code','unsupported_format'))`);
+  // "Was a notice published on these days": the publicity facts read a span around one date.
+  await pg.raw(`CREATE INDEX IF NOT EXISTS listing_notices_published_idx
+     ON listing_notices (source, published_at)`);
 
   await pg.raw(`CREATE INDEX IF NOT EXISTS tracked_tenders_org_status_idx
      ON tracked_tenders (organization_id, status)`);
@@ -812,6 +972,43 @@ async function indexes(pg) {
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_uq
      ON notifications (organization_id, type, tender_id, subject_id) NULLS NOT DISTINCT`);
 
+  await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_kind_chk
+     CHECK (kind IN ('trial','promo','paid'))`);
+  // An empty range overlaps nothing, so a zero-length period would slip past the rule below.
+  await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_period_chk
+     CHECK (period_end > period_start)`);
+
+  /**
+   * One plan at a time: no two non-voided periods of one organization overlap.
+   *
+   * `planFor` reads "the period covering now" and takes one row; that is only an answer if
+   * there can be at most one. Checking for overlap in the service is check-then-act, the same
+   * race as the owner seat, so the database arbitrates it. `tstzrange` defaults to half-open
+   * `[)`, which is what lets a promo start at the exact moment a trial ends. Voided rows are
+   * left out, so voiding a grant frees its time for another. btree_gist supplies the `=` on
+   * organization_id inside a GiST index.
+   */
+  await pg.raw('CREATE EXTENSION IF NOT EXISTS btree_gist');
+  await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_no_overlap_excl
+     EXCLUDE USING gist (organization_id WITH =, tstzrange(period_start, period_end) WITH &&)
+     WHERE (voided_at IS NULL)`);
+
+  /**
+   * One trial per organization creator, in any organization. The trial row copies its
+   * organization's created_by, so this is an index rather than a join. Voided rows are NOT
+   * excluded: a voided trial was still used, or voiding one would hand its creator another.
+   * Two organizations of one creator starting a trial at once each hold only their own row
+   * lock, so this index, not the service's re-check, decides which one gets it.
+   */
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_trial_creator_uq
+     ON subscriptions (trial_creator_id) WHERE kind = 'trial'`);
+
+  /**
+   * One redemption of a code per organization. Voided rows are NOT excluded, for the trial
+   * index's reason: a voided promo was still redeemed, or voiding it would hand the code back.
+   */
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_promo_code_org_uq
+     ON subscriptions (promo_code_id, organization_id) WHERE promo_code_id IS NOT NULL`);
 }
 
 async function init() {

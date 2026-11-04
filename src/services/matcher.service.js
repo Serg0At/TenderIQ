@@ -1,4 +1,4 @@
-import { compareCpv } from '../libs/cpv.js';
+import { compareCpv, tenderCodes } from '../libs/cpv.js';
 
 /**
  * Does a tender match a saved search, and how well?
@@ -39,9 +39,11 @@ const keywordMatches = (haystack, keywords) => {
  * hit qualifies, then region and value act as filters rather than boosts.
  */
 export const scoreMatch = (tender, profile) => {
-  const tenderCodes = [tender.cpvCode, ...(tender.lotCpvCodes ?? [])].filter(Boolean);
-  const cpv = cpvMatches(tenderCodes, profile.cpvCodes ?? []);
-  const haystack = [tender.title, tender.referenceCode, ...(tender.lotNames ?? [])].filter(Boolean).join(' \n ');
+  const codes = tenderCodes({ cpvCode: tender.cpvCode, cpvCodes: tender.cpvCodes, lotCodes: tender.lotCpvCodes });
+  const cpv = cpvMatches(codes, profile.cpvCodes ?? []);
+  const haystack = [tender.title, tender.referenceCode, tender.description, ...(tender.lotNames ?? [])]
+    .filter(Boolean)
+    .join(' \n ');
   const keyword = keywordMatches(haystack, profile.keywords ?? []);
 
   if (!cpv.hit && !keyword.hit) return { matched: false, score: 0, reasons: [] };
@@ -83,6 +85,44 @@ export const scoreMatch = (tender, profile) => {
 
   return { matched: true, score: Math.min(Number(score.toFixed(2)), 1), reasons };
 };
+
+/**
+ * A tender as `scoreMatch` reads it, from `TenderRepository.findDetail`. One
+ * mapping, so the CPV backfill counts the matches it would raise with exactly
+ * the candidate the alert job builds.
+ */
+export const matchCandidate = (tender) => ({
+  cpvCode: tender.cpv_code,
+  // Every code the source states for the tender, including any it could not
+  // put on a lot — a search naming one of those must still hear about it.
+  cpvCodes: tender.cpv_codes ?? [],
+  lotCpvCodes: (tender.lots ?? []).map((l) => l.cpv_code).filter(Boolean),
+  lotNames: (tender.lots ?? []).map((l) => l.name).filter(Boolean),
+  title: tender.title,
+  // A paper invitation's contract subject (null elsewhere). Read by keywords,
+  // because a paper tender's lots arrive with its document stage, after the
+  // ingest match has run.
+  description: tender.description ?? null,
+  referenceCode: tender.reference_code,
+  estimatedValue: tender.estimated_value,
+  buyerRegion: tender.buyer_region,
+});
+
+/**
+ * Only live tenders are worth interrupting someone for: an award or a
+ * cancellation is history, and alerting on it trains people to ignore alerts.
+ */
+export const ALERTABLE_STATUSES = ['active', 'planned', 'amended'];
+
+/**
+ * Pure: whether a supplier could still act on an amendment — a status the
+ * matcher alerts on and a deadline ahead or none. Past the deadline, closed,
+ * awarded or cancelled, the version is recorded and nobody is told. The
+ * deadline half is the one tender.repo.js#findRankable applies in SQL for a
+ * biddable tender; they move together.
+ */
+export const isOpen = ({ status, deadlineAt }, now) =>
+  ALERTABLE_STATUSES.includes(status) && (!deadlineAt || new Date(deadlineAt).getTime() > now.getTime());
 
 /** Below this a match is too weak to interrupt someone's day. */
 export const MATCH_THRESHOLD = 0.5;
@@ -132,7 +172,42 @@ export const matchesByOrganization = (tender, profiles) => {
 };
 
 /**
- * Where one organization's alert goes, given every search that matched.
+ * The pursuits that hear about an amendment with or without a matching search.
+ *
+ * `submitted` is in: on ARMEPS and paper a sealed bid can be withdrawn or
+ * replaced before the deadline, so an addendum after submission is exactly
+ * when a supplier needs to know — Tendra's own locked snapshot does not change
+ * that. `won`, `lost` and `dropped` are out: the tender is decided for them, or
+ * they walked away, and results reach a tracker through bid reconciliation.
+ */
+export const AMENDMENT_PURSUITS = ['considering', 'preparing', 'submitted'];
+
+/**
+ * Who hears about one alert: the organizations whose searches matched it, plus
+ * the organizations tracking it (`trackersOf`), each once.
+ *
+ * One list rather than a second producer, because two producers would be two
+ * answers to "who hears about this amendment". An organization that matches and
+ * tracks is one recipient carrying both its matches and its `pipelineStatus`; a
+ * tracker with no matching search is one with `matches: []`. An ingest alert
+ * passes no trackers — an organization tracking a tender already knows it
+ * exists — so its recipients are the matches alone.
+ */
+export const alertRecipients = (groups, trackers = []) => {
+  const recipients = new Map(
+    groups.map(({ organizationId, matches }) => [organizationId, { organizationId, matches, pipelineStatus: null }])
+  );
+  for (const { organization_id: organizationId, status } of trackers) {
+    const recipient = recipients.get(organizationId);
+    if (recipient) recipient.pipelineStatus = status;
+    else recipients.set(organizationId, { organizationId, matches: [], pipelineStatus: status });
+  }
+  return [...recipients.values()];
+};
+
+/**
+ * Where one organization's alert goes, given every search that matched and
+ * whether it tracks the tender.
  *
  * The union of what the searches name, because each search asked for its
  * channels and none of them outranks another. A search that names nothing means
@@ -140,9 +215,21 @@ export const matchesByOrganization = (tender, profiles) => {
  * channel must not narrow that — so `useOrgDefault` is true when ANY match is
  * empty, and the caller adds the organization's reachable channels on top.
  */
-export const channelsForMatches = (matches) => ({
+export const channelsForMatches = (matches, { tracking = false } = {}) => ({
   named: [...new Set(matches.flatMap((m) => m.channels))],
-  useOrgDefault: matches.some((m) => !m.channels.length),
+  // Tracking names no channel either, so it asks for the same: a search that
+  // narrows its own alert to one channel does not narrow the tracker's.
+  useOrgDefault: tracking || matches.some((m) => !m.channels.length),
 });
 
-export default { scoreMatch, MATCH_THRESHOLD, matchesByOrganization, channelsForMatches };
+export default {
+  scoreMatch,
+  matchCandidate,
+  ALERTABLE_STATUSES,
+  isOpen,
+  MATCH_THRESHOLD,
+  AMENDMENT_PURSUITS,
+  matchesByOrganization,
+  alertRecipients,
+  channelsForMatches,
+};

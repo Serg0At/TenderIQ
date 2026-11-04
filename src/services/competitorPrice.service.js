@@ -51,6 +51,8 @@ const band = (bidderCount) => {
  * averaging those in is how a discount statistic quietly becomes meaningless.
  */
 const discountPct = (price, budget) => {
+  // `Number(null)` is 0, which would read a missing price as a 100% discount.
+  if (price === null || price === undefined) return null;
   const p = Number(price);
   const b = Number(budget);
   if (!Number.isFinite(p) || !Number.isFinite(b) || b <= 0) return null;
@@ -63,6 +65,7 @@ const discountPct = (price, budget) => {
  * winner reads up to 20% dearer than a non-payer it beat.
  */
 const gapPct = (price, winning) => {
+  if (price === null || price === undefined) return null;
   const p = Number(price);
   const w = Number(winning);
   if (!Number.isFinite(p) || !Number.isFinite(w) || w <= 0) return null;
@@ -130,6 +133,7 @@ export default class CompetitorPriceService {
     cpvCode = null,
     buyerId = null,
     sinceMonths = INTELLIGENCE.RECENCY_MONTHS,
+    includeSingleSource = false,
   } = {}) {
     let widest = null;
 
@@ -142,6 +146,7 @@ export default class CompetitorPriceService {
         exact: tier.exact,
         buyerId: tier.useBuyer ? buyerId : null,
         sinceMonths,
+        includeSingleSource,
       });
 
       widest = { ...stats, basis: tier.basis };
@@ -177,8 +182,14 @@ export default class CompetitorPriceService {
    * `tender` is the row from `TenderRepository.findDetail` — passed in rather
    * than re-fetched so the controller resolves existence (and returns 404)
    * exactly once.
+   *
+   * A single-source tender (ticket 31) returns its own ledger like any
+   * other — it is that tender's record — flagged `singleSource`, so a client
+   * can say "single source, no competition" rather than show a lot that
+   * merely drew one bidder. `includeSingleSource` touches only the
+   * `expectedCompetition` beside it, an aggregate across tenders.
    */
-  static async forTender(tender, { lot = null, includeRejected = true } = {}) {
+  static async forTender(tender, { lot = null, includeRejected = true, includeSingleSource = false } = {}) {
     const [ledger, awards, lotRows] = await Promise.all([
       bids.ledgerForTender(tender.id),
       bids.awardsForTender(tender.id),
@@ -193,7 +204,10 @@ export default class CompetitorPriceService {
     const expected = await CompetitorPriceService.expectedCompetition({
       cpvCode,
       buyerId: tender.buyer_id,
+      includeSingleSource,
     });
+
+    const singleSource = tender.procedure_type === 'single_source';
 
     if (!ledger.length) {
       return {
@@ -206,6 +220,7 @@ export default class CompetitorPriceService {
           'No public bid ledger for this tender. The source publishes one only after the auction settles.',
         tenderId: tender.id,
         settled: false,
+        singleSource,
         expectedCompetition: expected,
         lots: [],
       };
@@ -224,6 +239,9 @@ export default class CompetitorPriceService {
       const budget = num(stats.budget_price ?? award?.estimated_value);
       const winningPrice = num(award?.amount);
       const winningNet = num(award?.net_amount);
+      // A discount compares the winning offer, never the contract: they differ
+      // on a PPCM framework or partial contract, where no gross is guessed.
+      const winningOffer = num(award?.offer_price);
 
       const rows = ledger.filter((b) => b.lot_number === lotNumber);
       const visible = includeRejected ? rows : rows.filter((b) => b.status === 'accepted');
@@ -250,7 +268,11 @@ export default class CompetitorPriceService {
               region: award.supplier_region ?? null,
               price: winningPrice,
               netPrice: winningNet,
-              discountPct: discountPct(winningPrice, budget),
+              // The winning offer with VAT — `price` itself, except where that
+              // is a contract that is not the offer (a PPCM framework or
+              // partial contract): then null, and so is `discountPct`.
+              offerPrice: winningOffer,
+              discountPct: discountPct(winningOffer, budget),
               awardedAt: award.awarded_at,
             }
           : null,
@@ -301,6 +323,7 @@ export default class CompetitorPriceService {
       status: 'ok',
       tenderId: tender.id,
       settled: true,
+      singleSource,
       currency: tender.currency,
       summary: CompetitorPriceService.summarize(lots, ledger),
       expectedCompetition: expected,
@@ -312,9 +335,14 @@ export default class CompetitorPriceService {
   static summarize(lots, ledger) {
     const awarded = lots.filter((l) => l.winner);
     const withBudget = awarded.filter((l) => l.budgetPrice > 0);
+    // The discount pairs each budget with its own lot's winning offer, so a
+    // lot whose contract is not the offer leaves both sides of it, counted.
+    const comparable = withBudget.filter((l) => l.winner.offerPrice !== null);
 
     const totalAwarded = awarded.reduce((sum, l) => sum + (l.winner.price ?? 0), 0);
     const totalBudget = withBudget.reduce((sum, l) => sum + l.budgetPrice, 0);
+    const comparableBudget = comparable.reduce((sum, l) => sum + l.budgetPrice, 0);
+    const comparableOffers = comparable.reduce((sum, l) => sum + l.winner.offerPrice, 0);
     const totalBidders = lots.reduce((sum, l) => sum + l.bidderCount, 0);
 
     return {
@@ -325,7 +353,8 @@ export default class CompetitorPriceService {
       totalBudget: withBudget.length ? Math.round(totalBudget * 100) / 100 : null,
       // Computed from the totals, not as a mean of per-lot percentages: a mean
       // of ratios weights a 50,000 AMD lot the same as a 50,000,000 one.
-      totalDiscountPct: totalBudget > 0 ? discountPct(totalAwarded, totalBudget) : null,
+      totalDiscountPct: comparableBudget > 0 ? discountPct(comparableOffers, comparableBudget) : null,
+      discountExcludedLots: withBudget.length - comparable.length,
       // Distinct companies across the whole tender — smaller than the sum of
       // per-lot counts, because the same company usually bids on every lot.
       distinctBidders: new Set(ledger.map((b) => b.supplier_id).filter(Boolean)).size,

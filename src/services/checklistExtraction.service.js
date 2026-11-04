@@ -140,6 +140,55 @@ const normalize = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().toLow
 export const __evalParts = { SYSTEM_PROMPT, OUTPUT_SCHEMA };
 
 export default class ChecklistExtractionService {
+  /** The identity of a document, as `checklists.document_hash` stores it. */
+  static documentHash(documentText) {
+    return sha256(documentText);
+  }
+
+  /**
+   * Whether the stored extraction already answers for this document, so the
+   * model need not be called — decided before `extract`, from what is stored.
+   *
+   * `document_hash` is written only by `replaceItems`, in the same transaction
+   * as the AI items, so a matching hash means those items were read from this
+   * text; a failed run since leaves both as they were. The row's status is not
+   * the test — `generate` has already moved it to `pending`.
+   *
+   * No AI items is never current. `extract` no longer stores an empty result,
+   * so this guards the rows stored as an empty `ready` before it stopped — and a
+   * checklist whose AI items a user deleted one by one. Skipping either would
+   * make "nothing is required" permanent for anyone who does not send `force`.
+   */
+  static isCurrent({ documentHash, aiItemCount }, documentText) {
+    return aiItemCount > 0 && documentHash === ChecklistExtractionService.documentHash(documentText);
+  }
+
+  /**
+   * Whether a checklist's AI items were read from the invitation the tender
+   * holds now — `true`, `false`, or `null` when there is no telling.
+   *
+   * The same comparison as `isCurrent`, made on a read: `current.textHash` is
+   * the hash the document stage stored on the tender's newest invitation row,
+   * so a GET never reads the text. Derived every time and never stored, or the
+   * answer would go stale the moment a new document set arrived.
+   *
+   * A changed document is `false` whatever the row's status: `failed` after a
+   * re-read of the new document, `ready` when nobody has regenerated since, and
+   * `unavailable` when the new invitation has no text. That last one has a NULL
+   * hash, and it is still `false`: AI items exist, so they were read from some
+   * text, and it was not this one. Every invitation with readable text carries
+   * a hash — the document stage writes it, and the ticket 24 migration filled
+   * the rows from before.
+   *
+   * `null` without AI items — there is nothing to be current, and manual items
+   * are a person's assertion, not a reading of a document version — and with
+   * no invitation to compare against.
+   */
+  static itemsCurrent({ documentHash, aiItemCount }, current) {
+    if (!aiItemCount || !documentHash || !current) return null;
+    return documentHash === current.textHash;
+  }
+
   /**
    * Drop any item whose evidence is not actually in the source document.
    *
@@ -199,7 +248,7 @@ export default class ChecklistExtractionService {
       return { status: 'unavailable', reason: 'ai_not_configured' };
     }
 
-    const documentHash = sha256(documentText);
+    const documentHash = ChecklistExtractionService.documentHash(documentText);
 
     /**
      * Streamed, not because the output is huge but because the INPUT is: a
@@ -231,6 +280,30 @@ export default class ChecklistExtractionService {
         `[ai] dropped ${rejected.length} checklist item(s) whose evidence was not found ` +
           `in the source document: ${rejected.map((r) => r.label).slice(0, 3).join(' | ')}`
       );
+    }
+
+    /**
+     * Nothing kept is a failure, never a `ready` checklist with no items: an
+     * empty list reads as "nothing is required for this tender". A `failed`
+     * result carries no items, so the previous extraction's items and
+     * `document_hash` stay as they were.
+     *
+     * Prompt rule 8 still tells the model that an empty answer is valid, and it
+     * is — for the MODEL, padding the list is worse. What changes is what the
+     * supplier is shown: the model's "nothing here" means the document or the
+     * prompt needs a look, not that the tender asks for nothing.
+     *
+     * Two reasons, because the repair differs: an empty answer puts the prompt
+     * or the document in question, while items that quote nothing put evidence
+     * verification in question.
+     */
+    if (!kept.length) {
+      const reason = value.items.length ? 'no_verifiable_items' : 'no_items';
+      logger.warn(
+        `[ai] checklist extraction kept no items (${reason}): ${value.items.length} returned, ` +
+          `${rejected.length} dropped as unverifiable, quality=${value.documentQuality}`
+      );
+      return { status: 'failed', reason, documentHash };
     }
 
     const items = kept.map((item, index) => ({

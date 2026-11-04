@@ -8,6 +8,7 @@ async function down(pg) {
     'audit_logs',
     'invoices',
     'subscriptions',
+    'promo_codes',
     'plans',
     'channel_subscriptions',
     'alert_deliveries',
@@ -22,6 +23,7 @@ async function down(pg) {
     'tracked_tenders',
     'vault_documents',
     'invitations',
+    'supplier_identities',
     'memberships',
     'role_permissions',
     'permissions',
@@ -33,14 +35,21 @@ async function down(pg) {
     'tender_lots',
     'public_tender_bids',
     'awards',
+    'unmatched_results',
+    'listing_notices',
+    'tender_sources',
     'tenders',
     'users',
+    'party_aliases',
     'parties',
   ];
 
   for (const table of tables) {
     await pg.schema.dropTableIfExists(table);
   }
+
+  // Only subscriptions_no_overlap_excl needed it, and that went with its table.
+  await pg.raw('DROP EXTENSION IF EXISTS btree_gist');
 }
 
 async function init() {

@@ -153,7 +153,7 @@ const handleStart = async ({ chatId, chatType, token }) => {
   if (!token) {
     await telegram.sendMessage({
       chatId,
-      text: linkRejected('Open the connect link from TenderIQ to link this chat.'),
+      text: linkRejected('Open the connect link from Tendra to link this chat.'),
     });
     return { action: 'start', result: 'no_token' };
   }
@@ -166,7 +166,7 @@ const handleStart = async ({ chatId, chatType, token }) => {
   if (!pending) {
     await telegram.sendMessage({
       chatId,
-      text: linkRejected('That link is not valid. Generate a new one in TenderIQ.'),
+      text: linkRejected('That link is not valid. Generate a new one in Tendra.'),
     });
     return { action: 'start', result: 'unknown_token' };
   }
@@ -174,7 +174,7 @@ const handleStart = async ({ chatId, chatType, token }) => {
   if (pending.token_expires_at && new Date(pending.token_expires_at) < new Date()) {
     await telegram.sendMessage({
       chatId,
-      text: linkRejected('That link has expired. Generate a new one in TenderIQ.'),
+      text: linkRejected('That link has expired. Generate a new one in Tendra.'),
     });
     return { action: 'start', result: 'expired_token' };
   }
@@ -250,10 +250,10 @@ export const handleUpdate = async (update) => {
     await telegram.sendMessage({
       chatId,
       text: [
-        '<b>TenderIQ alerts</b>',
+        '<b>Tendra alerts</b>',
         '',
-        'This bot delivers tender alerts from TenderIQ.',
-        'Open the connect link in TenderIQ to link this chat.',
+        'This bot delivers tender alerts from Tendra.',
+        'Open the connect link in Tendra to link this chat.',
         '',
         '/stop — disconnect this chat',
       ].join('\n'),

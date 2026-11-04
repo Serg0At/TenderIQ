@@ -12,7 +12,7 @@
  * inside `truck` does not. `am` is left out on purpose: it is Armenia's
  * country code but not a language code, and it is also an ordinary English
  * word and the start of time stamps (`10am`). Source-specific knowledge —
- * armeps's `hraver.docx` is the Armenian invitation — belongs to that
+ * eauction's `hraver.docx` is the Armenian invitation — belongs to that
  * source's adapter, which can override this.
  */
 

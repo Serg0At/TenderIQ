@@ -1,4 +1,4 @@
-# TenderIQ — Architectural Design
+# Tendra — Architectural Design
 
 > Supplier-side bid-intelligence SaaS over public procurement data. Armenia first,
 > OCDS-region expansion later.
@@ -134,7 +134,7 @@ Two rules carry most of the weight:
 ### Current
 
 ```
-TenderIQ/
+Tendra/
 ├── ARCHITECTURE.md
 ├── SCRAPER_WORKFLOW.md
 ├── package.json
@@ -175,7 +175,7 @@ Grows the current tree rather than reorganizing it — the existing `configs/ li
 workers/` split stays, and features slot in beside them.
 
 ```
-TenderIQ/
+Tendra/
 ├── db/
 │   ├── migrations/                  # numbered, forward-only
 │   └── seeds/                       # roles, plans, CPV reference data
@@ -198,9 +198,9 @@ TenderIQ/
     │   └── adapters/                # everything external lives behind a port
     │       ├── ai/                  # Claude client, prompt templates, output schemas
     │       ├── notify/              # telegram, email, sms
-    │       ├── payment/             # bank transfer, card link
+    │       ├── payment/             # card payments through a bank vPOS (ADR 0005)
     │       └── source/              # one adapter per procurement source
-    │           ├── armeps/          # client.js · listing.parser.js · detail.parser.js
+    │           ├── eauction/        # client.js · listing.parser.js · detail.parser.js
     │           ├── ppcm/            # client.js · csv.parser.js
     │           └── ocds/            # 2027
     │
@@ -233,6 +233,7 @@ TenderIQ/
     └── workers/
         ├── index.js                 # worker process entry: register all processors
         ├── scraper.js               # ingest.fetch
+        ├── listingChain.js          # the one listing chain every board is swept by
         ├── importer.js              # ingest.fetch (PPCM/OCDS)
         ├── documents.js             # ingest.documents
         ├── normalizer.js            # ingest.normalize
@@ -268,8 +269,8 @@ that is what makes services testable with fakes and keeps the dependency directi
 
 | Group | Tables |
 |---|---|
-| Procurement core (OCDS) | `parties`, `tenders`, `awards`, `contracts`, `tender_documents`, `source_payloads` |
-| Tenancy & identity | `users`, `organizations`, `roles`, `memberships` |
+| Procurement core (OCDS) | `parties`, `party_aliases`, `tenders`, `awards`, `contracts`, `tender_documents`, `source_payloads` |
+| Tenancy & identity | `users`, `organizations`, `roles`, `memberships`, `supplier_identities` |
 | Bid workflow | `tracked_tenders`, `bids`, `checklists`, `checklist_items`, `vault_documents` |
 | Discovery | `saved_searches` |
 | Intelligence | `price_benchmarks`, `buyer_profiles`, `supplier_profiles` |
@@ -283,11 +284,12 @@ Load-bearing details:
 - `tenders.version` + `is_latest` implement amendment history; readers filter on `is_latest`.
 - `source_payloads` maps `(source, ref, hash)` → an object-storage key, enabling replay.
 - IDs are application-generated CUID2 strings, not database sequences.
-- `organizations.supplier_party_id` → `parties.id` is the **only** bridge between a tenant and
-  the public procurement record. Everything else about a tenant is private and joins downward;
-  this one joins outward, and it is what makes a customer's own win/loss resolvable against
-  `awards` and `public_tender_bids`. Nullable, partial-unique, and claimed explicitly by a
-  human — never inferred from a name match.
+- `supplier_identities` (`organization_id` → `parties.id`) is the **only** bridge between a
+  tenant and the public procurement record. Everything else about a tenant is private and joins
+  downward; this one joins outward, and it is what makes a customer's own win/loss resolvable
+  against `awards` and `public_tender_bids`. A set (one company is several parties until a ՀՎՀՀ
+  joins them), unique per party, and every row claimed explicitly by a human — never inferred
+  from a name match.
 - Children of a private table take a **composite FK** on `(parent_id, organization_id)` against
   the parent's `UNIQUE (id, organization_id)`, so the denormalised org id cannot drift. Two
   independent foreign keys do not achieve this: Postgres accepted a `bids` row claiming org B

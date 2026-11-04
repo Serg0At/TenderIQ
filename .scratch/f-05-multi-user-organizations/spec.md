@@ -5,7 +5,7 @@ Decisions recorded in CLAUDE.md § *Account and organization model*, ADR 0001 an
 
 ## Problem Statement
 
-TenderIQ is sold to companies but only works for one person. Today an organization comes into
+Tendra is sold to companies but only works for one person. Today an organization comes into
 existence in exactly one way — somebody registers — and from that moment there is no way to
 put a second human inside it. A supplier with a bid coordinator, an owner who signs, and an
 external consultant who writes the technical annex has to share one login between all three.

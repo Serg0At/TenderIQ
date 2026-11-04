@@ -7,16 +7,6 @@ import { rateLimit } from '../../middlewares/rateLimit.js';
 
 const router = Router();
 
-/**
- * The webhook is mounted BEFORE `authenticate`, because Telegram cannot present
- * a token — its own secret header is the access control, checked in the
- * controller. Order matters: a router-level `authenticate` would reject every
- * update before the handler ever ran.
- *
- * Its own rate limit, tighter than the global one and keyed per IP: this is the
- * only unauthenticated write path in the API, so it is the one an attacker can
- * reach without an account.
- */
 router.post(
   '/telegram/webhook',
   rateLimit({ requests: 120, perMs: 60_000 }),

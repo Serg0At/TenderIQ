@@ -1,11 +1,13 @@
 import trackedTenders from '../../repositories/trackedTender.repo.js';
 import bids from '../../repositories/bid.repo.js';
 import tenders from '../../repositories/tender.repo.js';
+import supplierIdentities from '../../repositories/supplierIdentity.repo.js';
 import organizations from '../../repositories/organization.repo.js';
 import parties from '../../repositories/party.repo.js';
 import BidOutcomeService from '../../services/bidOutcome.service.js';
 import { verifyRelevance } from '../../libs/relevanceReceipt.js';
 import config from '../../configs/variables.config.js';
+import { withTransaction } from '../../libs/knex.js';
 import { ApiError } from '../../utils/errors.js';
 
 /**
@@ -35,6 +37,15 @@ const TRANSITIONS = {
   // Reopening a dropped pursuit is a change of mind, not a rule violation.
   dropped: ['considering'],
 };
+
+/**
+ * How many parties one organization may claim (ticket 32). A claim is
+ * exclusive — a party one organization holds cannot be claimed by another —
+ * so an uncapped set would let one account claim a market's competitors and
+ * lock the real companies out of their own win records. Ten covers a company
+ * that bids under several names on three channels.
+ */
+const MAX_SUPPLIER_IDENTITIES = 10;
 
 const present = (row) => ({
   id: row.id,
@@ -361,17 +372,22 @@ export default class TrackedTenderService {
   // --- supplier identity --------------------------------------------------
 
   /**
-   * The party this organisation bids as — the link that makes auto win/loss
-   * possible at all. Read and write live here rather than in an org-settings
-   * feature because this is the only thing that consumes them today.
+   * The parties this organisation bids as — the link that makes auto win/loss
+   * possible at all. A set (ticket 32): one company is several parties until a
+   * ՀՎՀՀ joins them — its paper bids are keyed by name, its e-auction bids by
+   * operator id — and each is claimed by a person from a search, never matched
+   * on name. Read and write live here rather than in an org-settings feature
+   * because this is the only thing that consumes them today.
    */
   static async supplierIdentity(organizationId) {
-    const row = await organizations.supplierPartyFor(organizationId);
-    return {
-      supplierPartyId: row?.supplier_party_id ?? null,
-      name: row?.supplier_name ?? null,
-      taxId: row?.supplier_tax_id ?? null,
-    };
+    const rows = await supplierIdentities.listForOrg(organizationId);
+    return rows.map((row) => ({
+      partyId: row.party_id,
+      name: row.name,
+      taxId: row.tax_id ?? null,
+      region: row.region ?? null,
+      claimedAt: row.claimed_at,
+    }));
   }
 
   /**
@@ -389,22 +405,40 @@ export default class TrackedTenderService {
     }));
   }
 
-  static async setSupplierIdentity(organizationId, { supplierPartyId }) {
-    if (supplierPartyId !== null) {
-      const party = await parties.findById(supplierPartyId);
-      if (!party) throw ApiError.notFound('Party');
-    }
+  /**
+   * Claim one more party. Claiming one this organisation already holds is a
+   * no-op, so a retried request does not fail; one another organisation holds
+   * is a 409, as it was with a single claim — the conflict says only that it
+   * is claimed, never by whom.
+   */
+  static async claimSupplierParty(organizationId, { partyId }, userId = null) {
+    const party = await parties.findById(partyId);
+    if (!party) throw ApiError.notFound('Party');
 
-    try {
-      await organizations.setSupplierParty(organizationId, supplierPartyId);
-    } catch (error) {
-      // The partial unique index: this party is already claimed by another org.
-      if (error?.code === '23505') {
-        throw ApiError.conflict('That supplier is already claimed by another organization.');
+    // Count and insert under the organization row's lock (the deletion's
+    // `lockForUpdate`), so two claims at once cannot both count nine and make
+    // eleven: the second waits, then counts the first. Between organizations
+    // the unique index on the party decides, and `add` reports losing.
+    const holder = await withTransaction(async (trx) => {
+      await organizations.lockForUpdate(organizationId, trx);
+      const held = await supplierIdentities.holderOf(partyId, organizationId, trx);
+      if (held !== 'none') return held;
+      const claims = await supplierIdentities.countForOrg(organizationId, trx);
+      if (claims >= MAX_SUPPLIER_IDENTITIES) {
+        throw new ApiError('QUOTA_EXCEEDED', {
+          message: `An organization can claim at most ${MAX_SUPPLIER_IDENTITIES} supplier parties.`,
+          details: { limit: MAX_SUPPLIER_IDENTITIES, claimed: claims },
+        });
       }
-      throw error;
-    }
-
+      return (await supplierIdentities.add(organizationId, partyId, userId, trx)) ? 'self' : 'other';
+    });
+    if (holder === 'other') throw ApiError.conflict('That supplier is already claimed by another organization.');
     return TrackedTenderService.supplierIdentity(organizationId);
+  }
+
+  /** Unclaim one party. An organisation that linked the wrong party has to be able to undo it. */
+  static async unclaimSupplierParty(organizationId, partyId) {
+    const removed = await supplierIdentities.remove(organizationId, partyId);
+    if (!removed) throw ApiError.notFound('Supplier identity');
   }
 }

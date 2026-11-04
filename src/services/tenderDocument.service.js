@@ -1,7 +1,8 @@
 import tenders from '../repositories/tender.repo.js';
 import { getStorage } from '../libs/storage/index.js';
 import { ZipError, listEntries, openEntry, storageSource } from '../libs/adapters/archive/zip.js';
-import { invitationManifest } from '../libs/adapters/source/armeps/invitation.files.js';
+import { invitationManifest } from '../libs/adapters/source/eauction/invitation.files.js';
+import { documentManifest } from '../libs/adapters/source/armeps/documents.js';
 import { tenderDocumentManifestSchema } from '../validations/schemas/tenderDocument.schema.js';
 import { ApiError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
@@ -47,6 +48,17 @@ export const MAX_FILE_BYTES = 200 * 1024 * 1024;
  */
 export const AVAILABILITY = { STORED: 'stored', UNLISTED: 'unlisted', NOT_STORED: 'not_stored' };
 
+/**
+ * An armeps.am archive listed from storage alone: the resourceId is in its key
+ * (`tender-docs/armeps/{resourceId}/{hash}.zip`), and with no CfT page at hand
+ * the languages come from the file names, which is what the page would have
+ * been overruling.
+ */
+const armepsManifestFromStorage = (entries, storageKey) => {
+  const resourceId = storageKey.split('/')[2];
+  return documentManifest(entries, { resourceId, pageDocuments: [] });
+};
+
 const presentFile = (file) => ({
   index: file.index,
   name: file.name,
@@ -67,7 +79,15 @@ export default class TenderDocumentService {
    * the worker just downloaded, or ranged reads of a stored object.
    */
   static async manifestOf(source) {
-    const manifest = invitationManifest(await listEntries(source));
+    return TenderDocumentService.validManifest(invitationManifest(await listEntries(source)));
+  }
+
+  /**
+   * Any source's manifest, checked before it reaches `tender_documents`: the
+   * offsets are what a download seeks to, so every builder's output passes
+   * the one schema.
+   */
+  static validManifest(manifest) {
     const { value, error } = tenderDocumentManifestSchema.validate(manifest, { abortEarly: false });
     if (error) throw new Error(`archive manifest failed validation: ${error.message}`);
     return value;
@@ -85,7 +105,11 @@ export default class TenderDocumentService {
     const object = await storage.head(row.storage_key);
     if (!object) return { skipped: 'object_missing' };
 
-    const manifest = await TenderDocumentService.manifestOf(storageSource(storage, row.storage_key, object.size));
+    const source = storageSource(storage, row.storage_key, object.size);
+    const manifest =
+      row.kind === 'contract_documents'
+        ? TenderDocumentService.validManifest(armepsManifestFromStorage(await listEntries(source), row.storage_key))
+        : await TenderDocumentService.manifestOf(source);
     await tenders.setDocumentManifest(row.id, manifest);
     return { listed: manifest.length };
   }
