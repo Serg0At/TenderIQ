@@ -135,7 +135,8 @@ subscription when it was granted in error or abused.
     that overlap in time, so that "what plan is this organization on" always has exactly one
     answer.
 42. As the product owner, I want the database to refuse a second trial for the same organization
-    creator, so that two organizations pressing "start trial" at once cannot both get one.
+    creator, so that two organizations pressing "start trial" at once cannot both get one — and
+    so that deleting an organization does not hand its creator another.
 43. As the product owner, I want a code's redemption limit to hold under concurrent
     redemptions, so that a code allowed 10 uses is never used 11 times.
 44. As the product owner, I want a period that has lapsed to stop granting its plan with no
@@ -149,16 +150,21 @@ subscription when it was granted in error or abused.
 
 - `subscriptions` is reshaped: one row per period, with `organization_id`, `plan_id`, `kind`
   (`trial` | `promo` | `paid`, CHECK), `period_start`, `period_end`, `promo_code_id` (nullable),
-  `trial_creator_id` (nullable), `voided_at` and `voided_by` (nullable), `created_at`.
+  `voided_at` and `voided_by` (nullable), `created_at`.
   `UNIQUE (organization_id)`, `status` and `renews_at` go. `paid` is in the CHECK so that the
   vPOS slice adds a writer, not a migration, but nothing writes it in this slice.
 - **No overlap**, enforced by an exclusion constraint over
   `(organization_id WITH =, tstzrange(period_start, period_end) WITH &&)` on non-voided rows.
   It needs the `btree_gist` extension. The range is half-open, so a promo that starts at the
   exact moment a trial ends does not overlap it.
-- **One trial per creator**: the trial row copies the organization's `created_by` into
-  `trial_creator_id`, and a partial unique index on it `WHERE kind = 'trial'` covers voided rows
-  too. A voided trial still counts as used.
+- **One trial per creator**: `trial_claims` (`user_id` primary key, `claimed_at`,
+  `subscription_id` nullable, `ON DELETE SET NULL`) records that a person has had their trial.
+  It references no organization, so the claim **outlives the organization it was started in**:
+  a trial row is deleted with its organization (`ON DELETE CASCADE`), and a claim kept on that
+  row let a creator delete their organization and start a second trial (ticket 07, which
+  replaced the `trial_creator_id` column and its partial unique index). Voiding touches the
+  subscription, never the claim, so a voided trial still counts as used. Not a private table:
+  it belongs to a person and only the trial check reads it.
 - **One redemption of a code per organization**: a partial unique index on
   `(promo_code_id, organization_id)` where the code is set. A voided promo still counts.
 - New `promo_codes` table: `id`, `code` (unique, stored upper-cased and trimmed), `plan_id`,
@@ -183,12 +189,13 @@ subscription when it was granted in error or abused.
 
 - `current(organizationId)` → `{ current, next, trialAvailable }`, where `current` and `next`
   are `{ id, kind, plan, periodStart, periodEnd }` or null. `trialAvailable` is true exactly
-  when the organization has never had a subscription row and its creator has no trial row.
+  when the organization has never had a subscription row and its creator has no trial claim.
 - `startTrial(actor, organizationId)` takes the organization row `FOR UPDATE`, re-checks
   availability and inserts a trial row lasting `BILLING.TRIAL_DAYS` (config, default 30) on the
   `pro` plan, starting now. Refusal is `CONFLICT` with `details.reason`
-  `trial_unavailable`. The unique index arbitrates a race between two organizations of one
-  creator; its violation maps to the same `CONFLICT`, never a 500.
+  `trial_unavailable`. The claim is inserted in the same transaction; its primary key
+  arbitrates a race between two organizations of one creator, and its violation maps to the
+  same `CONFLICT`, never a 500.
 - `redeem(actor, organizationId, { code, trial })`, all in one transaction:
   - lock the organization row;
   - normalize the code and look it up;
@@ -275,8 +282,8 @@ When tests arrive, the seam is already decided, the same one F-05 chose:
 - **Time is controlled through data, not a fake clock.** A test inserts periods with past or
   near-future dates and asserts the 402 or 200 that follows.
 - **One narrow exception at the database.** Insert two overlapping non-voided subscriptions for
-  one organization directly and assert the exclusion violation. Do the same for a second trial
-  row with the same `trial_creator_id`. A constraint that silently failed to be created would
+  one organization directly and assert the exclusion violation. Do the same for a second
+  `trial_claims` row for the same user. A constraint that silently failed to be created would
   leave every HTTP test green.
 - Prior art: F-05's spec (same seam, same exception for the one-owner index) and
   `notifications_dedupe_uq` / `source_payloads` for "the database arbitrates the race".

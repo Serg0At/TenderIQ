@@ -687,15 +687,26 @@ function up(pg) {
       // deleted, and this is the database holding that. Once per organization:
       // subscriptions_promo_code_org_uq.
       table.string('promo_code_id').references('id').inTable('promo_codes').onDelete('RESTRICT');
-      // A trial copies its organisation's created_by here, so one trial per creator can be an
-      // index rather than a join: subscriptions_trial_creator_uq.
-      table.string('trial_creator_id').references('id').inTable('users').onDelete('SET NULL');
       // Voiding is what an operator does to a grant made in error. A voided row grants nothing
       // and is left out of the overlap rule, but stays as the record that it was granted.
       table.timestamp('voided_at');
       table.string('voided_by').references('id').inTable('users').onDelete('SET NULL');
       table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
       table.index(['organization_id', 'period_start'], 'subscriptions_org_start_idx');
+    })
+
+    // trial_claims — That a person has had their trial: one per user, ever (ADR 0005). Not a
+    // private table: it belongs to a person, not a tenant, and only the trial check reads it.
+    // It references no organization, on purpose — a trial row CASCADEs away with its
+    // organization, and a claim that went with it would hand the creator a second trial for
+    // the price of deleting one. The primary key, not a lookup, settles two organizations of
+    // one creator starting a trial at once: each holds only its own row lock. Voiding a trial
+    // touches the subscription, never this row, so a voided trial was still claimed.
+    // `subscription_id` is the trial it started, NULL once that row is gone.
+    .createTable('trial_claims', table => {
+      table.string('user_id').primary().references('id').inTable('users').onDelete('CASCADE');
+      table.timestamp('claimed_at').notNullable().defaultTo(pg.fn.now());
+      table.string('subscription_id').references('id').inTable('subscriptions').onDelete('SET NULL');
     })
 
     // invoices — Billing history per organisation.
@@ -994,18 +1005,8 @@ async function indexes(pg) {
      WHERE (voided_at IS NULL)`);
 
   /**
-   * One trial per organization creator, in any organization. The trial row copies its
-   * organization's created_by, so this is an index rather than a join. Voided rows are NOT
-   * excluded: a voided trial was still used, or voiding one would hand its creator another.
-   * Two organizations of one creator starting a trial at once each hold only their own row
-   * lock, so this index, not the service's re-check, decides which one gets it.
-   */
-  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_trial_creator_uq
-     ON subscriptions (trial_creator_id) WHERE kind = 'trial'`);
-
-  /**
-   * One redemption of a code per organization. Voided rows are NOT excluded, for the trial
-   * index's reason: a voided promo was still redeemed, or voiding it would hand the code back.
+   * One redemption of a code per organization. Voided rows are NOT excluded: a voided
+   * promo was still redeemed, or voiding it would hand the code back.
    */
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_promo_code_org_uq
      ON subscriptions (promo_code_id, organization_id) WHERE promo_code_id IS NOT NULL`);

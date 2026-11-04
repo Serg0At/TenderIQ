@@ -2,6 +2,7 @@ import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 
 const TABLE = 'subscriptions';
+const CLAIMS = 'trial_claims';
 
 const UNIQUE_VIOLATION = '23505';
 
@@ -37,8 +38,9 @@ const forOperator = (trx) =>
  * An organization's subscriptions: dated periods, one row each (ADR 0005).
  *
  * Scoped by organization like every private repository, except
- * `creatorHasTrial`, which asks the one cross-tenant question a trial needs (has
- * this person had one in any organization?) and answers only yes or no,
+ * `hasClaimedTrial`, which asks the one question a trial needs about a person
+ * rather than a tenant (has this person ever had one?) and answers only yes or
+ * no,
  * `findById` and `voidPeriod`, which the operator console reaches by a period's
  * id: the operator belongs to no organization, and acts on any one, and
  * `endingOrEnded`, the daily sweep's read across every organization.
@@ -78,12 +80,13 @@ export default class SubscriptionRepository {
   }
 
   /**
-   * Whether this person has had a trial, in any organization, voided or not —
-   * a voided trial still counts as used, or voiding one would hand its creator
-   * another.
+   * Whether this person has claimed their trial, in any organization, ever.
+   * Read from `trial_claims`, never from `subscriptions`: a trial row goes when
+   * its organization is deleted and a voided one is still a trial had, and the
+   * claim outlives both.
    */
-  static async creatorHasTrial(userId, trx = db) {
-    const row = await trx(TABLE).where({ kind: 'trial', trial_creator_id: userId }).first('id');
+  static async hasClaimedTrial(userId, trx = db) {
+    const row = await trx(CLAIMS).where({ user_id: userId }).first('user_id');
     return Boolean(row);
   }
 
@@ -173,8 +176,9 @@ export default class SubscriptionRepository {
    *
    * Only an unvoided row is updated, so a repeat keeps the first `voided_at` and
    * `voided_by`, and of two concurrent voids the second waits on the row lock
-   * and then matches nothing. The row stays: a voided trial still counts as used
-   * and a voided promo as a use of its code, through the indexes that read it.
+   * and then matches nothing. The row stays as the record of the grant: a voided
+   * promo still counts as a use of its code, through the index that reads it,
+   * and a voided trial was still claimed — its `trial_claims` row is untouched.
    */
   static async voidPeriod(id, operatorId, trx = db) {
     const voided = await trx(TABLE)
@@ -243,10 +247,11 @@ export default class SubscriptionRepository {
   }
 
   /**
-   * Insert a trial on `planId`, starting now and lasting `days`, and return its
-   * id — or null when its creator already has a trial elsewhere.
+   * Insert a trial on `planId`, starting now and lasting `days`, and the
+   * creator's claim to it, and return the trial's id — or null when the creator
+   * has already claimed a trial.
    *
-   * `subscriptions_trial_creator_uq` arbitrates that, never a lookup first: two
+   * The claim's primary key arbitrates that, never a lookup first: two
    * organizations of one creator each lock only their own row, so both
    * re-checks can pass. The violation aborts the transaction, so a caller
    * handed null must end it. Both ends come from the database clock, the one
@@ -262,11 +267,11 @@ export default class SubscriptionRepository {
         kind: 'trial',
         period_start: trx.raw('now()'),
         period_end: trx.raw('now() + make_interval(days => ?)', [days]),
-        trial_creator_id: creatorId,
       });
+      await trx(CLAIMS).insert({ user_id: creatorId, subscription_id: id });
       return id;
     } catch (error) {
-      if (error.code === UNIQUE_VIOLATION && error.constraint === 'subscriptions_trial_creator_uq') return null;
+      if (error.code === UNIQUE_VIOLATION && error.constraint === 'trial_claims_pkey') return null;
       throw error;
     }
   }

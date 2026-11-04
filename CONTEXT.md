@@ -94,7 +94,8 @@ _Avoid_: Plan period, Term, Licence, Channel subscription
 
 **Trial**:
 A free subscription an organization's owner starts once, by choice, from the organization's
-settings — at most one per person who has created organizations, however many they create.
+settings — at most one per person who has created organizations, however many they create or
+delete.
 _Avoid_: Pilot, Free period, Demo
 
 **Promo code**:

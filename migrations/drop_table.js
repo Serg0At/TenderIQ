@@ -7,6 +7,7 @@ async function down(pg) {
   const tables = [
     'audit_logs',
     'invoices',
+    'trial_claims',
     'subscriptions',
     'promo_codes',
     'plans',

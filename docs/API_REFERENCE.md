@@ -2756,7 +2756,8 @@ No request body
 - `kind`: `trial`, `promo` or `paid`. `plan`: the plan's name.
 - Periods are half-open: `periodStart` is inside the period, `periodEnd` is not.
 - `trialAvailable`: `true` exactly when the organization has never had a subscription and the
-  person who created it has never had a trial, in this organization or any other.
+  person who created it has never had a trial, in this organization or any other — one they
+  have since deleted included.
 - An operator-voided period never appears here and grants nothing, but still counts as having
   had a subscription.
 
@@ -2850,7 +2851,8 @@ No request body
 - `403 NO_ORGANIZATION`: orgless session.
 - `409 CONFLICT`: `details: { reason: "trial_unavailable" }` — the organization has had a
   subscription (a trial, a promo period, or one an operator voided), or its creator has already
-  had a trial in another organization. One answer for every reason, including two organizations
+  had a trial in another organization — including one since deleted: the claim belongs to the
+  person and outlives the organization it was started in. One answer for every reason, including two organizations
   of one creator starting a trial at the same instant: one of them gets it, the other is refused
   the same way.
 - `429 RATE_LIMITED`: more than 10 attempts/hour for this user.

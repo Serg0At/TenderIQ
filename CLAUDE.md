@@ -602,6 +602,11 @@ subscriptions*):
   invoice is not a payment method**, though the reference spec's `technical/Payments
   Architecture.md` makes it the backbone (ADR 0005). Until card payments exist, launch runs on a
   trial and 100% promo codes; `invoices` may never get a writer.
+- **A trial claim outlives its organization.** One trial per creator is a `trial_claims` row keyed
+  by the user, referencing no organization, inserted with the trial in one transaction — its
+  primary key, not the organization row lock, settles two organizations of one creator. It used to
+  be a column on the trial row, which `ON DELETE CASCADE`s with its organization, so deleting an
+  organization handed its creator a second trial. A void touches the subscription, never the claim.
 - `GET /organization/subscription` answers `{ current, next, trialAvailable }` to every member.
 
 **Relevance ranking** (`GET /tenders/relevant`, spec and tickets in `.scratch/relevance-ranking/`,

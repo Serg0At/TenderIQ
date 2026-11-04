@@ -62,8 +62,9 @@ export default class SubscriptionService {
    * whether a trial could be started.
    *
    * A trial is available exactly when the organization has never had a
-   * subscription and the person who created it has never had a trial anywhere.
-   * Both count voided rows: a voided grant was still a grant.
+   * subscription and the person who created it has never claimed a trial. Both
+   * outlast a void, and the claim outlasts the organization it was made in: a
+   * creator who deletes their organization does not get a second trial.
    */
   static async current(organizationId) {
     const organization = await organizations.findById(organizationId);
@@ -73,7 +74,7 @@ export default class SubscriptionService {
       subscriptions.current(organizationId),
       subscriptions.next(organizationId),
       subscriptions.everHad(organizationId),
-      subscriptions.creatorHasTrial(organization.created_by),
+      subscriptions.hasClaimedTrial(organization.created_by),
     ]);
 
     return {
@@ -93,8 +94,8 @@ export default class SubscriptionService {
    * The organization row is locked before availability is re-checked, so a
    * second request for the same organization waits and then sees the first
    * one's row. The lock cannot cover another organization of the same creator;
-   * `subscriptions_trial_creator_uq` does, and losing that race is the same
-   * refusal as losing the re-check.
+   * the creator's `trial_claims` row does, inserted in the same transaction,
+   * and losing that race is the same refusal as losing the re-check.
    *
    * Returns the subscription view and a fresh session for this organization,
    * minted after the commit through the one choke point, so the trial's plan is
@@ -116,7 +117,7 @@ export default class SubscriptionService {
 
       const [everHad, creatorHadTrial] = await Promise.all([
         subscriptions.everHad(organizationId, trx),
-        subscriptions.creatorHasTrial(organization.created_by, trx),
+        subscriptions.hasClaimedTrial(organization.created_by, trx),
       ]);
       if (everHad || creatorHadTrial) throw trialUnavailable();
 
