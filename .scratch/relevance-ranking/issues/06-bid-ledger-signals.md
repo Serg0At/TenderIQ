@@ -48,7 +48,7 @@ has bid on one tender. That is a data problem, resolved in ticket 10, not a reas
       two counting rules the profile and public-bid repositories already follow.
 - [x] Reading a tenant's ranking never exposes another tenant's private data; every ledger signal
       is drawn from public award and bid records only.
-- [ ] Still inside the 1.5s P95 budget with the ledger queries added.
+- [x] Still inside the 1.5s P95 budget with the ledger queries added.
 
 > P95 not yet measured where it counts: ~20 ms server-side execution and ~2 ms ranking, but
 > wall-clock from a development machine to Neon us-east-2 was 3–9 s, all network. Measure from
@@ -57,3 +57,7 @@ has bid on one tender. That is a data problem, resolved in ticket 10, not a reas
 > 2026-10-31: p95 884 ms through the full API on the local Postgres, ledger signals included,
 > with a 3,305-lot identity. Inside budget today. The ledger *scoring* is what costs (≈600 ms of
 > it), not the ledger queries, and it scales with ledger size. Details in ticket 05.
+
+> 2026-11-05: ledger scoring reworked to per-code totals, output unchanged; p95 181 ms through
+> the full API with the same identity, and 69 ms of scoring on a 15× synthetic ledger. Details
+> in ticket 05.

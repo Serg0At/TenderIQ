@@ -51,7 +51,7 @@ supplier identity is told so, in the shape `/tracked-tenders/performance` alread
 - [x] The scoring rule is a pure function with no database, queue or clock of its own, and scores
       are computed per request with nothing stored.
 - [x] Alerts are provably unaffected: the matcher's threshold, weights and output are untouched.
-- [ ] Measured against the live database: the candidate set matches the biddable tenders actually
+- [x] Measured against the live database: the candidate set matches the biddable tenders actually
       present, and the response is inside the 1.5s P95 budget without a cache.
 - [x] `docs/API_REFERENCE.md` documents the endpoint, the response shape and the insufficient-basis
       answer.
@@ -70,3 +70,17 @@ supplier identity is told so, in the shape `/tracked-tenders/performance` alread
 > 3,305. `categorySignal` compares every unit code with every ledger lot of its division, per
 > candidate. **The archive will multiply the ledger and break this budget**: fix that before
 > ticket 10 lands, or re-measure straight after it.
+
+> 2026-11-05, fixed and ticked. The ledger is now totalled per distinct CPV code
+> (`relevance.service.js#indexLedger` / `ledgerNear`), each code's totals computed once per
+> ranking per buyer, and a candidate's own lots subtracted rather than skipped; the known-buyer
+> signal reads the same per-code totals. Output is byte-identical to the per-lot version: 600
+> rankings (150 heaviest suppliers × today's and a past candidate set × two windows, 107 with
+> the candidates' own lots in the ledger) and the 3-supplier fixture at 1, 3 and 24 months on
+> a 15× ledger, where ½ and ¼ weights occur. `rankTenders` on the 3,305-lot fixture: 256 →
+> 45 ms; on a synthetic 49,575-lot ledger (the fixture ×15, new tenders and buyers, aged back
+> 15 months): **3,691 → 69 ms**, so the archive no longer moves it. Through the full API on
+> the local Postgres, same fixture, 40 requests per page: 153 biddable tenders walked over 4
+> pages with 0 repeats, missing or extra; page 1 p50 166 / **p95 174 ms**, last page p95 181
+> ms. Measured on the local API and database rather than a deployed one: the remaining cost
+> is ~75 ms of queries and ~45 ms of scoring, neither of which a deployment adds to.
