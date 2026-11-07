@@ -641,15 +641,28 @@ function up(pg) {
       table.index(['channel', 'address'], 'channel_subscriptions_channel_address_idx');
     })
 
-    // alert_deliveries — The per-channel delivery attempt and outcome for a notification.
+    // alert_deliveries — One delivery attempt of a notification to one destination, and its
+    // outcome.
     .createTable('alert_deliveries', table => {
       table.string('id').primary();
-      table.string('notification_id').notNullable().references('id').inTable('notifications').onDelete('CASCADE');
+      // No single-column FK on notification_id or channel_subscription_id: both parents are
+      // reached through the composite keys added in indexes(), so a row cannot name a
+      // notification or a destination of another organization.
+      table.string('notification_id').notNullable();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      /**
+       * The destination — one chat or one address — this attempt went to, so "was this person
+       * told, and how" is one row. NULL only for a row that went to no destination: the
+       * `skipped` row of a channel with no live one, the row of a channel that is not
+       * configured at all, and the `log` channel's operator record.
+       */
+      table.string('channel_subscription_id');
       table.string('channel').notNullable();
       table.string('status').notNullable();
       table.timestamp('sent_at');
-      // Quiet hours defer a delivery rather than dropping it, so a waiting
-      // alert must be distinguishable from a failed one.
+      // A throttled provider (429, SMTP greylisting) defers a delivery rather than failing it,
+      // and the deferred sweep sends it again once this has passed — so a waiting alert stays
+      // distinguishable from a failed one, and being throttled never burns an attempt.
       table.timestamp('deferred_until');
       table.text('detail');
     })
@@ -1004,6 +1017,42 @@ async function indexes(pg) {
    */
   await pg.raw(`CREATE INDEX IF NOT EXISTS alert_deliveries_notification_idx
      ON alert_deliveries (notification_id, channel)`);
+
+  /**
+   * A delivery row belongs to its own tenant's notification and its own tenant's destination.
+   *
+   * Composite, for the reason `bids` → `tracked_tenders` is: a denormalised `organization_id`
+   * anchored to nothing is a cross-tenant leak that reads as correct, and a destination of
+   * another organization named on a delivery row would be exactly that. Each parent gains
+   * `UNIQUE (id, organization_id)` for its child to reference.
+   *
+   * The destination key is SET NULL with the column list: deleting a destination keeps its
+   * delivery history and clears only the pointer. A listless composite SET NULL would null
+   * `organization_id` too and fail its NOT NULL, so the delete could not complete at all —
+   * the same trap `checklist_items` → `vault_documents` fell into. MATCH SIMPLE (the
+   * default) leaves the key inert on the rows that name no destination.
+   */
+  await pg.raw(`ALTER TABLE notifications ADD CONSTRAINT notifications_id_org_uq
+     UNIQUE (id, organization_id)`);
+  await pg.raw(`ALTER TABLE channel_subscriptions ADD CONSTRAINT channel_subscriptions_id_org_uq
+     UNIQUE (id, organization_id)`);
+  await pg.raw(`ALTER TABLE alert_deliveries ADD CONSTRAINT alert_deliveries_notification_org_fk
+     FOREIGN KEY (notification_id, organization_id)
+     REFERENCES notifications (id, organization_id) ON DELETE CASCADE`);
+  await pg.raw(`ALTER TABLE alert_deliveries ADD CONSTRAINT alert_deliveries_destination_org_fk
+     FOREIGN KEY (channel_subscription_id, organization_id)
+     REFERENCES channel_subscriptions (id, organization_id)
+     ON DELETE SET NULL (channel_subscription_id)`);
+
+  /**
+   * Covers the destination key. Without it, deleting a destination — `purgeExpiredTokens`
+   * does it daily, and a user's deletion cascades to theirs — seq-scans a table that grows
+   * one row per destination per alert to enforce the SET NULL. Partial, because the rows
+   * naming no destination are never looked up by it.
+   */
+  await pg.raw(`CREATE INDEX IF NOT EXISTS alert_deliveries_destination_idx
+     ON alert_deliveries (channel_subscription_id)
+     WHERE channel_subscription_id IS NOT NULL`);
 
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_uq
      ON notifications (organization_id, type, tender_id, subject_id) NULLS NOT DISTINCT`);

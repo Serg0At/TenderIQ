@@ -38,6 +38,7 @@ const logChannel = {
     );
     await notifications.recordDelivery({
       notificationId: notification.id,
+      organizationId: notification.organization_id,
       channel: 'log',
       status: 'sent',
     });

@@ -256,8 +256,15 @@ export const deliver = async (channel, notification, { now = new Date() } = {}) 
   const transport = TRANSPORTS[channel];
   if (!transport) throw new Error(`[notifier] no transport for channel "${channel}"`);
 
+  // A row names its destination only when it went to one; the unconfigured and
+  // no-destination rows below pass none.
   const record = (fields) =>
-    notifications.recordDelivery({ notificationId: notification.id, channel, ...fields });
+    notifications.recordDelivery({
+      notificationId: notification.id,
+      organizationId: notification.organization_id,
+      channel,
+      ...fields,
+    });
 
   if (!transport.isConfigured()) {
     await record({ status: 'failed', detail: transport.unconfiguredDetail });
@@ -302,7 +309,7 @@ export const deliver = async (channel, notification, { now = new Date() } = {}) 
       result
     );
 
-    await record({ status, detail, deferredUntil });
+    await record({ subscriptionId: subscription.id, status, detail, deferredUntil });
     if (status === 'sent') anySent = true;
     if (status === 'deferred') anyDeferred = true;
   }
