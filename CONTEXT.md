@@ -231,6 +231,22 @@ A tender clearing one saved search's threshold. Binary, and the only thing that 
 whether an alert fires.
 _Avoid_: Relevance, Hit, Fit
 
+**Destination**:
+One person's own place an organization's alerts reach — their private Telegram chat or their
+own verified email address. Linked by its owner; switched off by the organization.
+_Avoid_: Channel (alone), Recipient, Subscription
+
+**Cadence**:
+Whether a destination receives new matches one by one as they happen (instant) or once a day
+in a digest (daily). A property of the destination, chosen by its owner.
+_Avoid_: Frequency, Preference, Mode
+
+**Digest**:
+One message, sent each morning to a daily destination, listing the organization's new matches
+since the last one. The same tenders instant alerts would have sent, never more; amendments,
+reminders and announcements are not held for it.
+_Avoid_: Summary, Newsletter, Recommendations
+
 **Relevance**:
 How well one biddable tender fits one organization, graded and drawn from several signals — its
 saved searches, its pursuit history and its public bid history. Orders a list; never decides an
