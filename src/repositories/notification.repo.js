@@ -1,5 +1,6 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
+import { SWITCHED_OFF_BEFORE_DIGEST } from './channelSubscription.repo.js';
 
 /**
  * Notifications and their per-channel delivery attempts.
@@ -183,13 +184,22 @@ export default class NotificationRepository {
 
   /**
    * Close a digest's held rows with its outcome. Only rows still `held` move,
-   * so a row another path already settled is not overwritten.
+   * so a row another path already settled is not overwritten — with one
+   * exception: a row a revoke dropped while this digest was in flight. The
+   * digest's own send can be what revokes (a blocked bot, the last failure
+   * before auto-revocation), and a switch-off can land between the read and
+   * the settle; either way the digest did attempt these rows, and what came of
+   * it is the honest record, not "switched off before its digest".
    */
   static async settleHeld({ deliveryIds, status, detail = null }, trx = db) {
     if (!deliveryIds.length) return 0;
     return trx('alert_deliveries')
       .whereIn('id', deliveryIds)
-      .andWhere('status', 'held')
+      .andWhere((q) =>
+        q
+          .where('status', 'held')
+          .orWhere((dropped) => dropped.where({ status: 'skipped', detail: SWITCHED_OFF_BEFORE_DIGEST }))
+      )
       .update({ status, detail, sent_at: status === 'sent' ? new Date() : null });
   }
 

@@ -14,6 +14,45 @@ const TABLE = 'channel_subscriptions';
 const NEW_DESTINATION_CADENCE = { telegram: 'instant', email: 'daily' };
 
 /**
+ * The detail a held match takes when its destination is switched off before
+ * the digest that would have carried it. Exported because the digest's own
+ * settlement recognises it: see `notification.repo.js#settleHeld`.
+ */
+export const SWITCHED_OFF_BEFORE_DIGEST = 'destination switched off before its digest';
+
+/**
+ * Turn a destination's held matches `skipped`. The held rows ARE its next
+ * digest, so this is what makes switching off drop the digest, and switching
+ * back on start empty rather than with a backlog of everything since. Scoped
+ * by the destination's organization as well as its id, like every other read
+ * of a destination's held rows.
+ */
+const dropHeld = ({ id, organizationId }, trx) =>
+  trx('alert_deliveries')
+    .where({ channel_subscription_id: id, organization_id: organizationId, status: 'held' })
+    .update({ status: 'skipped', detail: SWITCHED_OFF_BEFORE_DIGEST });
+
+/**
+ * Switch destinations off and drop their held matches, in one transaction.
+ * Every revoke goes through here — the API's, `/stop`, Telegram reporting the
+ * bot blocked, the unsubscribe link, auto-revocation after repeated failures —
+ * so no path can switch a destination off and leave its digest waiting. Only a
+ * row this call actually revoked drops anything. Answers the count revoked.
+ */
+const revokeWhere = (where, trx) => {
+  const run = async (t) => {
+    const revoked = await t(TABLE)
+      .where(where)
+      .whereNull('revoked_at')
+      .update({ revoked_at: new Date(), updated_at: new Date() })
+      .returning(['id', 'organization_id']);
+    for (const row of revoked) await dropHeld({ id: row.id, organizationId: row.organization_id }, t);
+    return revoked.length;
+  };
+  return trx === db ? db.transaction(run) : run(trx);
+};
+
+/**
  * Where an organization's alerts are delivered.
  *
  * One row is one destination on one channel — a Telegram chat, later an email
@@ -122,6 +161,9 @@ export default class ChannelSubscriptionRepository {
       .first();
 
     if (existing) {
+      // Coming back on starts empty, even of a match held in the instant
+      // between a delivery listing this destination and the revoke.
+      if (existing.revoked_at) await dropHeld({ id: existing.id, organizationId }, trx);
       const [row] = await trx(TABLE)
         .where({ id: existing.id })
         .update({
@@ -286,6 +328,12 @@ export default class ChannelSubscriptionRepository {
     // the caller was asking for anyway.
     if (!existing.revoked_at) return { row: existing, reason: 'already_active' };
 
+    // The revoke already dropped what was held; this drops a match held in the
+    // instant between a delivery listing the destination and the revoke, so
+    // switching back on sends nothing from before. Before the row goes live,
+    // so nothing can be held in between.
+    await dropHeld({ id, organizationId }, trx);
+
     const [row] = await trx(TABLE)
       .where({ id })
       .update({ revoked_at: null, failure_count: 0, last_error: null, updated_at: new Date() })
@@ -330,19 +378,18 @@ export default class ChannelSubscriptionRepository {
     return { row, previous };
   }
 
+  /**
+   * Switch a destination off, dropping its held matches (`revokeWhere`). Not
+   * organization-scoped: the callers are `/stop`, a blocked bot, the
+   * unsubscribe link and the notifier, each holding a row it already resolved.
+   */
   static async revoke(id, trx = db) {
-    return trx(TABLE)
-      .where({ id })
-      .whereNull('revoked_at')
-      .update({ revoked_at: new Date(), updated_at: new Date() });
+    return revokeWhere({ id }, trx);
   }
 
   /** Tenant-scoped revoke for the API — another org's id simply is not found. */
   static async revokeForOrg({ id, organizationId }, trx = db) {
-    return trx(TABLE)
-      .where({ id, organization_id: organizationId })
-      .whereNull('revoked_at')
-      .update({ revoked_at: new Date(), updated_at: new Date() });
+    return revokeWhere({ id, organization_id: organizationId }, trx);
   }
 
   /**
