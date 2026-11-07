@@ -140,6 +140,21 @@ const normalize = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().toLow
 export const __evalParts = { SYSTEM_PROMPT, OUTPUT_SCHEMA };
 
 export default class ChecklistExtractionService {
+  /**
+   * The invitation a checklist would be read from, out of a tender's stored
+   * documents (newest first, as `tender.repo.js#findWithStoredDocuments` gives
+   * them): `{ invitation, reason }`, with `reason` null when there is one.
+   *
+   * One rule for the extractor and the generate request, so the up-front
+   * refusal can never disagree with what the job would have found. No storage
+   * read: a missing `.txt` behind a stored invitation is the job's `no_text`.
+   */
+  static invitationOf(tender) {
+    const invitation = tender?.documents.find((d) => d.kind === 'invitation') ?? null;
+    if (invitation) return { invitation, reason: null };
+    return { invitation: null, reason: tender?.documents.length ? 'unsupported_document' : 'no_document' };
+  }
+
   /** The identity of a document, as `checklists.document_hash` stores it. */
   static documentHash(documentText) {
     return sha256(documentText);

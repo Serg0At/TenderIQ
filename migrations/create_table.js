@@ -440,6 +440,21 @@ function up(pg) {
       table.timestamp('updated_at').defaultTo(pg.fn.now());
     })
 
+    // checklist_generations — One accepted request to generate a checklist: what an
+    // organisation's monthly quota counts. Written under the organisation row lock before the
+    // job is queued, and never deleted when the job finds nothing to do — the request was the
+    // spend. Deleting a pursuit keeps the row with only `tracked_tender_id` nulled (composite FK
+    // in indexes()), so a generation is never refunded by deleting what it was for.
+    .createTable('checklist_generations', table => {
+      table.string('id').primary();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      // No single-column FK: the composite one in indexes() covers it and anchors organization_id.
+      table.string('tracked_tender_id');
+      table.string('requested_by').references('id').inTable('users').onDelete('SET NULL');
+      table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
+      table.index(['organization_id', 'created_at'], 'checklist_generations_org_created_idx');
+    })
+
     // checklist_items — A single bid requirement, AI-extracted or manual, carrying a
     // confidence score so low-confidence ones can route to human review.
     .createTable('checklist_items', table => {
@@ -626,15 +641,28 @@ function up(pg) {
       table.index(['channel', 'address'], 'channel_subscriptions_channel_address_idx');
     })
 
-    // alert_deliveries — The per-channel delivery attempt and outcome for a notification.
+    // alert_deliveries — One delivery attempt of a notification to one destination, and its
+    // outcome.
     .createTable('alert_deliveries', table => {
       table.string('id').primary();
-      table.string('notification_id').notNullable().references('id').inTable('notifications').onDelete('CASCADE');
+      // No single-column FK on notification_id or channel_subscription_id: both parents are
+      // reached through the composite keys added in indexes(), so a row cannot name a
+      // notification or a destination of another organization.
+      table.string('notification_id').notNullable();
+      table.string('organization_id').notNullable().references('id').inTable('organizations').onDelete('CASCADE');
+      /**
+       * The destination — one chat or one address — this attempt went to, so "was this person
+       * told, and how" is one row. NULL only for a row that went to no destination: the
+       * `skipped` row of a channel with no live one, the row of a channel that is not
+       * configured at all, and the `log` channel's operator record.
+       */
+      table.string('channel_subscription_id');
       table.string('channel').notNullable();
       table.string('status').notNullable();
       table.timestamp('sent_at');
-      // Quiet hours defer a delivery rather than dropping it, so a waiting
-      // alert must be distinguishable from a failed one.
+      // A throttled provider (429, SMTP greylisting) defers a delivery rather than failing it,
+      // and the deferred sweep sends it again once this has passed — so a waiting alert stays
+      // distinguishable from a failed one, and being throttled never burns an attempt.
       table.timestamp('deferred_until');
       table.text('detail');
     })
@@ -687,15 +715,26 @@ function up(pg) {
       // deleted, and this is the database holding that. Once per organization:
       // subscriptions_promo_code_org_uq.
       table.string('promo_code_id').references('id').inTable('promo_codes').onDelete('RESTRICT');
-      // A trial copies its organisation's created_by here, so one trial per creator can be an
-      // index rather than a join: subscriptions_trial_creator_uq.
-      table.string('trial_creator_id').references('id').inTable('users').onDelete('SET NULL');
       // Voiding is what an operator does to a grant made in error. A voided row grants nothing
       // and is left out of the overlap rule, but stays as the record that it was granted.
       table.timestamp('voided_at');
       table.string('voided_by').references('id').inTable('users').onDelete('SET NULL');
       table.timestamp('created_at').notNullable().defaultTo(pg.fn.now());
       table.index(['organization_id', 'period_start'], 'subscriptions_org_start_idx');
+    })
+
+    // trial_claims — That a person has had their trial: one per user, ever (ADR 0005). Not a
+    // private table: it belongs to a person, not a tenant, and only the trial check reads it.
+    // It references no organization, on purpose — a trial row CASCADEs away with its
+    // organization, and a claim that went with it would hand the creator a second trial for
+    // the price of deleting one. The primary key, not a lookup, settles two organizations of
+    // one creator starting a trial at once: each holds only its own row lock. Voiding a trial
+    // touches the subscription, never this row, so a voided trial was still claimed.
+    // `subscription_id` is the trial it started, NULL once that row is gone.
+    .createTable('trial_claims', table => {
+      table.string('user_id').primary().references('id').inTable('users').onDelete('CASCADE');
+      table.timestamp('claimed_at').notNullable().defaultTo(pg.fn.now());
+      table.string('subscription_id').references('id').inTable('subscriptions').onDelete('SET NULL');
     })
 
     // invoices — Billing history per organisation.
@@ -912,6 +951,16 @@ async function indexes(pg) {
      ON DELETE SET NULL (vault_document_id)`);
 
   /**
+   * A generation belongs to its own tenant's pursuit. SET NULL with the column list, for the
+   * reason above: deleting the pursuit clears the pointer and keeps the row, so a deleted
+   * pursuit gives no quota back, and `organization_id` — which the count reads — stays.
+   */
+  await pg.raw(`ALTER TABLE checklist_generations ADD CONSTRAINT checklist_generations_tracked_org_fk
+     FOREIGN KEY (tracked_tender_id, organization_id)
+     REFERENCES tracked_tenders (id, organization_id)
+     ON DELETE SET NULL (tracked_tender_id)`);
+
+  /**
    * A contract cannot name an award belonging to a different tender.
    *
    * MATCH SIMPLE — the default, stated because it is load-bearing — makes the whole
@@ -969,6 +1018,42 @@ async function indexes(pg) {
   await pg.raw(`CREATE INDEX IF NOT EXISTS alert_deliveries_notification_idx
      ON alert_deliveries (notification_id, channel)`);
 
+  /**
+   * A delivery row belongs to its own tenant's notification and its own tenant's destination.
+   *
+   * Composite, for the reason `bids` → `tracked_tenders` is: a denormalised `organization_id`
+   * anchored to nothing is a cross-tenant leak that reads as correct, and a destination of
+   * another organization named on a delivery row would be exactly that. Each parent gains
+   * `UNIQUE (id, organization_id)` for its child to reference.
+   *
+   * The destination key is SET NULL with the column list: deleting a destination keeps its
+   * delivery history and clears only the pointer. A listless composite SET NULL would null
+   * `organization_id` too and fail its NOT NULL, so the delete could not complete at all —
+   * the same trap `checklist_items` → `vault_documents` fell into. MATCH SIMPLE (the
+   * default) leaves the key inert on the rows that name no destination.
+   */
+  await pg.raw(`ALTER TABLE notifications ADD CONSTRAINT notifications_id_org_uq
+     UNIQUE (id, organization_id)`);
+  await pg.raw(`ALTER TABLE channel_subscriptions ADD CONSTRAINT channel_subscriptions_id_org_uq
+     UNIQUE (id, organization_id)`);
+  await pg.raw(`ALTER TABLE alert_deliveries ADD CONSTRAINT alert_deliveries_notification_org_fk
+     FOREIGN KEY (notification_id, organization_id)
+     REFERENCES notifications (id, organization_id) ON DELETE CASCADE`);
+  await pg.raw(`ALTER TABLE alert_deliveries ADD CONSTRAINT alert_deliveries_destination_org_fk
+     FOREIGN KEY (channel_subscription_id, organization_id)
+     REFERENCES channel_subscriptions (id, organization_id)
+     ON DELETE SET NULL (channel_subscription_id)`);
+
+  /**
+   * Covers the destination key. Without it, deleting a destination — `purgeExpiredTokens`
+   * does it daily, and a user's deletion cascades to theirs — seq-scans a table that grows
+   * one row per destination per alert to enforce the SET NULL. Partial, because the rows
+   * naming no destination are never looked up by it.
+   */
+  await pg.raw(`CREATE INDEX IF NOT EXISTS alert_deliveries_destination_idx
+     ON alert_deliveries (channel_subscription_id)
+     WHERE channel_subscription_id IS NOT NULL`);
+
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_uq
      ON notifications (organization_id, type, tender_id, subject_id) NULLS NOT DISTINCT`);
 
@@ -994,18 +1079,8 @@ async function indexes(pg) {
      WHERE (voided_at IS NULL)`);
 
   /**
-   * One trial per organization creator, in any organization. The trial row copies its
-   * organization's created_by, so this is an index rather than a join. Voided rows are NOT
-   * excluded: a voided trial was still used, or voiding one would hand its creator another.
-   * Two organizations of one creator starting a trial at once each hold only their own row
-   * lock, so this index, not the service's re-check, decides which one gets it.
-   */
-  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_trial_creator_uq
-     ON subscriptions (trial_creator_id) WHERE kind = 'trial'`);
-
-  /**
-   * One redemption of a code per organization. Voided rows are NOT excluded, for the trial
-   * index's reason: a voided promo was still redeemed, or voiding it would hand the code back.
+   * One redemption of a code per organization. Voided rows are NOT excluded: a voided
+   * promo was still redeemed, or voiding it would hand the code back.
    */
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_promo_code_org_uq
      ON subscriptions (promo_code_id, organization_id) WHERE promo_code_id IS NOT NULL`);

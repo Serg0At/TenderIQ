@@ -2282,6 +2282,14 @@ job's idempotency key, so two clicks cannot buy two model calls.
 **Authentication:** required (Bearer). Permission: `bid:write` — generating spends money, which
 is a stronger act than viewing.
 
+**Quota:** every `202` spends one of the organization's monthly checklist generations, `force`
+included and whatever the job then finds (unchanged, no text, a failure). The limit comes from the
+subscription covering now, read at request time, not from the token: no subscription (`free`)
+0, a trial 10, `starter` 5, `pro` 30, `business` 100, `enterprise` 300. Used counts this
+organization's generations since the later of the 1st of the current month and the start of its
+current subscription, both in Asia/Yerevan, so a new subscription starts afresh. Every refusal
+below costs nothing.
+
 **Path parameters:**
 
 - `id`: the tracked tender's CUID2 id.
@@ -2299,7 +2307,7 @@ is a stronger act than viewing.
   changed.
 
 Regenerating when the invitation has not changed since the stored items were extracted makes
-**no model call**. The answer is still `202` and `pending`, and the next
+**no model call**. The answer is still `202` and `pending` (and still spends a unit), and the next
 [GET](#get-checklist) shows `status: "ready"` with the stored items as they are: the same ids,
 `generatedAt` and `model`, and an AI item a user deleted stays deleted. This holds even if a later
 run failed, because a failed run leaves the stored items as they were. That includes a failed
@@ -2330,9 +2338,21 @@ The body may be omitted entirely.
 - `404 NOT_FOUND`: "Tracked tender not found."
 - `409 CONFLICT`: "A checklist is already being generated for this tender." Exactly while its job
   is still queued or running, whatever the checklist's status and with `force` too — a running job
-  cannot be re-pointed, and adding a second under its id would do nothing.
+  cannot be re-pointed, and adding a second under its id would do nothing. No `details`.
+- `409 CONFLICT` with `details: { reason }` — the tender holds nothing a checklist can be read
+  from, so nothing is queued, nothing is spent, and the checklist is left as it was:
+  - `no_document`: no stored invitation archive (the common case);
+  - `unsupported_document`: documents are stored, but none a checklist is read from yet (an
+    ARMEPS tender's archive).
+- `429 QUOTA_EXCEEDED`: the month's generations are spent, or the plan has none.
+  `details: { used, limit, resetsAt }`, where `resetsAt` is the next 1st of the month at 00:00
+  Asia/Yerevan, in UTC (`"2026-11-30T20:00:00.000Z"`). `limit: 0` means no subscription covers
+  now.
 - `503 DEPENDENCY_UNAVAILABLE`: "AI checklist extraction is not configured." Refused up front
   rather than enqueueing a job certain to fail.
+
+Refusals are checked in this order: tracked tender found → AI configured → already in flight →
+an invitation stored → quota.
 
 ---
 
@@ -2745,7 +2765,8 @@ No request body
       "periodStart": "2026-12-01T09:12:44.120Z",
       "periodEnd": "2027-06-01T09:12:44.120Z"
     },
-    "trialAvailable": false
+    "trialAvailable": false,
+    "quota": { "used": 3, "limit": 10, "resetsAt": "2026-11-30T20:00:00.000Z" }
   }
 }
 ```
@@ -2756,7 +2777,15 @@ No request body
 - `kind`: `trial`, `promo` or `paid`. `plan`: the plan's name.
 - Periods are half-open: `periodStart` is inside the period, `periodEnd` is not.
 - `trialAvailable`: `true` exactly when the organization has never had a subscription and the
-  person who created it has never had a trial, in this organization or any other.
+  person who created it has never had a trial, in this organization or any other — one they
+  have since deleted included.
+- `quota`: the organization's checklist generations this month — `used`, `limit`, and
+  `resetsAt`, the next 1st of the month at 00:00 Asia/Yerevan, in UTC. It is the same reading
+  [Generate checklist](#generate-checklist) enforces, so when `used` has reached `limit` the next
+  generate is a `429 QUOTA_EXCEEDED` carrying these numbers. `limit` comes from `current`: 10 on
+  a trial, else by plan (`starter` 5, `pro` 30, `business` 100, `enterprise` 300), and `0` with
+  no current period, `used` still counted. `used` counts since the later of the 1st and
+  `current`'s start, so a new period starts at `0`.
 - An operator-voided period never appears here and grants nothing, but still counts as having
   had a subscription.
 
@@ -2811,7 +2840,8 @@ No request body
         "periodEnd": "2026-12-01T09:12:44.120Z"
       },
       "next": null,
-      "trialAvailable": false
+      "trialAvailable": false,
+      "quota": { "used": 0, "limit": 10, "resetsAt": "2026-11-30T20:00:00.000Z" }
     },
     "session": {
       "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -2850,7 +2880,8 @@ No request body
 - `403 NO_ORGANIZATION`: orgless session.
 - `409 CONFLICT`: `details: { reason: "trial_unavailable" }` — the organization has had a
   subscription (a trial, a promo period, or one an operator voided), or its creator has already
-  had a trial in another organization. One answer for every reason, including two organizations
+  had a trial in another organization — including one since deleted: the claim belongs to the
+  person and outlives the organization it was started in. One answer for every reason, including two organizations
   of one creator starting a trial at the same instant: one of them gets it, the other is refused
   the same way.
 - `429 RATE_LIMITED`: more than 10 attempts/hour for this user.
@@ -2915,7 +2946,8 @@ from the membership as for the trial. Not plan-gated.
         "periodStart": "2026-12-01T09:12:44.120Z",
         "periodEnd": "2027-06-01T09:12:44.120Z"
       },
-      "trialAvailable": false
+      "trialAvailable": false,
+      "quota": { "used": 4, "limit": 10, "resetsAt": "2026-11-30T20:00:00.000Z" }
     },
     "session": {
       "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",

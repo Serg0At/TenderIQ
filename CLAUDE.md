@@ -602,6 +602,19 @@ subscriptions*):
   invoice is not a payment method**, though the reference spec's `technical/Payments
   Architecture.md` makes it the backbone (ADR 0005). Until card payments exist, launch runs on a
   trial and 100% promo codes; `invoices` may never get a writer.
+- **A trial claim outlives its organization.** One trial per creator is a `trial_claims` row keyed
+  by the user, referencing no organization, inserted with the trial in one transaction — its
+  primary key, not the organization row lock, settles two organizations of one creator. It used to
+  be a column on the trial row, which `ON DELETE CASCADE`s with its organization, so deleting an
+  organization handed its creator a second trial. A void touches the subscription, never the claim.
+- **A checklist generation spends the quota** (ticket 08, `features/subscriptions/quota.service.js`).
+  Every accepted generate, `force` included, is a `checklist_generations` row, written under the
+  organization row lock before the job is queued — there is no constraint that can arbitrate a
+  count, so the lock is the arbiter. The limit is `libs/permissions.js#CHECKLIST_QUOTA` (a trial
+  10 whatever its plan; no entry is 0), read from the period covering now and never the token;
+  the window opens at the later of the Yerevan 1st and that period's start, computed in SQL. A
+  tender with no stored invitation is refused `409` with the extractor's own reason
+  (`ChecklistExtractionService.invitationOf`) before the quota, and costs nothing.
 - `GET /organization/subscription` answers `{ current, next, trialAvailable }` to every member.
 
 **Relevance ranking** (`GET /tenders/relevant`, spec and tickets in `.scratch/relevance-ranking/`,

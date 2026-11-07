@@ -79,15 +79,31 @@ export default class NotificationRepository {
    * `detail` carries why a send failed or was deferred. Without it every
    * failure row reads identically, and "no chat linked" — the most common
    * cause by far — is indistinguishable from a provider outage.
+   *
+   * `subscriptionId` names the destination the attempt went to, and is null
+   * only for a row that went to none (a channel with no live destination, an
+   * unconfigured channel, the `log` channel). `organizationId` is the
+   * notification's own: the composite keys refuse a row whose notification or
+   * destination belongs to another organization.
    */
   static async recordDelivery(
-    { notificationId, channel, status, detail = null, deferredUntil = null },
+    {
+      notificationId,
+      organizationId,
+      subscriptionId = null,
+      channel,
+      status,
+      detail = null,
+      deferredUntil = null,
+    },
     trx = db
   ) {
     const id = createId();
     await trx('alert_deliveries').insert({
       id,
       notification_id: notificationId,
+      organization_id: organizationId,
+      channel_subscription_id: subscriptionId,
       channel,
       status,
       sent_at: status === 'sent' ? new Date() : null,

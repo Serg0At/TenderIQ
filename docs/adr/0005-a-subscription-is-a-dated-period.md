@@ -44,6 +44,11 @@ backbone.
   start another. No code can be redeemed while a promo is current or scheduled. Non-overlap is what `planFor`
   relies on, so like every comparable invariant here it belongs to the database; the spec
   decides the constraint.
+- **A trial claim belongs to the person, not the organization.** One trial per organization
+  creator is recorded in `trial_claims`, keyed by the user and referencing no organization,
+  because a trial row is deleted with its organization: a claim stored on that row would let a
+  creator delete their organization and start a second trial in a new one. The claim outlives
+  the organization it was made in, and a void, which touches only the subscription.
 - **A promo code at 100% needs no checkout**, so it redeems straight into a period; anything
   below 100% is refused until card payments exist. Trial and promo are separate kinds so that
   their AI quotas can differ.

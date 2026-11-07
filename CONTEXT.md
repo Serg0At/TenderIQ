@@ -94,13 +94,20 @@ _Avoid_: Plan period, Term, Licence, Channel subscription
 
 **Trial**:
 A free subscription an organization's owner starts once, by choice, from the organization's
-settings — at most one per person who has created organizations, however many they create.
+settings — at most one per person who has created organizations, however many they create or
+delete.
 _Avoid_: Pilot, Free period, Demo
 
 **Promo code**:
 A code an owner redeems for a subscription of a stated plan and length at a stated discount.
 One code may be shared by many organizations, up to its redemption limit.
 _Avoid_: Coupon, Voucher, Discount code
+
+**Quota**:
+How many checklist generations an organization may request within one calendar month of its
+current subscription. Set by the plan and the subscription's kind, and started afresh by every
+new subscription. An organization with no subscription has none.
+_Avoid_: Allowance, Credits, Limit (alone)
 
 ### Tenders and sources
 
@@ -223,6 +230,22 @@ _Avoid_: Profile, Search profile, Subscription, Watch
 A tender clearing one saved search's threshold. Binary, and the only thing that decides
 whether an alert fires.
 _Avoid_: Relevance, Hit, Fit
+
+**Destination**:
+One person's own place an organization's alerts reach — their private Telegram chat or their
+own verified email address. Linked by its owner; switched off by the organization.
+_Avoid_: Channel (alone), Recipient, Subscription
+
+**Cadence**:
+Whether a destination receives new matches one by one as they happen (instant) or once a day
+in a digest (daily). A property of the destination, chosen by its owner.
+_Avoid_: Frequency, Preference, Mode
+
+**Digest**:
+One message, sent each morning to a daily destination, listing the organization's new matches
+since the last one. The same tenders instant alerts would have sent, never more; amendments,
+reminders and announcements are not held for it.
+_Avoid_: Summary, Newsletter, Recommendations
 
 **Relevance**:
 How well one biddable tender fits one organization, graded and drawn from several signals — its

@@ -45,11 +45,8 @@ import { isFinalAttempt } from '../utils/attempts.js';
 export const loadInvitationText = async (tenderId) => {
   const tender = await tenders.findWithStoredDocuments(tenderId);
   const title = tender?.title ?? null;
-  const invitation = tender?.documents.find((d) => d.kind === 'invitation');
-  if (!invitation) {
-    const reason = tender?.documents.length ? 'unsupported_document' : 'no_document';
-    return { text: null, title, reason };
-  }
+  const { invitation, reason } = ChecklistExtractionService.invitationOf(tender);
+  if (!invitation) return { text: null, title, reason };
 
   const storage = await getStorage();
   const textKey = tenderDocTextKeyOf(invitation.storage_key);

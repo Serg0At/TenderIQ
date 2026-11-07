@@ -78,6 +78,8 @@ const MONTH_MS = 30.44 * 24 * 60 * 60 * 1000;
  * Recency weight, in steps rather than a curve so a ranking can be reproduced
  * by hand: 1 inside `fullMonths`, ½ up to three times that, ¼ beyond — never 0.
  * History is evidence of what a supplier does; age weakens it, nothing erases it.
+ * The steps are powers of two on purpose: the ledger index subtracts a
+ * candidate's own lots from per-code totals, which is exact only for them.
  */
 export const recencyWeight = (at, now, fullMonths) => {
   if (!at) return 0.25;
@@ -232,28 +234,89 @@ const fieldSignal = (unit, fields) => {
   return [];
 };
 
+/** Add one lot to a `[recency-weighted count, raw count]` pair, or take it away. */
+const tally = (pair, weight, sign = 1) => {
+  pair[0] += sign * weight;
+  pair[1] += sign;
+};
+
+const merge = (into, [weight, lots]) => {
+  into[0] += weight;
+  into[1] += lots;
+};
+
+const entryOf = (map, key, create) => {
+  if (!map.has(key)) map.set(key, create());
+  return map.get(key);
+};
+
 /**
  * The public bid ledger, indexed for scoring: each lot this organization's
- * supplier identity bid on, with its recency weight, bucketed by CPV division
- * so a candidate code is only ever compared with codes that could be close.
- * Built once per ranking, never per candidate.
+ * supplier identity bid on, with its recency weight. Built once per ranking,
+ * never per candidate.
+ *
+ * Totalled per distinct CPV code, not kept per lot. A heavy supplier has
+ * thousands of ledger lots in a handful of codes, and the per-lot lists made a
+ * ranking cost candidates × lot codes × ledger lots: ~600 ms at 3,305 lots, and
+ * growing with every month of ledger. Codes are bucketed by division so a
+ * candidate code is only ever compared with codes that could be close, and
+ * `byTender` keeps each tender's own lots so a candidate's can be taken back
+ * out — the candidate itself never counts.
  */
 const indexLedger = (ledger, now, fullMonths) => {
   const byDivision = new Map();
   const byBuyer = new Map();
+  const byTender = new Map();
   for (const item of ledger?.items ?? []) {
     const entry = { ...item, weight: recencyWeight(item.at, now, fullMonths) };
+    entryOf(byTender, item.tenderId, () => []).push(entry);
     if (item.cpvCode) {
-      const division = String(item.cpvCode).slice(0, 2);
-      if (!byDivision.has(division)) byDivision.set(division, []);
-      byDivision.get(division).push(entry);
+      const codes = entryOf(byDivision, String(item.cpvCode).slice(0, 2), () => new Map());
+      const totals = entryOf(codes, item.cpvCode, () => ({ bid: [0, 0], won: [0, 0], wonAt: new Map() }));
+      tally(totals.bid, entry.weight);
+      if (item.won) {
+        tally(totals.won, entry.weight);
+        tally(entryOf(totals.wonAt, item.buyerId, () => [0, 0]), entry.weight);
+      }
     }
     if (item.buyerId) {
-      if (!byBuyer.has(item.buyerId)) byBuyer.set(item.buyerId, []);
-      byBuyer.get(item.buyerId).push(entry);
+      const codes = entryOf(byBuyer, item.buyerId, () => new Map());
+      const totals = entryOf(codes, item.cpvCode, () => ({ weight: 0, lots: 0, wins: 0 }));
+      totals.weight += entry.weight;
+      totals.lots += 1;
+      if (item.won) totals.wins += 1;
     }
   }
-  return { byDivision, byBuyer };
+  return { byDivision, byBuyer, byTender, near: new Map() };
+};
+
+/**
+ * Every ledger lot near one code, per CPV level and cumulative downward — an
+ * exact match also counts at group and division level — with the wins among
+ * them at one buyer. The same for every candidate carrying that code at that
+ * buyer, so it is computed once per ranking; `null` when the code's division
+ * holds no ledger lot at all.
+ */
+const ledgerNear = (ledger, code, buyerId) => {
+  const atCode = entryOf(ledger.near, code, () => new Map());
+  if (atCode.has(buyerId)) return atCode.get(buyerId);
+  const codes = ledger.byDivision.get(String(code).slice(0, 2));
+  let near = null;
+  if (codes) {
+    near = Object.fromEntries(CPV_LEVELS.map((level) => [level, { bid: [0, 0], won: [0, 0], wonSameBuyer: [0, 0] }]));
+    for (const [cpvCode, totals] of codes) {
+      const level = closeness(code, cpvCode);
+      if (level === 'none') continue;
+      const wonSameBuyer = totals.wonAt.get(buyerId);
+      for (const at of CPV_LEVELS.slice(CPV_LEVELS.indexOf(level))) {
+        merge(near[at].bid, totals.bid);
+        merge(near[at].won, totals.won);
+        if (wonSameBuyer) merge(near[at].wonSameBuyer, wonSameBuyer);
+      }
+    }
+  }
+  atCode.set(buyerId, near);
+  return near;
 };
 
 /**
@@ -271,26 +334,27 @@ const indexLedger = (ledger, now, fullMonths) => {
  */
 const categorySignal = (tender, unit, ledger) => {
   let best = null;
+  const own = ledger.byTender.get(tender.id) ?? [];
   for (const code of unit.codes) {
-    const nearby = ledger.byDivision.get(String(code).slice(0, 2)) ?? [];
-    if (!nearby.length) continue;
+    const near = ledgerNear(ledger, code, tender.buyerId);
+    if (!near) continue;
 
     // Cumulative weight and raw count per level, for each kind of evidence.
-    const sums = Object.fromEntries(
-      CPV_LEVELS.map((level) => [level, { bid: [0, 0], won: [0, 0], wonSameBuyer: [0, 0] }])
-    );
-    for (const item of nearby) {
-      if (item.tenderId === tender.id) continue;
+    const sums = Object.fromEntries(CPV_LEVELS.map((level) => [level, {
+      bid: [...near[level].bid],
+      won: [...near[level].won],
+      wonSameBuyer: [...near[level].wonSameBuyer],
+    }]));
+    // The candidate's own lots come back out. Exact, not approximately so:
+    // recency weights are 1, ½ and ¼, which a float adds and subtracts without
+    // rounding — a weight off that ladder would need this to sum afresh instead.
+    for (const item of own) {
       const level = closeness(code, item.cpvCode);
       if (level === 'none') continue;
       for (const at of CPV_LEVELS.slice(CPV_LEVELS.indexOf(level))) {
-        const add = (kind) => {
-          sums[at][kind][0] += item.weight;
-          sums[at][kind][1] += 1;
-        };
-        add('bid');
-        if (item.won) add('won');
-        if (item.won && item.buyerId === tender.buyerId) add('wonSameBuyer');
+        tally(sums[at].bid, item.weight, -1);
+        if (item.won) tally(sums[at].won, item.weight, -1);
+        if (item.won && item.buyerId === tender.buyerId) tally(sums[at].wonSameBuyer, item.weight, -1);
       }
     }
 
@@ -377,14 +441,29 @@ const resemblance = (tender, unit, items, weight, code) => {
  * bid twice.
  */
 const knownBuyerSignal = (tender, unit, ledger) => {
-  const atBuyer = tender.buyerId ? ledger.byBuyer.get(tender.buyerId) ?? [] : [];
-  const elsewhere = atBuyer.filter(
-    (item) => item.tenderId !== tender.id && unit.codes.every((code) => closeness(code, item.cpvCode) === 'none')
-  );
-  if (!elsewhere.length) return [];
+  const atBuyer = tender.buyerId ? ledger.byBuyer.get(tender.buyerId) : null;
+  if (!atBuyer) return [];
+  const elsewhere = (cpvCode) => unit.codes.every((code) => closeness(code, cpvCode) === 'none');
+  let weight = 0;
+  let lots = 0;
+  let wins = 0;
+  for (const [cpvCode, totals] of atBuyer) {
+    if (!elsewhere(cpvCode)) continue;
+    weight += totals.weight;
+    lots += totals.lots;
+    wins += totals.wins;
+  }
+  // The candidate's own lots never count; exact for the reason categorySignal gives.
+  for (const item of ledger.byTender.get(tender.id) ?? []) {
+    if (item.buyerId !== tender.buyerId || !elsewhere(item.cpvCode)) continue;
+    weight -= item.weight;
+    lots -= 1;
+    if (item.won) wins -= 1;
+  }
+  if (!lots) return [];
   return [{
-    strength: WEIGHTS.knownBuyer * volume(elsewhere.reduce((sum, item) => sum + item.weight, 0)),
-    reason: { code: 'known_buyer', lots: elsewhere.length, wins: elsewhere.filter((item) => item.won).length },
+    strength: WEIGHTS.knownBuyer * volume(weight),
+    reason: { code: 'known_buyer', lots, wins },
   }];
 };
 

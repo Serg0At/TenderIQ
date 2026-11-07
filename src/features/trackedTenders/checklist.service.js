@@ -4,6 +4,7 @@ import vaultDocuments from '../../repositories/vaultDocument.repo.js';
 import tenders from '../../repositories/tender.repo.js';
 import VaultDocumentService, { expiryOf } from '../vault/vaultDocument.service.js';
 import ChecklistExtractionService from '../../services/checklistExtraction.service.js';
+import QuotaService from '../subscriptions/quota.service.js';
 import ai from '../../libs/adapters/ai/anthropic.js';
 import { alertsQueue } from '../../queues/index.js';
 import { JOB, PRIORITY } from '../../queues/names.js';
@@ -122,8 +123,15 @@ export default class ChecklistService {
    * Refuses up front when the AI layer is unconfigured, rather than enqueueing
    * a job that is certain to fail — a queue full of jobs that cannot succeed
    * is worse than an honest 503, because it looks like work in progress.
+   *
+   * Every accepted request spends one unit of the organization's quota,
+   * `force` included. The order is the contract: tracked tender found → AI
+   * configured → not already in flight → an invitation stored → quota → queue.
+   * Every refusal before the quota step costs nothing, and the job is queued
+   * only after the spend has committed. Should queueing then fail, the unit
+   * stays spent and the request answers 500; a retry counts again.
    */
-  static async generate(organizationId, trackedTenderId, { force = false } = {}) {
+  static async generate(organizationId, trackedTenderId, { force = false } = {}, { userId = null } = {}) {
     const tracked = await trackedTenders.findRow(trackedTenderId, organizationId);
     if (!tracked) throw ApiError.notFound('Tracked tender');
 
@@ -154,6 +162,26 @@ export default class ChecklistService {
     if (inFlight) {
       throw ApiError.conflict('A checklist is already being generated for this tender.');
     }
+
+    /**
+     * Most tenders hold no stored invitation, so this is the common refusal,
+     * and it must not cost a unit for "nothing to read". The same database
+     * lookup the extractor begins with, and nothing written: the checklist row
+     * is left as it was.
+     */
+    const { reason } = ChecklistExtractionService.invitationOf(
+      await tenders.findWithStoredDocuments(tracked.tender_id)
+    );
+    if (reason) {
+      throw ApiError.conflict(
+        reason === 'no_document'
+          ? 'This tender has no stored invitation document to read.'
+          : 'This tender has stored documents, but none that a checklist can be read from yet.',
+        { reason }
+      );
+    }
+
+    await QuotaService.spend({ organizationId, trackedTenderId, userId });
 
     const existing = await checklists.findForTracked(trackedTenderId, organizationId);
     const checklist = await checklists.ensure({ trackedTenderId, organizationId });
