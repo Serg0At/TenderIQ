@@ -54,8 +54,10 @@ export const handleDigestDaily = async ({ now = new Date() } = {}) => {
  *
  * Throttled → delayed by the provider's retry-after, the held rows untouched,
  * and no attempt spent: being rate-limited is not the destination's fault, the
- * same rule an alert's deferral follows. Every other outcome is final for this
- * run and already written to the rows by `sendDigest`.
+ * same rule an alert's deferral follows. Locked — another send holds the
+ * destination — is delayed briefly, with no attempt spent either. Every other
+ * outcome is final for this run and already written to the rows by
+ * `sendDigest`.
  */
 export const handleDigestSend = async (job, token) => {
   const { value, error } = sendJobSchema.validate(job.data);
@@ -65,6 +67,14 @@ export const handleDigestSend = async (job, token) => {
 
   if (result.status === 'deferred') {
     logger.info(`[digest] ${value.subscriptionId} throttled: ${result.detail}`);
+    await job.moveToDelayed(Date.now() + result.retryAfterMs, token);
+    throw new DelayedError();
+  }
+
+  // Another send holds this destination's digest. Waiting, not skipping: the
+  // holder may defer on a throttle and leave the rows held for this one.
+  if (result.status === 'locked') {
+    logger.info(`[digest] ${value.subscriptionId} busy: another digest send holds it, retrying`);
     await job.moveToDelayed(Date.now() + result.retryAfterMs, token);
     throw new DelayedError();
   }

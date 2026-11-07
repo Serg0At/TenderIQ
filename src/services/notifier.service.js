@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import config from '../configs/variables.config.js';
 import subscriptions from '../repositories/channelSubscription.repo.js';
 import notifications from '../repositories/notification.repo.js';
@@ -14,6 +15,7 @@ import {
 import { unsubscribeUrl } from './unsubscribe.service.js';
 import { DELIVERABLE_CHANNELS, digestContent } from '../libs/adapters/channel/notification.present.js';
 import { logger } from '../utils/logger.js';
+import { claimDigestLock, releaseDigestLock } from '../utils/sweepState.js';
 
 const { TELEGRAM, EMAIL, NODE_ENV } = config;
 
@@ -405,6 +407,17 @@ const digestItems = (rows) => {
 };
 
 /**
+ * The digest lock's TTL: well above a send's worst case — SMTP's connect,
+ * greeting and socket timeouts are 10 + 10 + 20 s, Telegram's 15 s — so a
+ * live holder never loses it mid-send, and short enough that a holder which
+ * died without releasing it blocks its destination for minutes, not a day.
+ */
+const DIGEST_LOCK_TTL_MS = 10 * 60_000;
+
+/** How long a send that found the lock taken waits before trying again. */
+const DIGEST_LOCKED_RETRY_MS = 30_000;
+
+/**
  * Send one destination its digest: every match held for it, as one message.
  *
  * The same outcome policy as an alert, through `applyOutcome`, so throttling,
@@ -417,8 +430,31 @@ const digestItems = (rows) => {
  *
  * At-least-once, like an alert: a crash between the send and the update can
  * send this digest again.
+ *
+ * **One send per destination at a time** (ticket 06). The held rows are read,
+ * sent and only then settled, so two sends running together — a flush and the
+ * morning job, a throttled retry and a flush, two worker processes; their job
+ * ids differ, so BullMQ does not stop them — would both deliver the same
+ * matches. The whole read → send → settle runs under the destination's lock
+ * (`sweepState.js#digestLockKey`). A send that finds it taken does not skip —
+ * the holder may be about to defer on a throttle and leave the rows held — it
+ * answers `locked`, and the caller delays its job without spending an
+ * attempt; on its next run it finds nothing held, or only what arrived since.
  */
 export const sendDigest = async (subscriptionId, { now = new Date() } = {}) => {
+  const holder = crypto.randomUUID();
+  if (!(await claimDigestLock(subscriptionId, holder, DIGEST_LOCK_TTL_MS))) {
+    return { status: 'locked', count: 0, retryAfterMs: DIGEST_LOCKED_RETRY_MS };
+  }
+
+  try {
+    return await sendDigestHolding(subscriptionId, { now });
+  } finally {
+    await releaseDigestLock(subscriptionId, holder);
+  }
+};
+
+const sendDigestHolding = async (subscriptionId, { now }) => {
   const subscription = await subscriptions.findDeliverable(subscriptionId);
   // Switched off (or never confirmed) since the morning job read it.
   if (!subscription) return { status: 'not_live', count: 0 };

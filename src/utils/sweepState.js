@@ -130,6 +130,26 @@ export const releaseChain = (key, chain) =>
     );
 
 /**
+ * The lock of one destination's digest (daily-digest ticket 06): held by the
+ * one `digest.send` reading, sending and settling that destination's held
+ * rows, so two sends — a flush and the morning job, a throttled retry and a
+ * flush, two worker processes — never both deliver the same matches. The
+ * same holder-token marker as `chainKey`: `SET NX` with a TTL, released only
+ * by its holder, so a send whose lock lapsed cannot release a newer one's. The
+ * TTL is what bounds a crashed holder; its rows stay `held` and go out on the
+ * next attempt.
+ */
+export const digestLockKey = (subscriptionId) => `digest:lock:${subscriptionId}`;
+
+/** True when no send holds the destination and `holder` now does. */
+export const claimDigestLock = (subscriptionId, holder, ttlMs) =>
+  claimChain(digestLockKey(subscriptionId), holder, ttlMs);
+
+/** Delete the lock only if `holder` holds it. */
+export const releaseDigestLock = (subscriptionId, holder) =>
+  releaseChain(digestLockKey(subscriptionId), holder);
+
+/**
  * `{ from, to }`, the floor and the watermark of one listing, or null when
  * either is missing — a listing swept before floors were kept covers nothing
  * Tendra can vouch for.
@@ -164,5 +184,8 @@ export default {
   claimChain,
   holdChain,
   releaseChain,
+  digestLockKey,
+  claimDigestLock,
+  releaseDigestLock,
   readCoverage,
 };
