@@ -1,6 +1,7 @@
 import config from '../configs/variables.config.js';
 import subscriptions from '../repositories/channelSubscription.repo.js';
 import organizations from '../repositories/organization.repo.js';
+import { switchCadence } from './cadence.service.js';
 import telegram from '../libs/adapters/channel/telegram.js';
 import {
   linkConfirmation,
@@ -87,6 +88,9 @@ const present = (row) => ({
   revokedAt: row.revoked_at,
   failureCount: row.failure_count,
   lastError: row.last_error,
+  // `instant` | `daily` — when this chat hears about a new match. Every member
+  // sees it; only the chat's owner can change it (`setCadence`).
+  cadence: row.cadence,
 });
 
 export const listLinks = async (organizationId) => {
@@ -111,6 +115,16 @@ export const enable = async ({ organizationId, userId, id }) => {
     );
   }
 
+  return present(row);
+};
+
+/**
+ * Switch the caller's own chat between instant alerts and one 08:00 digest.
+ * Self-scoped like `enable`: a colleague's chat is not found.
+ */
+export const setCadence = async ({ organizationId, userId, id, cadence }) => {
+  const row = await switchCadence({ organizationId, userId, id, channel: CHANNEL, cadence });
+  if (!row) throw ApiError.notFound('Telegram link');
   return present(row);
 };
 
@@ -266,4 +280,4 @@ export const handleUpdate = async (update) => {
   return { action: 'ignored' };
 };
 
-export default { createLink, listLinks, unlink, enable, handleUpdate };
+export default { createLink, listLinks, unlink, enable, setCadence, handleUpdate };

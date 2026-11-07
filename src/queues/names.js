@@ -289,4 +289,13 @@ export const documentsMatchJobId = (tenderId, storageKey) =>
  */
 export const digestJobId = (destinationId, yerevanDate) => `digest-${destinationId}-${yerevanDate}`;
 
-export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId, digestJobId };
+/**
+ * The flush a switch from daily to instant queues: the destination's held
+ * matches as one digest, now rather than at 08:00. Its own id, carrying the
+ * switch time, so it never collides with that morning's digest job — which
+ * may already be kept as completed — and a later switch flushes again.
+ */
+export const digestFlushJobId = (destinationId, at = new Date()) =>
+  `digest-${destinationId}-flush-${at.getTime()}`;
+
+export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId, digestJobId, digestFlushJobId };

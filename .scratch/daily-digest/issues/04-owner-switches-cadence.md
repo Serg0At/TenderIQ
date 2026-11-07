@@ -9,19 +9,31 @@ instant to daily repeats nothing already sent. See `.scratch/daily-digest/spec.m
 
 **Blocked by:** 02 — A daily email receives its matches in one 08:00 digest.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `PATCH /api/v1/integrations/telegram/:id` and `PATCH /api/v1/integrations/email/:id` take
+- [x] `PATCH /api/v1/integrations/telegram/:id` and `PATCH /api/v1/integrations/email/:id` take
       `{ cadence: 'instant' | 'daily' }` (Joi, strip unknown; anything else `VALIDATION_FAILED`),
       gated on `savedsearch:write`, and answer the destination in the `{ data }` envelope as the
       listing shows it.
-- [ ] Scoped to the caller's own destination, as `enable` is: a colleague's destination in the
+- [x] Scoped to the caller's own destination, as `enable` is: a colleague's destination in the
       same organization and another organization's both answer `NOT_FOUND`.
-- [ ] `GET /integrations/telegram` and `GET /integrations/email` include `cadence` on every row.
-- [ ] Daily → instant with held rows queues a flush `digest.send` for that destination (its own
+- [x] `GET /integrations/telegram` and `GET /integrations/email` include `cadence` on every row.
+- [x] Daily → instant with held rows queues a flush `digest.send` for that destination (its own
       job id, hyphens only), which delivers them as one digest; with none held, nothing is sent.
-- [ ] Instant → daily holds only matches that arrive after the switch.
-- [ ] No plan gate: a free organization can switch.
-- [ ] `docs/API_REFERENCE.md` documents the PATCH and the `cadence` field.
-- [ ] Verified by hand: a PATCH on one's own email to instant flushes its held matches as one
+- [x] Instant → daily holds only matches that arrive after the switch.
+- [x] No plan gate: a free organization can switch.
+- [x] `docs/API_REFERENCE.md` documents the PATCH and the `cadence` field.
+- [x] Verified by hand: a PATCH on one's own email to instant flushes its held matches as one
       email; a PATCH on a colleague's destination answers 404.
+
+**Verified 2026-11-08** against the local `tendra` database, with fixtures in a throwaway
+organization (owner + coordinator) and a second organization, the API driven in-process and the
+flush job run through `handleDigestSend` as the worker runs it — 21 checks, all passing:
+`GET /integrations/{email,telegram}` carry `cadence` on every row; a PATCH on a colleague's
+address, another organization's address, and one's own email id under `/telegram/:id` all answer
+`404 NOT_FOUND`; `weekly` and a missing `cadence` answer `422 VALIDATION_FAILED`, a `viewer`
+`403 ROLE_FORBIDDEN`; on a free organization a PATCH of one's own email to `instant` answers 200
+(unknown `address` stripped) and queues one `digest-{id}-flush-{ms}` job, a repeat PATCH queues
+none, and the job sent **one** email listing both held matches and turned both rows `sent` (the
+colleague's held row untouched); daily → instant with nothing held queued nothing; back to daily,
+nothing already sent was held again and only the match delivered after the switch was held.

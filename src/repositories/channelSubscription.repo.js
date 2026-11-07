@@ -294,6 +294,42 @@ export default class ChannelSubscriptionRepository {
     return { row, reason: 'reactivated' };
   }
 
+  /**
+   * Set a destination's cadence, and say what it was.
+   *
+   * **Scoped to the caller's OWN destination, as `reactivate` is**, and for the
+   * same reason: switching a colleague's inbox from one morning digest to a
+   * message per match changes what lands in their personal mailbox or private
+   * chat, which is theirs to choose. A colleague's row and another
+   * organization's both miss, and the caller cannot tell the two apart.
+   *
+   * Scoped to the channel as well, so `PATCH /integrations/telegram/:id` cannot
+   * reach an email address through its id.
+   *
+   * One statement: the previous cadence is read under the row lock the UPDATE
+   * takes, so two concurrent switches cannot both see `daily` and both queue a
+   * flush. Off and pending rows may be switched too — cadence says when a live
+   * destination hears about a match, and an off row has nothing held.
+   */
+  static async setCadence({ id, organizationId, userId, channel, cadence }, trx = db) {
+    const { rows } = await trx.raw(
+      `WITH prev AS (
+         SELECT id, cadence FROM ${TABLE}
+          WHERE id = ? AND organization_id = ? AND user_id = ? AND channel = ?
+          FOR UPDATE
+       )
+       UPDATE ${TABLE} s
+          SET cadence = ?, updated_at = now()
+         FROM prev
+        WHERE s.id = prev.id
+       RETURNING s.*, prev.cadence AS previous_cadence`,
+      [id, organizationId, userId, channel, cadence]
+    );
+    if (!rows.length) return null;
+    const { previous_cadence: previous, ...row } = rows[0];
+    return { row, previous };
+  }
+
   static async revoke(id, trx = db) {
     return trx(TABLE)
       .where({ id })

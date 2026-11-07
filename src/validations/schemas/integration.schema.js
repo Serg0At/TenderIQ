@@ -48,4 +48,12 @@ export const telegramUpdateSchema = Joi.object({
   }),
 }).options({ stripUnknown: true, convert: true });
 
-export default { telegramUpdateSchema };
+/**
+ * `PATCH /integrations/{telegram,email}/:id` — a destination's cadence, and
+ * nothing else: the body cannot touch the address, the owner or the switch.
+ */
+export const cadenceSchema = Joi.object({
+  cadence: Joi.string().valid('instant', 'daily').required(),
+});
+
+export default { telegramUpdateSchema, cadenceSchema };

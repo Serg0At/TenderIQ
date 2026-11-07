@@ -1,6 +1,7 @@
 import subscriptions from '../repositories/channelSubscription.repo.js';
 import users from '../repositories/user.repo.js';
 import mailer from '../libs/adapters/email/index.js';
+import { switchCadence } from './cadence.service.js';
 import { ApiError } from '../utils/errors.js';
 
 const CHANNEL = 'email';
@@ -40,6 +41,9 @@ const present = (row) => ({
   revokedAt: row.revoked_at,
   failureCount: row.failure_count,
   lastError: row.last_error,
+  // `instant` | `daily` — when this address hears about a new match. A new
+  // address starts daily; only its owner can change it (`setCadence`).
+  cadence: row.cadence,
 });
 
 export const list = async (organizationId) => {
@@ -101,7 +105,17 @@ export const subscribe = async ({ organizationId, userId }) => {
     address: user.email,
   });
 
-  return { id: row.id, channel: CHANNEL, address: row.address, status: 'active' };
+  return { id: row.id, channel: CHANNEL, address: row.address, status: 'active', cadence: row.cadence };
+};
+
+/**
+ * Switch the caller's own address between one 08:00 digest and a mail per
+ * match. Self-scoped like `enable`: a colleague's address is not found.
+ */
+export const setCadence = async ({ organizationId, userId, id, cadence }) => {
+  const row = await switchCadence({ organizationId, userId, id, channel: CHANNEL, cadence });
+  if (!row) throw ApiError.notFound('Subscription');
+  return present(row);
 };
 
 /** Tenant-scoped revoke — another org's id simply is not found. */
@@ -111,4 +125,4 @@ export const unsubscribe = async ({ organizationId, id }) => {
   return { id, status: 'revoked' };
 };
 
-export default { list, subscribe, unsubscribe, enable };
+export default { list, subscribe, unsubscribe, enable, setCadence };

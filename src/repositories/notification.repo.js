@@ -170,6 +170,18 @@ export default class NotificationRepository {
   }
 
   /**
+   * Whether a destination has anything waiting for its digest — the question a
+   * switch to instant asks before queueing a flush, so a switch with nothing
+   * held sends nothing.
+   */
+  static async hasHeld({ subscriptionId, organizationId }, trx = db) {
+    const row = await trx('alert_deliveries')
+      .where({ channel_subscription_id: subscriptionId, organization_id: organizationId, status: 'held' })
+      .first('id');
+    return Boolean(row);
+  }
+
+  /**
    * Close a digest's held rows with its outcome. Only rows still `held` move,
    * so a row another path already settled is not overwritten.
    */

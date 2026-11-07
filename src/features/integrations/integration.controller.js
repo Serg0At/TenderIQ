@@ -50,6 +50,25 @@ export default class IntegrationController {
   }
 
   /**
+   * Switch the caller's own chat between `instant` and `daily`.
+   *
+   * Self-scoped like `enableTelegram`, and for the same reason: when a private
+   * chat hears about a match is its owner's choice, so a colleague's id is not
+   * found. A switch to instant flushes what was held as one digest.
+   */
+  static async setTelegramCadence(req, res) {
+    return ok(
+      res,
+      await TelegramLinkService.setCadence({
+        organizationId: req.user.organizationId,
+        userId: req.user.id,
+        id: req.params.id,
+        cadence: req.body.cadence,
+      })
+    );
+  }
+
+  /**
    * Email alerts for the organization.
    *
    * The mirror of the Telegram handlers, and the replacement for what used to
@@ -87,6 +106,19 @@ export default class IntegrationController {
         organizationId: req.user.organizationId,
         userId: req.user.id,
         id: req.params.id,
+      })
+    );
+  }
+
+  /** The email mirror of `setTelegramCadence`, and self-scoped for the same reason. */
+  static async setEmailCadence(req, res) {
+    return ok(
+      res,
+      await EmailAlertsService.setCadence({
+        organizationId: req.user.organizationId,
+        userId: req.user.id,
+        id: req.params.id,
+        cadence: req.body.cadence,
       })
     );
   }

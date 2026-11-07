@@ -4,6 +4,8 @@ import TelegramWebhookController from './telegramWebhook.controller.js';
 import { authenticate } from '../../middlewares/auth.js';
 import { authorize } from '../../middlewares/authorize.js';
 import { rateLimit } from '../../middlewares/rateLimit.js';
+import { validate } from '../../middlewares/validate.js';
+import { cadenceSchema } from '../../validations/schemas/integration.schema.js';
 
 const router = Router();
 
@@ -45,6 +47,20 @@ router.delete('/telegram/:id', authorize('savedsearch:write'), IntegrationContro
 router.post('/telegram/:id/enable', authorize('savedsearch:write'), IntegrationController.enableTelegram);
 
 /**
+ * A destination's cadence — `instant` or `daily` — for either channel, and
+ * scoped to the CALLER exactly as `enable` is: switching a colleague's inbox to
+ * a mail per match is turning their alerts up, not configuration. A colleague's
+ * id and another organization's both answer NOT_FOUND. No plan gate — the
+ * digest is part of `alerts`, which every plan includes.
+ */
+router.patch(
+  '/telegram/:id',
+  authorize('savedsearch:write'),
+  validate(cadenceSchema),
+  IntegrationController.setTelegramCadence
+);
+
+/**
  * Email alerts, switched on and off exactly like a Telegram chat is linked and
  * unlinked — because under this model they are the same act: a live
  * `channel_subscriptions` row is what makes a channel deliver, and nothing else
@@ -58,5 +74,11 @@ router.get('/email', authorize('tender:read'), IntegrationController.listEmailAl
 router.post('/email', authorize('savedsearch:write'), IntegrationController.subscribeEmail);
 router.delete('/email/:id', authorize('savedsearch:write'), IntegrationController.unsubscribeEmail);
 router.post('/email/:id/enable', authorize('savedsearch:write'), IntegrationController.enableEmail);
+router.patch(
+  '/email/:id',
+  authorize('savedsearch:write'),
+  validate(cadenceSchema),
+  IntegrationController.setEmailCadence
+);
 
 export default router;

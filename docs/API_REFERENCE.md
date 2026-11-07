@@ -132,6 +132,7 @@ All paths are relative to the base path **`/api/v1`**.
 - [Switch email alerts off](#switch-email-alerts-off) — `DELETE /integrations/email/:id`
 - [Unlink Telegram chat](#unlink-telegram-chat) — `DELETE /integrations/telegram/:id`
 - [Switch a destination back on](#switch-a-destination-back-on) — `POST /integrations/{telegram,email}/:id/enable`
+- [Set a destination's cadence](#set-a-destinations-cadence) — `PATCH /integrations/{telegram,email}/:id`
 - [Telegram webhook](#telegram-webhook) — `POST /integrations/telegram/webhook`
 
 ### Operator
@@ -5272,6 +5273,15 @@ exactly when that organization has a verified, unrevoked row for it — there is
 table and no `alert_channels` column that could disagree. Turning a channel off is revoking its
 rows; turning it on is linking again.
 
+**Each destination has a cadence**, `instant` or `daily`. An instant destination receives each new
+match as it is ingested; a daily one receives the matches held for it as one digest at 08:00
+Asia/Yerevan, and nothing on a day nothing matched. Only new matches wait — amendments, deadline
+reminders and countdowns, vault expiry, team announcements and subscription notices reach every
+destination at once whatever its cadence. A new Telegram chat starts `instant`, a new email address
+`daily`. Cadence is a property of the destination row, not a preference store: there is still one
+row and one switch, and cadence says only *when* a live destination hears about a match, never
+*whether*. Only the destination's owner can change it.
+
 Telegram needs a handshake because a bot cannot open a conversation: a chat is linked by the user
 opening a `t.me/<bot>?start=<token>` deep link.
 
@@ -5309,11 +5319,17 @@ No request body
       "linkedAt": "2026-08-02T13:44:19.201Z",
       "revokedAt": null,
       "failureCount": 0,
-      "lastError": null
+      "lastError": null,
+      "cadence": "instant"
     }
   ]
 }
 ```
+
+`cadence` is `instant` or `daily` on every row — see [Set a destination's
+cadence](#set-a-destinations-cadence). Every member sees every destination's cadence, so an owner can
+tell why a colleague receives a morning summary rather than live alerts; only the destination's
+owner can change it.
 
 `status` is `linked`, `pending` (a connect link was generated but never opened) or `off` (linked
 once, switched off since). **Switched-off rows are listed**, and that is the point: switching a
@@ -5379,8 +5395,8 @@ expires (`TELEGRAM.LINK_TOKEN_TTL_MINUTES`).
 
 ## List email alert subscriptions
 
-Which addresses in this organization receive alert mail. Revoked rows are omitted; a row is
-listed as `active` once verified.
+Which addresses in this organization receive alert mail. A row is listed as `active` once
+verified; switched-off rows are listed too, as `off`.
 
 **API:**
 `GET /api/v1/integrations/email`
@@ -5403,11 +5419,14 @@ listed as `active` once verified.
       "linkedAt": "2026-09-10T08:14:00.000Z",
       "revokedAt": null,
       "failureCount": 0,
-      "lastError": null
+      "lastError": null,
+      "cadence": "daily"
     }
   ]
 }
 ```
+
+`cadence` is `instant` or `daily` on every row; a new address starts `daily`.
 
 `status` is `active`, `pending` or `off`. Switched-off rows are listed so a client can render the
 off position of a toggle and has the id needed to flip it back — see the Telegram listing above
@@ -5448,10 +5467,13 @@ and leave two histories for one destination.
     "id": "cm9zx4k1p0130qw8fg8p3r5x2",
     "channel": "email",
     "address": "anna@shinarar.am",
-    "status": "active"
+    "status": "active",
+    "cadence": "daily"
   }
 }
 ```
+
+A newly created address starts `daily`; a revived one keeps the cadence it had.
 
 **Errors:**
 
@@ -5561,7 +5583,8 @@ No request body.
     "linkedAt": "2026-08-02T13:44:19.201Z",
     "revokedAt": null,
     "failureCount": 0,
-    "lastError": null
+    "lastError": null,
+    "cadence": "instant"
   }
 }
 ```
@@ -5584,6 +5607,76 @@ twice, or two tabs saving at once, must not fail for a state the caller was aski
 Note the related case: a member with **no row at all** switches email on with
 `POST /integrations/email` (no body, no id), which creates or revives one from their own verified
 address. This endpoint is for a row that already exists.
+
+---
+
+## Set a destination's cadence
+
+Switches one of **your own** destinations between `instant` (each new match as it arrives) and
+`daily` (one digest at 08:00 Asia/Yerevan of everything matched since the last).
+
+**API:**
+`PATCH /api/v1/integrations/telegram/:id`
+`PATCH /api/v1/integrations/email/:id`
+
+**Authentication:** required (Bearer). Permission: `savedsearch:write`. No plan gate — the digest
+is part of alerts, which every plan includes.
+
+**Scoped to the caller's own destination, exactly as [enable](#switch-a-destination-back-on) is.**
+A colleague's destination in the same organization and another organization's both answer
+`404`, indistinguishably. Turning a colleague's inbox from one morning summary into a mail per
+match changes what lands in their personal mailbox or private chat, and that is theirs to choose;
+switching it **off** stays organization-scoped. The path's channel must match the destination's:
+an email id under `/telegram/:id` is not found.
+
+**Path parameters:**
+
+- `id`: the destination's CUID2 id, from the listing. Switched-off and pending rows may be set too.
+
+**Request data:**
+
+```json
+{ "cadence": "instant" }
+```
+
+- `cadence` (required): `instant` or `daily`. Unknown fields are stripped.
+
+**Response data:** `200`, the destination exactly as its channel's listing shows it.
+
+```json
+{
+  "data": {
+    "id": "cm9zx4k1p0130qw8fg8p3r5x2",
+    "channel": "email",
+    "address": "anna@shinarar.am",
+    "status": "active",
+    "active": true,
+    "linkedAt": "2026-09-10T08:14:00.000Z",
+    "revokedAt": null,
+    "failureCount": 0,
+    "lastError": null,
+    "cadence": "instant"
+  }
+}
+```
+
+**What a switch does to matches already held.** A destination's next digest is exactly the
+matches held for it; there is no "covered until" timestamp.
+
+- **`daily` → `instant`**: whatever is held is sent **at once, as one digest**, through the same
+  delivery policy as the morning run, so switching never loses a match. With nothing held, nothing
+  is sent. From then on each new match is delivered as it arrives.
+- **`instant` → `daily`**: nothing already sent is repeated — the next digest holds only matches
+  that arrive after the switch.
+- Setting the cadence a destination already has changes nothing and sends nothing.
+
+**Errors:**
+
+- `401 UNAUTHENTICATED` / `401 TOKEN_EXPIRED`.
+- `403 ROLE_FORBIDDEN`: `viewer` lacks `savedsearch:write`.
+- `404 NOT_FOUND`: no such destination on this channel, another member's, or another
+  organization's.
+- `422 VALIDATION_FAILED`: `cadence` missing or not `instant` / `daily`.
 
 ---
 
@@ -6208,6 +6301,8 @@ Two routes are additionally not intended for a frontend at all, regardless of wh
 | DELETE | `/api/v1/integrations/email/:id` | Switch email alerts off | Yes (`savedsearch:write`) |
 | POST | `/api/v1/integrations/telegram/:id/enable` | Switch a linked chat back on (own only) | Yes (`savedsearch:write`) |
 | POST | `/api/v1/integrations/email/:id/enable` | Switch an address back on (own only) | Yes (`savedsearch:write`) |
+| PATCH | `/api/v1/integrations/telegram/:id` | Set a chat's cadence (own only) | Yes (`savedsearch:write`) |
+| PATCH | `/api/v1/integrations/email/:id` | Set an address's cadence (own only) | Yes (`savedsearch:write`) |
 | POST | `/api/v1/operator/promo-codes` | Issue a promo code | Yes (operator) |
 | GET | `/api/v1/operator/promo-codes` | Every code with its redemptions, newest first | Yes (operator) |
 | DELETE | `/api/v1/operator/promo-codes/:id` | Delete an unredeemed code, disable a redeemed one | Yes (operator) |
