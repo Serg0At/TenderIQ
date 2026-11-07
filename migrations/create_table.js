@@ -626,6 +626,14 @@ function up(pg) {
        */
       table.string('user_id').references('id').inTable('users').onDelete('CASCADE');
       table.string('channel').notNullable(); // telegram | email 
+      /**
+       * Cadence: `instant` (each new match as it happens) or `daily` (held for one 08:00
+       * Asia/Yerevan digest). A property of this destination, not a preference store — there is
+       * still one row and one switch. CHECK in indexes(). No default, on purpose: the repository
+       * sets it when a destination is created (instant for Telegram, daily for email), so an
+       * insert that forgot it fails instead of silently becoming instant.
+       */
+      table.text('cadence').notNullable();
       // Null until confirmed — for Telegram the chat id is not knowable until
       // the user messages the bot.
       table.string('address');
@@ -658,6 +666,9 @@ function up(pg) {
        */
       table.string('channel_subscription_id');
       table.string('channel').notNullable();
+      // sent | deferred | skipped | failed | held — CHECK in indexes(). `held` is a new match
+      // waiting for a daily destination's digest; the destination's held rows ARE its next
+      // digest, and they become `sent` (or `failed`) when it goes out.
       table.string('status').notNullable();
       table.timestamp('sent_at');
       // A throttled provider (429, SMTP greylisting) defers a delivery rather than failing it,
@@ -1053,6 +1064,22 @@ async function indexes(pg) {
   await pg.raw(`CREATE INDEX IF NOT EXISTS alert_deliveries_destination_idx
      ON alert_deliveries (channel_subscription_id)
      WHERE channel_subscription_id IS NOT NULL`);
+
+  await pg.raw(`ALTER TABLE channel_subscriptions ADD CONSTRAINT channel_subscriptions_cadence_chk
+     CHECK (cadence IN ('instant', 'daily'))`);
+  await pg.raw(`ALTER TABLE alert_deliveries ADD CONSTRAINT alert_deliveries_status_chk
+     CHECK (status IN ('sent', 'deferred', 'skipped', 'failed', 'held'))`);
+
+  /**
+   * A daily destination's next digest: its `held` rows, read by destination every morning.
+   * Partial, because held rows are one day's matches in a table that grows one row per
+   * destination per alert. Unique on the notification too, so a match is held once per
+   * destination however often `deliver` meets it (the deferred sweep re-delivers a whole
+   * notification) — the database arbitrates, and the second insert does nothing.
+   */
+  await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS alert_deliveries_held_uq
+     ON alert_deliveries (channel_subscription_id, notification_id)
+     WHERE status = 'held'`);
 
   await pg.raw(`CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_uq
      ON notifications (organization_id, type, tender_id, subject_id) NULLS NOT DISTINCT`);

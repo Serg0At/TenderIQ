@@ -3,8 +3,14 @@ import subscriptions from '../repositories/channelSubscription.repo.js';
 import notifications from '../repositories/notification.repo.js';
 import telegram from '../libs/adapters/channel/telegram.js';
 import mailer from '../libs/adapters/email/index.js';
-import { formatNotification as formatTelegram } from '../libs/adapters/channel/telegram.format.js';
-import { formatNotification as formatEmail } from '../libs/adapters/channel/email.format.js';
+import {
+  formatNotification as formatTelegram,
+  formatDigest as formatTelegramDigest,
+} from '../libs/adapters/channel/telegram.format.js';
+import {
+  formatNotification as formatEmail,
+  formatDigest as formatEmailDigest,
+} from '../libs/adapters/channel/email.format.js';
 import { unsubscribeUrl } from './unsubscribe.service.js';
 import { DELIVERABLE_CHANNELS } from '../libs/adapters/channel/notification.present.js';
 import { logger } from '../utils/logger.js';
@@ -31,6 +37,12 @@ const { TELEGRAM, EMAIL, NODE_ENV } = config;
  * `channel_subscriptions` row for it, so the subscription IS the switch and
  * there is nowhere for a second, disagreeing answer to live. Turning a channel
  * off is revoking its rows; turning it back on is linking again.
+ *
+ * A destination's cadence is a property of that same row, not a preference
+ * store: it says only WHEN a live destination hears about a new match. A
+ * `tender-match` for a `daily` destination is held (`held` row, nothing sent)
+ * and goes out in its 08:00 digest (`sendDigest`); every other type reaches
+ * every live destination at once, whatever its cadence.
  *
  * Two rules from the spec live here:
  *   BR-9  — dedupe is upstream, in `notifications.createIfNew`.
@@ -83,6 +95,7 @@ const TRANSPORTS = {
     unconfiguredDetail: 'TELEGRAM_BOT_TOKEN is not set',
     channelOffDetail: 'Telegram alerts are not switched on for this organization',
     render: (notification, now) => ({ text: formatTelegram(notification, { now }) }),
+    renderDigest: (items, now) => ({ text: formatTelegramDigest(items, { now }) }),
     send: (subscription, message) =>
       telegram.sendMessage({ chatId: subscription.address, text: message.text }),
     // Telegram carries no unsubscribe link: `/stop` in the chat already does it,
@@ -109,6 +122,12 @@ const TRANSPORTS = {
     render: (notification, now, subscription) => {
       const url = unsubscribeUrl(subscription.id);
       return { ...formatEmail(notification, { now, unsubscribeUrl: url }), unsubscribeUrl: url };
+    },
+    // A digest is mail to one destination, so it carries that destination's
+    // unsubscribe link and headers exactly as an alert does.
+    renderDigest: (items, now, subscription) => {
+      const url = unsubscribeUrl(subscription.id);
+      return { ...formatEmailDigest(items, { now, unsubscribeUrl: url }), unsubscribeUrl: url };
     },
     send: (subscription, message) =>
       mailer.send({
@@ -236,11 +255,23 @@ const applyOutcome = async (transport, subscription, result) => {
 };
 
 /**
+ * The one notification type a daily destination does not receive at once. Every
+ * other type — amendments, reminders, countdowns, vault expiry, team and
+ * subscription announcements — is rare, and some are urgent: a deadline moved
+ * earlier must not be learnt the morning after it passed.
+ */
+const HELD_FOR_DIGEST = 'tender-match';
+
+const isHeld = (notification, subscription) =>
+  notification.type === HELD_FOR_DIGEST && subscription.cadence === 'daily';
+
+/**
  * Deliver one notification over one channel, to every destination the org has.
  *
  * Returns 'sent' if at least one destination took it, 'deferred' if none did but
- * at least one is waiting, 'skipped' if the organization has not switched this
- * channel on, and 'failed' otherwise.
+ * at least one is waiting, 'held' if none did and none is waiting but at least
+ * one daily destination holds it for its digest, 'skipped' if the organization
+ * has not switched this channel on, and 'failed' otherwise.
  *
  * The four-way answer matters. A deferred alert has not failed, it is holding
  * until the provider will take it; a skipped one has not failed either, the
@@ -291,8 +322,20 @@ export const deliver = async (channel, notification, { now = new Date() } = {}) 
 
   let anySent = false;
   let anyDeferred = false;
+  let anyHeld = false;
 
   for (const subscription of recipients) {
+    /**
+     * A new match for a daily destination waits for its digest: a `held` row
+     * naming the destination, and nothing sent. The held rows are the digest's
+     * cursor — no timestamp is stored beside them.
+     */
+    if (isHeld(notification, subscription)) {
+      await record({ subscriptionId: subscription.id, status: 'held' });
+      anyHeld = true;
+      continue;
+    }
+
     /**
      * Rendered inside the loop, not hoisted above it, because an email's
      * unsubscribe token belongs to one subscription and must never appear in
@@ -316,7 +359,101 @@ export const deliver = async (channel, notification, { now = new Date() } = {}) 
 
   if (anySent) return 'sent';
   if (anyDeferred) return 'deferred';
+  if (anyHeld) return 'held';
   return 'failed';
 };
 
-export default { deliver, deliverableChannels };
+/**
+ * The digest's tenders, one per tender, from a destination's held rows.
+ *
+ * Read from the tender as it is now; the match's payload stands in only when
+ * the tender row is not found at all, so the renderer never prints "undefined".
+ * One tender held twice — two notifications of it — is listed once, under every
+ * search either matched.
+ */
+const digestItems = (rows) => {
+  const byTender = new Map();
+  for (const row of rows) {
+    const payload = row.payload ?? {};
+    const key = row.tender_id ?? `notification:${row.notification_id}`;
+    const searches = payload.matchedSearches ?? [];
+    const existing = byTender.get(key);
+    if (existing) {
+      existing.matchedSearches.push(
+        ...searches.filter((m) => !existing.matchedSearches.some((e) => e.name === m?.name))
+      );
+      continue;
+    }
+    // `tenders.status` is NOT NULL, so a null one means the tender was not found.
+    const found = row.tender_status != null;
+    byTender.set(key, {
+      tenderId: row.tender_id,
+      title: (found ? row.title : null) ?? payload.title ?? null,
+      referenceCode: (found ? row.reference_code : null) ?? payload.referenceCode ?? null,
+      status: found ? row.tender_status : null,
+      // A deadline or a value the tender no longer states is not filled from
+      // the match: the digest shows the tender as it is now.
+      deadlineAt: found ? row.deadline_at : payload.deadlineAt ?? null,
+      estimatedValue: found ? row.estimated_value : payload.estimatedValue ?? null,
+      currency: (found ? row.currency : null) ?? payload.currency ?? 'AMD',
+      buyerName: (found ? row.buyer_name : null) ?? payload.buyerName ?? null,
+      sourceUrl: (found ? row.invitation_url : null) ?? payload.sourceUrl ?? null,
+      matchedSearches: [...searches],
+    });
+  }
+  return [...byTender.values()];
+};
+
+/**
+ * Send one destination its digest: every match held for it, as one message.
+ *
+ * The same outcome policy as an alert, through `applyOutcome`, so throttling,
+ * the failure counter, revocation and the `log`-driver guard have one answer:
+ *   sent      → every row in the digest `sent`;
+ *   deferred  → rows stay `held` (they ARE the retry) and the caller delays the
+ *               job by `retryAfterMs` without spending an attempt;
+ *   failed    → rows `failed` with the detail.
+ * A destination no longer live, or one with nothing held, sends nothing.
+ *
+ * At-least-once, like an alert: a crash between the send and the update can
+ * send this digest again.
+ */
+export const sendDigest = async (subscriptionId, { now = new Date() } = {}) => {
+  const subscription = await subscriptions.findDeliverable(subscriptionId);
+  // Switched off (or never confirmed) since the morning job read it.
+  if (!subscription) return { status: 'not_live', count: 0 };
+
+  const transport = TRANSPORTS[subscription.channel];
+  if (!transport) throw new Error(`[notifier] no transport for channel "${subscription.channel}"`);
+
+  const rows = await notifications.heldForDestination({
+    subscriptionId: subscription.id,
+    organizationId: subscription.organization_id,
+  });
+  if (!rows.length) return { status: 'empty', count: 0 };
+  const deliveryIds = rows.map((r) => r.delivery_id);
+
+  if (!transport.isConfigured()) {
+    await notifications.settleHeld({ deliveryIds, status: 'failed', detail: transport.unconfiguredDetail });
+    return { status: 'failed', count: rows.length, detail: transport.unconfiguredDetail };
+  }
+
+  const items = digestItems(rows);
+  const message = transport.renderDigest(items, now, subscription);
+  const result = await transport.send(subscription, message);
+  const { status, detail, deferredUntil = null } = await applyOutcome(transport, subscription, result);
+
+  if (status === 'deferred') {
+    return {
+      status,
+      count: rows.length,
+      detail,
+      retryAfterMs: Math.max(0, deferredUntil.getTime() - Date.now()),
+    };
+  }
+
+  await notifications.settleHeld({ deliveryIds, status, detail });
+  return { status, count: rows.length, tenders: items.length, detail };
+};
+
+export default { deliver, deliverableChannels, sendDigest };

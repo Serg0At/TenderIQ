@@ -211,6 +211,19 @@ export const JOB = {
    * like every other customer-facing message.
    */
   DELIVER_NOTIFICATION: 'notify.deliver',
+  /**
+   * The morning digest run, scheduled as `digest-daily` at 08:00 Asia/Yerevan:
+   * queues one DIGEST_SEND per live destination that has `held` matches
+   * (workers/digest.js). Sends nothing itself.
+   */
+  DIGEST_DAILY: 'digest.daily',
+  /**
+   * One destination's digest: its held matches as one message, through the
+   * same outcome policy as an alert (`notifier.service.js#sendDigest`). A
+   * throttle delays the job without spending an attempt; the held rows are
+   * what it re-reads.
+   */
+  DIGEST_SEND: 'digest.send',
 };
 
 /**
@@ -267,4 +280,13 @@ export const matchJobId = (tenderId, version) => `match-${tenderId}-v${version}`
 export const documentsMatchJobId = (tenderId, storageKey) =>
   `match-${tenderId}-docs-${sha256(storageKey).slice(0, 12)}`;
 
-export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId };
+/**
+ * The morning digest of one destination, keyed on its Yerevan date, so a
+ * re-run of the morning job (a re-registered schedule, a retried job) queues
+ * nothing new while that day's job is still kept. The held rows are the second
+ * belt: a digest that already went out left none to send. Hyphens only — a
+ * BullMQ custom id with a `:` must split into exactly three parts.
+ */
+export const digestJobId = (destinationId, yerevanDate) => `digest-${destinationId}-${yerevanDate}`;
+
+export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId, digestJobId };

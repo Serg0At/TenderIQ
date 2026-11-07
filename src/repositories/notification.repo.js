@@ -99,7 +99,7 @@ export default class NotificationRepository {
     trx = db
   ) {
     const id = createId();
-    await trx('alert_deliveries').insert({
+    const insert = trx('alert_deliveries').insert({
       id,
       notification_id: notificationId,
       organization_id: organizationId,
@@ -110,7 +110,75 @@ export default class NotificationRepository {
       deferred_until: deferredUntil,
       detail,
     });
+    // A match already held for this destination stays one row: the conflict is
+    // `alert_deliveries_held_uq` doing its job, not an error.
+    await (status === 'held' ? insert.onConflict().ignore() : insert);
     return id;
+  }
+
+  /**
+   * Every destination that has a digest waiting: live, with at least one `held`
+   * row. The morning job's whole query. A revoked destination's held rows are
+   * not work — nothing is sent to a destination that asked to stop.
+   */
+  static async destinationsWithHeld(trx = db) {
+    return trx('alert_deliveries as d')
+      .join('channel_subscriptions as s', function onDestination() {
+        this.on('s.id', 'd.channel_subscription_id').andOn('s.organization_id', 'd.organization_id');
+      })
+      .where('d.status', 'held')
+      .whereNotNull('s.address')
+      .whereNotNull('s.verified_at')
+      .whereNull('s.revoked_at')
+      .distinct('s.id', 's.channel', 's.organization_id');
+  }
+
+  /**
+   * One destination's next digest: its `held` rows, each with its notification
+   * and the tender as it is NOW — the digest is read at send time, so a
+   * deadline that moved since the match is the one shown. Oldest match first;
+   * ordering the list is the renderer's job.
+   *
+   * Scoped by the destination's organization as well as its id, so a held row
+   * can only ever be read into its own tenant's digest.
+   */
+  static async heldForDestination({ subscriptionId, organizationId }, trx = db) {
+    return trx('alert_deliveries as d')
+      .join('notifications as n', function onNotification() {
+        this.on('n.id', 'd.notification_id').andOn('n.organization_id', 'd.organization_id');
+      })
+      .leftJoin('tenders as t', 't.id', 'n.tender_id')
+      .leftJoin('parties as b', 'b.id', 't.buyer_id')
+      .where('d.channel_subscription_id', subscriptionId)
+      .andWhere('d.organization_id', organizationId)
+      .andWhere('d.status', 'held')
+      .orderBy([{ column: 'n.created_at', order: 'asc' }, { column: 'd.id', order: 'asc' }])
+      .select(
+        'd.id as delivery_id',
+        'n.id as notification_id',
+        'n.tender_id',
+        'n.payload',
+        't.title',
+        't.reference_code',
+        't.status as tender_status',
+        't.deadline_at',
+        't.estimated_value',
+        't.currency',
+        't.invitation_url',
+        'b.name as buyer_name'
+      );
+  }
+
+  /**
+   * Close a digest's held rows with its outcome. Only rows still `held` move,
+   * so a row another path already settled is not overwritten.
+   */
+  static async settleHeld({ deliveryIds, status, detail = null }, trx = db) {
+    if (!deliveryIds.length) return 0;
+    return trx('alert_deliveries')
+      .whereIn('id', deliveryIds)
+      .andWhere('status', 'held')
+      .update({ status, detail, sent_at: status === 'sent' ? new Date() : null });
   }
 
   /**

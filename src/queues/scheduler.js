@@ -158,6 +158,17 @@ const register = async () => {
   );
   logger.info('[scheduler] subscription ending sweep scheduled "17 6 * * *"');
 
+  // The daily digest, at 08:00 on the Yerevan clock rather than UTC, so it is
+  // waiting when the working day starts there whatever zone the server runs
+  // in. Every day, weekends included: a tender published on Saturday with a
+  // Monday deadline must not wait for Monday's digest.
+  await alertsQueue.upsertJobScheduler(
+    'digest-daily',
+    { pattern: '0 8 * * *', tz: 'Asia/Yerevan' },
+    { name: JOB.DIGEST_DAILY, data: {} }
+  );
+  logger.info('[scheduler] daily digest scheduled "0 8 * * *" Asia/Yerevan');
+
   // Nightly full recompute. Repairs anything the targeted path missed, and
   // promotes categories that only now cleared the comparables threshold
   // because the seed advanced.

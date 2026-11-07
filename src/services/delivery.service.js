@@ -13,8 +13,9 @@ import { logger } from '../utils/logger.js';
  * keeps only what genuinely wraps the third party: the Bot API client
  * (`telegram.js`), the mail port (`email/`), and the formatters.
  *
- * A channel returns 'sent', 'deferred', 'skipped' or 'failed' and never throws,
- * so one dead provider cannot abort delivery to the others.
+ * A channel returns 'sent', 'deferred', 'held', 'skipped' or 'failed' and never
+ * throws, so one dead provider cannot abort delivery to the others. 'held' is a
+ * new match waiting for a daily destination's digest — neither sent nor failed.
  *
  * **'skipped' is not a failure.** It means the organization has not switched
  * that channel on — it has no live `channel_subscriptions` row for it, which is

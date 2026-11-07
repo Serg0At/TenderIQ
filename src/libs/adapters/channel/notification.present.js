@@ -189,6 +189,15 @@ export const changeLine = (payload = {}) => {
   return parts.length ? parts.join(', ') : null;
 };
 
+/**
+ * A digest's heading, shared by every channel so a Telegram digest and an email
+ * digest of the same morning say the same thing. `count` is the tenders listed.
+ */
+export const DIGEST_HEADING = { emoji: '📬', label: 'Daily digest' };
+
+export const digestTitle = (count) =>
+  `${DIGEST_HEADING.label}: ${count} new matching tender${count === 1 ? '' : 's'}`;
+
 /** True for the alerts that are about the org's own document rather than a tender. */
 export const isVaultType = (type) => String(type ?? '').startsWith('vault-');
 
@@ -283,6 +292,8 @@ export const subscriptionAnnouncement = (type, payload = {}) => {
 
 export default {
   DELIVERABLE_CHANNELS,
+  DIGEST_HEADING,
+  digestTitle,
   matchedSearchesLine,
   changeLine,
   money,

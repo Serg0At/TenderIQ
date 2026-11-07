@@ -13,6 +13,7 @@ import {
   subscriptionAnnouncement,
   matchedSearchesLine,
   changeLine,
+  digestTitle,
 } from './notification.present.js';
 
 /**
@@ -264,4 +265,42 @@ export const formatNotification = (notification, { now = new Date(), unsubscribe
   };
 };
 
-export default { formatNotification };
+/**
+ * One destination's digest as `{ subject, text, html }`: one block per tender —
+ * title, deadline, link — and the same footer and unsubscribe link as an alert.
+ * `items` arrive already one per tender, read as the tenders are at send time.
+ */
+export const formatDigest = (items, { now = new Date(), unsubscribeUrl = null } = {}) => {
+  const title = digestTitle(items.length);
+  const text = [];
+  const html = [];
+
+  for (const item of items) {
+    const name = item.title ?? item.referenceCode ?? 'Untitled tender';
+    const due = deadline(item.deadlineAt, now);
+    const url = tenderLink({ sourceUrl: item.sourceUrl }, item.tenderId);
+
+    text.push('', name);
+    if (due) text.push(`Deadline: ${due}`);
+    if (url) text.push(url);
+
+    html.push(
+      `<p style="margin:16px 0 4px;font-size:15px;font-weight:600;line-height:1.4">${escapeHtml(name)}</p>`
+    );
+    if (due) html.push(fact('Deadline', due));
+    if (url) {
+      html.push(
+        `<p style="margin:0;font-size:14px"><a href="${escapeHtml(url)}" style="color:#1a56db">Open tender</a></p>`
+      );
+    }
+  }
+
+  return {
+    // No emoji, as for every alert subject; the words carry it.
+    subject: title,
+    text: [title, ...text, '', '—', footer(unsubscribeUrl)].join('\n'),
+    html: layout(title, [html.join('\n'), footerHtml(unsubscribeUrl)]),
+  };
+};
+
+export default { formatNotification, formatDigest };

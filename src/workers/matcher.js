@@ -82,6 +82,9 @@ export const handleTenderMatched = async (job) => {
   // delivered nothing because a provider pushed back is not read as a broken
   // channel.
   let deferred = 0;
+  // Held for a daily destination's digest — not delivered yet, and not a
+  // failure. Counted apart so a log line never reports a held match as sent.
+  let held = 0;
 
   for (const { organizationId, matches, pipelineStatus } of recipients) {
     matched += matches.length;
@@ -149,6 +152,7 @@ export const handleTenderMatched = async (job) => {
       const status = await channel.send(notification);
       if (status === 'sent') delivered += 1;
       if (status === 'deferred') deferred += 1;
+      if (status === 'held') held += 1;
     }
   }
 
@@ -156,11 +160,12 @@ export const handleTenderMatched = async (job) => {
     logger.info(
       `[matcher] ${tender.reference_code}: ${matched} match(es) across ${groups.length} org(s), ` +
         `${trackers} tracking, ${notified} notified, ${delivered} delivered` +
-        (deferred ? `, ${deferred} deferred` : '')
+        (deferred ? `, ${deferred} deferred` : '') +
+        (held ? `, ${held} held for digest` : '')
     );
   }
 
-  return { tenderId, event, profiles: profiles.length, matched, trackers, notified, delivered, deferred };
+  return { tenderId, event, profiles: profiles.length, matched, trackers, notified, delivered, deferred, held };
 };
 
 /**
@@ -168,7 +173,7 @@ export const handleTenderMatched = async (job) => {
  * a reminder sweep cannot starve a freshly ingested tender's match, which is
  * the one with a 5-minute delivery target.
  */
-export const processMatch = async (job) => {
+export const processMatch = async (job, token) => {
   switch (job.name) {
     // processReminder, not handleDeadlineReminders: it runs BOTH the matched
     // safety net and the tighter pipeline countdown. Calling the inner function
@@ -196,6 +201,11 @@ export const processMatch = async (job) => {
       return (await import('./subscriptionEnding.js')).processSubscriptionEnding();
     case JOB.DELIVER_NOTIFICATION:
       return (await import('./notifier.js')).handleDeliverNotification(job);
+    case JOB.DIGEST_DAILY:
+      return (await import('./digest.js')).handleDigestDaily();
+    // Takes the token: a throttled digest moves itself to delayed.
+    case JOB.DIGEST_SEND:
+      return (await import('./digest.js')).handleDigestSend(job, token);
     case JOB.MATCH_TENDER:
     default:
       return handleTenderMatched(job);

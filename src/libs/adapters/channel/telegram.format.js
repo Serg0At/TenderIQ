@@ -12,6 +12,8 @@ import {
   subscriptionAnnouncement,
   matchedSearchesLine,
   changeLine,
+  DIGEST_HEADING,
+  digestTitle,
 } from './notification.present.js';
 
 /**
@@ -168,6 +170,23 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
   return lines.join('\n');
 };
 
+/**
+ * One destination's digest as Telegram HTML: a heading, then one block per
+ * tender — title, deadline, link. `items` arrive already one per tender, read
+ * as the tenders are at send time.
+ */
+export const formatDigest = (items, { now = new Date() } = {}) => {
+  const lines = [`<b>${escapeHtml(`${DIGEST_HEADING.emoji} ${digestTitle(items.length)}`)}</b>`];
+  for (const item of items) {
+    lines.push('', `<b>${escapeHtml(item.title ?? item.referenceCode ?? 'Untitled tender')}</b>`);
+    const due = deadline(item.deadlineAt, now);
+    if (due) lines.push(`🗓 ${escapeHtml(due)}`);
+    const link = tenderLink({ sourceUrl: item.sourceUrl }, item.tenderId);
+    if (link) lines.push(`<a href="${escapeHtml(link)}">Open tender</a>`);
+  }
+  return lines.join('\n');
+};
+
 /** Sent to the chat once a link is confirmed, so the user sees it worked. */
 export const linkConfirmation = (organizationName) =>
   [
@@ -194,6 +213,7 @@ export const stopConfirmation = () =>
 // is how the email channel would end up importing Telegram's copy.
 export default {
   formatNotification,
+  formatDigest,
   linkConfirmation,
   linkRejected,
   stopConfirmation,

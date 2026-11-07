@@ -90,6 +90,20 @@ export const handleDeferredDeliveries = async () => {
         }
 
         /**
+         * Every destination left on this channel is daily now, so the match
+         * waits in a `held` row `deliver` has just written for its digest. This
+         * row is closed as superseded by it, not failed: nobody was let down.
+         */
+        if (status === 'held') {
+          await notifications.settleDeferred({
+            deliveryId,
+            status: 'skipped',
+            detail: 'superseded by a held row for the digest',
+          });
+          continue;
+        }
+
+        /**
          * The organization switched this channel off while the alert was
          * waiting — its last subscription was revoked. Settling it as 'skipped'
          * rather than 'failed' keeps the distinction the whole four-way status

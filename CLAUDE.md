@@ -507,7 +507,9 @@ Rules the code must enforce, independent of UI. The full list is in the referenc
 
 Enum values constrained at the DB level by a CHECK: `tender.submission_channel ∈ {eauction, armeps,
 paper}`; `tender_sources.role ∈ {discovery, detail, results}`; `tracked_tender.status ∈ {considering,
-preparing, submitted, won, lost, dropped}`; `invitation.status ∈ {pending, accepted, declined}`; `subscription.kind ∈ {trial, promo, paid}`.
+preparing, submitted, won, lost, dropped}`; `invitation.status ∈ {pending, accepted, declined}`; `subscription.kind ∈ {trial, promo, paid}`;
+`channel_subscription.cadence ∈ {instant, daily}`; `alert_delivery.status ∈ {sent, deferred,
+skipped, failed, held}`.
 `tender.procedure_type ∈ {open, quotation, single_source, e_auction, restricted}` and `tender.status ∈
 {planned, active, amended, closed, awarded, cancelled}` are pinned only by the Joi schema at the
 normalizer boundary (`validations/schemas/tender.schema.js`) — there is no CHECK on either yet.
@@ -950,17 +952,26 @@ decision that has already been made.
   second SMTP client to get STARTTLS wrong. There is deliberately no `channel/email.js` beside
   `channel/telegram.js`: the email channel is a formatter plus a policy, and the transport is
   borrowed.
-- **Delivery has four outcomes, not three: `sent`, `deferred`, `skipped`, `failed`.** A throttled
+- **Delivery has four outcomes, not three: `sent`, `deferred`, `skipped`, `failed` — and a fifth
+  state, `held`, that is not an outcome yet.** A throttled
   provider (429) defers an alert to a `deferred` row that `notify.deferred` sweeps — never drop it,
   and never burn an attempt on being rate-limited — and the sweep walks every deliverable channel
   rather than the hardcoded `'telegram'` it once named twice. `skipped` means the org has not
-  switched that channel on. Folding either into `failed` makes a working configuration look like a
+  switched that channel on. `held` is a `tender-match` waiting for a daily destination's 08:00
+  digest (daily-digest ticket 02): the destination's held rows ARE its next digest, no timestamp
+  beside them, and `digest.send` turns them `sent` or `failed` through the same `applyOutcome` as an
+  alert (a throttled digest leaves them held and delays the job). Folding any of these into `failed` makes a working configuration look like a
   broken channel in every metric, which is how a real outage stops being visible. **A channel records its own `alert_deliveries` rows and callers must not** —
   one alert fans out to every linked destination, so one row per destination is the honest record.
 - **A live `channel_subscriptions` row IS the switch, and it is the only one.** Decided
   2026-09-10: there is no per-user preference layer and no quiet window. A channel delivers for an
   organization exactly when that organization has a verified, unrevoked row for it; turning a
-  channel off is revoking its rows, turning it on is linking again. `notification_preferences`,
+  channel off is revoking its rows, turning it on is linking again. **Cadence** (`instant` |
+  `daily`, 2026-11-07) is a property of that same row — the destination — and not a preference
+  store: it says only *when* a live destination hears about a new match, never *whether*. There is
+  still one row and one switch. Only `tender-match` is held for a daily destination; every other
+  type reaches every live destination at once. New Telegram chats start `instant`, new email
+  destinations `daily`, set by the repository (the column has no default). `notification_preferences`,
   `muted_types`, `TRANSPORTS[].personal` and the `quiet_hours_*` / `timezone` columns were built
   and then **removed** — do not rebuild them from this file's history or from the reference spec's
   BR-10 without asking. The reason is that a second store of "should this be delivered" is a second

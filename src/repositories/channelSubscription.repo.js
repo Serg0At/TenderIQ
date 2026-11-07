@@ -5,6 +5,15 @@ import db from '../libs/knex.js';
 const TABLE = 'channel_subscriptions';
 
 /**
+ * The cadence a new destination starts at, per channel: a Telegram message is a
+ * glance, so a chat stays instant; a mailbox suits one morning digest. Set here,
+ * where destinations are created, because the column has no database default —
+ * a channel missing from this table inserts NULL and the NOT NULL refuses it,
+ * rather than every forgotten case silently becoming instant.
+ */
+const NEW_DESTINATION_CADENCE = { telegram: 'instant', email: 'daily' };
+
+/**
  * Where an organization's alerts are delivered.
  *
  * One row is one destination on one channel — a Telegram chat, later an email
@@ -38,6 +47,7 @@ export default class ChannelSubscriptionRepository {
       organization_id: organizationId,
       user_id: userId,
       channel,
+      cadence: NEW_DESTINATION_CADENCE[channel],
       link_token: token,
       token_expires_at: new Date(Date.now() + ttlMinutes * 60_000),
     });
@@ -134,6 +144,7 @@ export default class ChannelSubscriptionRepository {
         organization_id: organizationId,
         user_id: userId,
         channel,
+        cadence: NEW_DESTINATION_CADENCE[channel],
         address: String(address),
         verified_at: new Date(),
       })
@@ -154,6 +165,23 @@ export default class ChannelSubscriptionRepository {
       .whereNotNull('verified_at')
       .whereNull('revoked_at')
       .select('*');
+  }
+
+  /**
+   * One destination, only if it can be delivered to right now — verified, with
+   * an address, not revoked. The digest's check at send time: a destination
+   * switched off between the morning job and its own digest job receives
+   * nothing. Not organization-scoped: the caller is a worker holding an id the
+   * morning job read from this table.
+   */
+  static async findDeliverable(id, trx = db) {
+    if (!id) return null;
+    return trx(TABLE)
+      .where({ id })
+      .whereNotNull('address')
+      .whereNotNull('verified_at')
+      .whereNull('revoked_at')
+      .first();
   }
 
   /**
