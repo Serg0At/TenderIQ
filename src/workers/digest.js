@@ -71,7 +71,7 @@ export const handleDigestSend = async (job, token) => {
 
   if (result.count) {
     logger.info(
-      `[digest] ${value.subscriptionId}: ${result.status}, ${result.tenders ?? 0} tender(s) from ${result.count} held match(es)` +
+      `[digest] ${value.subscriptionId}: ${result.status}, ${result.listed ?? 0} of ${result.tenders ?? 0} tender(s) listed from ${result.count} held match(es)` +
         (result.detail ? ` — ${result.detail}` : '')
     );
   }

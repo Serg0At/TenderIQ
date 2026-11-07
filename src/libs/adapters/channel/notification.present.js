@@ -198,6 +198,127 @@ export const DIGEST_HEADING = { emoji: '📬', label: 'Daily digest' };
 export const digestTitle = (count) =>
   `${DIGEST_HEADING.label}: ${count} new matching tender${count === 1 ? '' : 's'}`;
 
+/** The most tenders one digest lists; the rest are counted, never dropped. */
+export const DIGEST_MAX_LINES = 20;
+
+/**
+ * Telegram refuses a message longer than this, counted after its HTML is
+ * parsed — the visible text, in UTF-16 units, which is a JavaScript string's
+ * `length`. A refused message is a permanent failure that counts against the
+ * destination, so the digest is sized to it before it is rendered.
+ */
+export const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+/**
+ * An upper bound on what a renderer adds around a line's values: emoji,
+ * labels, separators, newlines, the "Open tender" anchor text. Telegram's
+ * renderer adds about 45; the slack is what lets its wording change without
+ * this file noticing. A renderer whose frame outgrows it is the one change
+ * that can push a digest past the limit.
+ */
+const LINE_FRAME = 64;
+
+/** The heading and the "…and N more" line, with the same slack. */
+const DIGEST_FRAME = 160;
+
+/**
+ * One line cannot crowd out the list: clipped at lengths the corpus does not
+ * reach today (the longest stored title is 365), so they only ever bite on a
+ * value that would otherwise take a fifth of the message.
+ */
+const CLIP = { title: 400, buyer: 200, matched: 300 };
+
+const clip = (value, max) =>
+  value && value.length > max ? `${value.slice(0, max - 1)}…` : value ?? null;
+
+/**
+ * A status's one word in a digest. `amended` keeps its place among the
+ * biddable tenders when it is still biddable — the word says to re-read it,
+ * not that it is gone.
+ */
+export const DIGEST_MARKERS = {
+  cancelled: 'չեղարկված',
+  closed: 'փակված',
+  awarded: 'փակված',
+  amended: 'փոփոխված',
+};
+
+/** CONTEXT.md, "Biddable tender"; the SQL twin is `tender.repo.js#BIDDABLE_STATUSES`. */
+const BIDDABLE_STATUSES = ['active', 'amended'];
+
+const isBiddable = (item, now) => {
+  if (!BIDDABLE_STATUSES.includes(item.status)) return false;
+  if (!item.deadlineAt) return true;
+  const at = new Date(item.deadlineAt).getTime();
+  return Number.isNaN(at) || at > now.getTime();
+};
+
+/** Deadline ascending, a missing one last. */
+const deadlineMs = (item) => {
+  const at = item.deadlineAt ? new Date(item.deadlineAt).getTime() : NaN;
+  return Number.isNaN(at) ? Infinity : at;
+};
+
+const visibleLength = (line) =>
+  LINE_FRAME +
+  [line.marker, line.title, line.buyer, line.budget, line.deadline, line.matched]
+    .filter(Boolean)
+    .reduce((sum, value) => sum + value.length, 0);
+
+/**
+ * What one destination's digest says, decided once for every channel.
+ *
+ * `items` are one per tender, read as the tenders are at send time
+ * (`notifier.service.js#digestItems`). Biddable tenders come first, soonest
+ * deadline first; the rest — cancelled, closed, awarded, past their deadline —
+ * follow in the same order, each marked. At most `DIGEST_MAX_LINES` are listed,
+ * fewer when Telegram's limit would be passed, and the rest are counted.
+ * The order is stable, so two tenders with one deadline keep the order they
+ * were held in.
+ *
+ * Relevance plays no part: the digest lists exactly what was matched, in an
+ * order every member can predict.
+ *
+ * Telegram and email both render this object and nothing else, which is what
+ * makes them list the same tenders in the same order.
+ */
+export const digestContent = (items, { now = new Date() } = {}) => {
+  const biddable = [];
+  const rest = [];
+  for (const item of items) (isBiddable(item, now) ? biddable : rest).push(item);
+  const byDeadline = (a, b) => deadlineMs(a) - deadlineMs(b);
+
+  const ordered = [...biddable.sort(byDeadline), ...rest.sort(byDeadline)].map((item) => ({
+    tenderId: item.tenderId,
+    title: clip(item.title ?? item.referenceCode ?? 'Untitled tender', CLIP.title),
+    marker: DIGEST_MARKERS[item.status] ?? null,
+    buyer: clip(item.buyerName, CLIP.buyer),
+    budget: money(item.estimatedValue, item.currency ?? 'AMD'),
+    deadline: deadline(item.deadlineAt, now),
+    matched: clip(matchedSearchesLine({ matchedSearches: item.matchedSearches }), CLIP.matched),
+    // The link an instant alert of this tender carries.
+    link: tenderLink({ sourceUrl: item.sourceUrl }, item.tenderId),
+  }));
+
+  const lines = [];
+  let room = TELEGRAM_MESSAGE_LIMIT - DIGEST_FRAME;
+  for (const line of ordered) {
+    if (lines.length === DIGEST_MAX_LINES) break;
+    const cost = visibleLength(line);
+    if (cost > room) break;
+    room -= cost;
+    lines.push(line);
+  }
+
+  const more = ordered.length - lines.length;
+  return {
+    title: digestTitle(ordered.length),
+    lines,
+    more,
+    moreLine: more ? `…and ${more} more match${more === 1 ? '' : 'es'}` : null,
+  };
+};
+
 /** True for the alerts that are about the org's own document rather than a tender. */
 export const isVaultType = (type) => String(type ?? '').startsWith('vault-');
 
@@ -293,7 +414,11 @@ export const subscriptionAnnouncement = (type, payload = {}) => {
 export default {
   DELIVERABLE_CHANNELS,
   DIGEST_HEADING,
+  DIGEST_MAX_LINES,
+  DIGEST_MARKERS,
+  TELEGRAM_MESSAGE_LIMIT,
   digestTitle,
+  digestContent,
   matchedSearchesLine,
   changeLine,
   money,

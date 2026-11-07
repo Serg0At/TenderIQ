@@ -13,7 +13,6 @@ import {
   subscriptionAnnouncement,
   matchedSearchesLine,
   changeLine,
-  digestTitle,
 } from './notification.present.js';
 
 /**
@@ -266,40 +265,50 @@ export const formatNotification = (notification, { now = new Date(), unsubscribe
 };
 
 /**
- * One destination's digest as `{ subject, text, html }`: one block per tender —
- * title, deadline, link — and the same footer and unsubscribe link as an alert.
- * `items` arrive already one per tender, read as the tenders are at send time.
+ * One destination's digest as `{ subject, text, html }`, from `digestContent`
+ * — the same tenders, order, markers and leftover count Telegram renders —
+ * with the same footer and unsubscribe link as an alert.
  */
-export const formatDigest = (items, { now = new Date(), unsubscribeUrl = null } = {}) => {
-  const title = digestTitle(items.length);
+export const formatDigest = (digest, { unsubscribeUrl = null } = {}) => {
   const text = [];
   const html = [];
 
-  for (const item of items) {
-    const name = item.title ?? item.referenceCode ?? 'Untitled tender';
-    const due = deadline(item.deadlineAt, now);
-    const url = tenderLink({ sourceUrl: item.sourceUrl }, item.tenderId);
+  for (const line of digest.lines) {
+    const facts = [
+      line.buyer ? ['Buyer', line.buyer] : null,
+      line.budget ? ['Budget', line.budget] : null,
+      line.deadline ? ['Deadline', line.deadline] : null,
+      line.matched ? ['Matched', line.matched] : null,
+    ].filter(Boolean);
 
-    text.push('', name);
-    if (due) text.push(`Deadline: ${due}`);
-    if (url) text.push(url);
+    text.push('', line.marker ? `${line.title} — ${line.marker}` : line.title);
+    text.push(...facts.map(([k, v]) => `${k}: ${v}`));
+    if (line.link) text.push(line.link);
 
+    const marker = line.marker
+      ? ` <span style="font-weight:400;font-style:italic;color:#6b7280">${escapeHtml(line.marker)}</span>`
+      : '';
     html.push(
-      `<p style="margin:16px 0 4px;font-size:15px;font-weight:600;line-height:1.4">${escapeHtml(name)}</p>`
+      `<p style="margin:20px 0 6px;font-size:15px;font-weight:600;line-height:1.4">${escapeHtml(line.title)}${marker}</p>`
     );
-    if (due) html.push(fact('Deadline', due));
-    if (url) {
+    html.push(...facts.map(([k, v]) => fact(k, v)));
+    if (line.link) {
       html.push(
-        `<p style="margin:0;font-size:14px"><a href="${escapeHtml(url)}" style="color:#1a56db">Open tender</a></p>`
+        `<p style="margin:0;font-size:14px"><a href="${escapeHtml(line.link)}" style="color:#1a56db">Open tender</a></p>`
       );
     }
   }
 
+  if (digest.moreLine) {
+    text.push('', digest.moreLine);
+    html.push(`<p style="margin:20px 0 0;font-size:14px;color:#6b7280">${escapeHtml(digest.moreLine)}</p>`);
+  }
+
   return {
     // No emoji, as for every alert subject; the words carry it.
-    subject: title,
-    text: [title, ...text, '', '—', footer(unsubscribeUrl)].join('\n'),
-    html: layout(title, [html.join('\n'), footerHtml(unsubscribeUrl)]),
+    subject: digest.title,
+    text: [digest.title, ...text, '', '—', footer(unsubscribeUrl)].join('\n'),
+    html: layout(digest.title, [html.join('\n'), footerHtml(unsubscribeUrl)]),
   };
 };
 

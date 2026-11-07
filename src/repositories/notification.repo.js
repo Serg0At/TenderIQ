@@ -137,7 +137,7 @@ export default class NotificationRepository {
    * One destination's next digest: its `held` rows, each with its notification
    * and the tender as it is NOW — the digest is read at send time, so a
    * deadline that moved since the match is the one shown. Oldest match first;
-   * ordering the list is the renderer's job.
+   * ordering the list is `notification.present.js#digestContent`'s job.
    *
    * Scoped by the destination's organization as well as its id, so a held row
    * can only ever be read into its own tenant's digest.

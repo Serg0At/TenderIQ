@@ -12,7 +12,7 @@ import {
   formatDigest as formatEmailDigest,
 } from '../libs/adapters/channel/email.format.js';
 import { unsubscribeUrl } from './unsubscribe.service.js';
-import { DELIVERABLE_CHANNELS } from '../libs/adapters/channel/notification.present.js';
+import { DELIVERABLE_CHANNELS, digestContent } from '../libs/adapters/channel/notification.present.js';
 import { logger } from '../utils/logger.js';
 
 const { TELEGRAM, EMAIL, NODE_ENV } = config;
@@ -95,7 +95,7 @@ const TRANSPORTS = {
     unconfiguredDetail: 'TELEGRAM_BOT_TOKEN is not set',
     channelOffDetail: 'Telegram alerts are not switched on for this organization',
     render: (notification, now) => ({ text: formatTelegram(notification, { now }) }),
-    renderDigest: (items, now) => ({ text: formatTelegramDigest(items, { now }) }),
+    renderDigest: (digest) => ({ text: formatTelegramDigest(digest) }),
     send: (subscription, message) =>
       telegram.sendMessage({ chatId: subscription.address, text: message.text }),
     // Telegram carries no unsubscribe link: `/stop` in the chat already does it,
@@ -125,9 +125,9 @@ const TRANSPORTS = {
     },
     // A digest is mail to one destination, so it carries that destination's
     // unsubscribe link and headers exactly as an alert does.
-    renderDigest: (items, now, subscription) => {
+    renderDigest: (digest, subscription) => {
       const url = unsubscribeUrl(subscription.id);
-      return { ...formatEmailDigest(items, { now, unsubscribeUrl: url }), unsubscribeUrl: url };
+      return { ...formatEmailDigest(digest, { unsubscribeUrl: url }), unsubscribeUrl: url };
     },
     send: (subscription, message) =>
       mailer.send({
@@ -438,8 +438,11 @@ export const sendDigest = async (subscriptionId, { now = new Date() } = {}) => {
     return { status: 'failed', count: rows.length, detail: transport.unconfiguredDetail };
   }
 
-  const items = digestItems(rows);
-  const message = transport.renderDigest(items, now, subscription);
+  // Order, markers and the cap are decided once, for every channel; a held
+  // row of a tender past the cap is still settled with the rest — counted in
+  // "…and N more", it was delivered as far as this digest delivers anything.
+  const digest = digestContent(digestItems(rows), { now });
+  const message = transport.renderDigest(digest, subscription);
   const result = await transport.send(subscription, message);
   const { status, detail, deferredUntil = null } = await applyOutcome(transport, subscription, result);
 
@@ -453,7 +456,13 @@ export const sendDigest = async (subscriptionId, { now = new Date() } = {}) => {
   }
 
   await notifications.settleHeld({ deliveryIds, status, detail });
-  return { status, count: rows.length, tenders: items.length, detail };
+  return {
+    status,
+    count: rows.length,
+    tenders: digest.lines.length + digest.more,
+    listed: digest.lines.length,
+    detail,
+  };
 };
 
 export default { deliver, deliverableChannels, sendDigest };

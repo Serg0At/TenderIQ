@@ -13,7 +13,6 @@ import {
   matchedSearchesLine,
   changeLine,
   DIGEST_HEADING,
-  digestTitle,
 } from './notification.present.js';
 
 /**
@@ -171,20 +170,30 @@ export const formatNotification = (notification, { now = new Date() } = {}) => {
 };
 
 /**
- * One destination's digest as Telegram HTML: a heading, then one block per
- * tender — title, deadline, link. `items` arrive already one per tender, read
- * as the tenders are at send time.
+ * One destination's digest as Telegram HTML, from `digestContent`: which
+ * tenders, in what order, with what marker, and how many are left over are
+ * already decided there — this only marks them up.
+ *
+ * Everything this adds around a line's values (emoji, labels, newlines, the
+ * anchor text) must stay within `notification.present.js#LINE_FRAME`, or the
+ * cap no longer keeps the message under Telegram's limit.
  */
-export const formatDigest = (items, { now = new Date() } = {}) => {
-  const lines = [`<b>${escapeHtml(`${DIGEST_HEADING.emoji} ${digestTitle(items.length)}`)}</b>`];
-  for (const item of items) {
-    lines.push('', `<b>${escapeHtml(item.title ?? item.referenceCode ?? 'Untitled tender')}</b>`);
-    const due = deadline(item.deadlineAt, now);
-    if (due) lines.push(`🗓 ${escapeHtml(due)}`);
-    const link = tenderLink({ sourceUrl: item.sourceUrl }, item.tenderId);
-    if (link) lines.push(`<a href="${escapeHtml(link)}">Open tender</a>`);
+export const formatDigest = (digest) => {
+  const out = [`<b>${escapeHtml(`${DIGEST_HEADING.emoji} ${digest.title}`)}</b>`];
+  for (const line of digest.lines) {
+    const marker = line.marker ? ` · <i>${escapeHtml(line.marker)}</i>` : '';
+    out.push('', `<b>${escapeHtml(line.title)}</b>${marker}`);
+    if (line.buyer) out.push(`🏛 ${escapeHtml(line.buyer)}`);
+    const facts = [
+      line.budget ? `💰 ${escapeHtml(line.budget)}` : null,
+      line.deadline ? `🗓 ${escapeHtml(line.deadline)}` : null,
+    ].filter(Boolean);
+    if (facts.length) out.push(facts.join(' · '));
+    if (line.matched) out.push(`<b>Matched:</b> ${escapeHtml(line.matched)}`);
+    if (line.link) out.push(`<a href="${escapeHtml(line.link)}">Open tender</a>`);
   }
-  return lines.join('\n');
+  if (digest.moreLine) out.push('', `<i>${escapeHtml(digest.moreLine)}</i>`);
+  return out.join('\n');
 };
 
 /** Sent to the chat once a link is confirmed, so the user sees it worked. */
