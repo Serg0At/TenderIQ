@@ -264,6 +264,23 @@ per organization, each covering a set of CPV divisions or groups. A weak relevan
 discovery filter. `organizations.type` in code; the list is `src/libs/fields.js`.
 _Avoid_: Type, Vertical, Industry, Sector, Category
 
+**Stated CPV code**:
+A CPV code the source itself gives for a tender or a lot — on its page, in its invitation or in
+its archive. A fact about the tender, and the only kind any intelligence figure is built on.
+_Avoid_: Real code, Official code, CPV (alone, when the kind matters)
+
+**CPV classifier**:
+Armenia's official list of procurement codes and their Armenian names («Գնումների միասնական
+անվանացանկ»), published by the Ministry of Finance. A national extension of EU CPV — the
+first four digits agree, the rest are Armenia's own — and the closed set every code must belong to.
+_Avoid_: CPV list (alone), EU CPV, Dictionary, Taxonomy
+
+**Inferred CPV code**:
+A CPV code Tendra assigns to a lot whose source states none, read from the lot's own wording.
+A guess, always shown as one: it can make a tender match, filter and rank, never enter a
+benchmark or a profile, and it gives way the moment the source states a code.
+_Avoid_: Guessed code, AI code, Classification, Category, Tag
+
 **Purchase kind**:
 Whether a tender buys goods, works or services, as the source labels it (Ապրանք, Աշխատանք,
 Ծառայություն). A property of the tender, never of the organization.
