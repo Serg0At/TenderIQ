@@ -248,6 +248,12 @@ function up(pg) {
       table.text('inferred_cpv_model');
       table.date('inferred_cpv_classifier_version');
       table.timestamp('inferred_cpv_at', { useTz: true });
+      // Why a lot coded at ingest was left uncoded (cpv-inference ticket 04): `none`,
+      // `low_confidence`, `refusal`, `invalid_code`, `rate_limited`, `ai_unavailable`,
+      // `internal_error`. Set with the provenance and a null code, so `inferred_cpv_at` alone
+      // says the lot was tried — it is not tried again — and unclassified lots are counted
+      // by reason rather than guessed at.
+      table.text('inferred_cpv_unclassified');
     })
 
     // contracts — Signed contract values following a procurement; deliberately empty until
@@ -1167,6 +1173,12 @@ async function indexes(pg) {
   await pg.raw(`ALTER TABLE tender_lots ADD CONSTRAINT tender_lots_inferred_cpv_model_chk
      CHECK ((inferred_cpv_model IS NULL OR inferred_cpv_method = 'model')
        AND (inferred_cpv_method IS DISTINCT FROM 'model' OR inferred_cpv_model IS NOT NULL))`);
+  await pg.raw(`ALTER TABLE tender_lots ADD CONSTRAINT tender_lots_inferred_cpv_unclassified_chk
+     CHECK (inferred_cpv_unclassified IS NULL OR (inferred_cpv_code IS NULL
+       AND inferred_cpv_method IS NOT NULL AND inferred_cpv_classifier_version IS NOT NULL
+       AND inferred_cpv_at IS NOT NULL
+       AND inferred_cpv_unclassified IN ('none', 'low_confidence', 'refusal', 'invalid_code',
+         'rate_limited', 'ai_unavailable', 'internal_error')))`);
   await pg.raw(`CREATE INDEX IF NOT EXISTS tender_lots_name_trgm_idx
      ON tender_lots USING gin (left(name, 100) gin_trgm_ops)`);
   await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_no_overlap_excl

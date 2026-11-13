@@ -36,12 +36,15 @@ export const maintenanceQueue = new Queue(QUEUE.MAINTENANCE, { connection, defau
 
 export const alertsQueue = new Queue(QUEUE.ALERTS, { connection, defaultJobOptions });
 
+export const inferenceQueue = new Queue(QUEUE.INFERENCE, { connection, defaultJobOptions });
+
 export const queues = [
   ingestFetchQueue,
   ingestNormalizeQueue,
   ingestBackfillQueue,
   maintenanceQueue,
   alertsQueue,
+  inferenceQueue,
 ];
 
 export const closeQueues = async () => {
@@ -54,6 +57,7 @@ export default {
   ingestBackfillQueue,
   maintenanceQueue,
   alertsQueue,
+  inferenceQueue,
   queues,
   closeQueues,
 };

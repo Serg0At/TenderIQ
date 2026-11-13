@@ -3,8 +3,8 @@ import tenders from '../repositories/tender.repo.js';
 import tenderSources from '../repositories/tenderSource.repo.js';
 import FailureService from './failure.service.js';
 import { isOpen } from './matcher.service.js';
-import { alertsQueue } from '../queues/index.js';
-import { JOB, PRIORITY, matchJobId, documentsMatchJobId } from '../queues/names.js';
+import { alertsQueue, inferenceQueue } from '../queues/index.js';
+import { JOB, PRIORITY, matchJobId, documentsMatchJobId, inferCpvJobId } from '../queues/names.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -169,6 +169,21 @@ export default class AddendumService {
         JOB.MATCH_TENDER,
         { tenderId: result.tenderId, event: 'TenderIngested', version: result.tender.version },
         { jobId: documentsMatchJobId(result.tenderId, facts.storageKey), priority }
+      );
+    }
+
+    // Lots that state no CPV code get an inferred one (cpv-inference ticket
+    // 04, ADR 0006) — only while the tender is biddable, and never for a
+    // backfill: a closed tender's guess would feed no alert and no figure, and
+    // history is not worth a model call. Queued after the commit, on a lane of
+    // its own, so neither this write nor the match above waits on it. Only
+    // when this set left a lot to code: an unchanged lot keeps its code (or
+    // its recorded attempt) through the rewrite, a renamed one does not.
+    if (!result.skipped && result.lotsToCode > 0 && priority !== PRIORITY.BACKFILL && isOpen(result.tender, now)) {
+      await inferenceQueue.add(
+        JOB.INFER_CPV,
+        { tenderId: result.tenderId },
+        { jobId: inferCpvJobId(result.tenderId, facts.storageKey), priority }
       );
     }
 

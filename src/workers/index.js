@@ -9,6 +9,7 @@ import { processIngestFetch } from './scraper.js';
 import { processIngestNormalize } from './normalizer.js';
 import { processMaintenance } from './health.js';
 import { processMatch } from './matcher.js';
+import { processInference } from './cpvInference.js';
 import { startPolling, stopPolling } from './telegram.js';
 import config from '../configs/variables.config.js';
 import { logger } from '../utils/logger.js';
@@ -56,6 +57,12 @@ const workers = [
   new Worker(QUEUE.ALERTS, processMatch, {
     connection: redis.connectionOptions,
     concurrency: 4,
+  }),
+  // Model calls (inferred CPV codes): their own lane, so a slow or throttled
+  // call never holds a slot alert delivery is waiting for.
+  new Worker(QUEUE.INFERENCE, processInference, {
+    connection: redis.connectionOptions,
+    concurrency: 2,
   }),
 ];
 

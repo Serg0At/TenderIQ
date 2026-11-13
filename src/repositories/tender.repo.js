@@ -54,6 +54,15 @@ const codeSet = (codes) => [...new Set((codes ?? []).filter(Boolean).map(String)
 const sameCodes = (a, b) => codeSet(a).join() === codeSet(b).join();
 
 /**
+ * Whether a re-written lot is still named what it was coded from: spacing and
+ * case aside, which a re-parse may move without the buyer renaming anything.
+ */
+const sameLotName = (a, b) => {
+  const norm = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+  return norm(a) === norm(b);
+};
+
+/**
  * A tender holds one document row per set it was issued, and an addendum is a
  * new set (ticket 18), so "the tender's invitation" is the newest row. The id
  * only breaks a tie — a CUID2 says nothing about order.
@@ -591,12 +600,16 @@ export default class TenderRepository {
     if (!tender) return null;
 
     const [lots, documents, sources, cpvNames] = await Promise.all([
-      // A lot's code is named from the CPV classifier; a code it lacks has no name.
+      // A lot's code is named from the CPV classifier; a code it lacks has no
+      // name. The name is of the code the lot shows: its stated one, else its
+      // inferred one (never both — tender_lots_inferred_cpv_stated_chk).
+      // `cpv_code` stays the stated code alone, which is all the matcher and
+      // the intelligence callers of this read (ADR 0006).
       trx('tender_lots as l')
-        .leftJoin('cpv_classifier as c', 'c.code', 'l.cpv_code')
+        .leftJoin('cpv_classifier as c', 'c.code', trx.raw('coalesce(l.cpv_code, l.inferred_cpv_code)'))
         .where('l.tender_id', id)
         .orderBy('l.lot_number')
-        .select('l.lot_number', 'l.cpv_code', 'l.name', 'c.name as cpv_name'),
+        .select('l.lot_number', 'l.cpv_code', 'l.inferred_cpv_code', 'l.name', 'c.name as cpv_name'),
       // Newest set first, the same order the checklist reads its invitation in.
       trx('tender_documents')
         .where({ tender_id: id })
@@ -938,8 +951,42 @@ export default class TenderRepository {
         });
       }
 
+      // An inferred CPV code (ADR 0006) survives the replace only on a lot that
+      // is still the same lot to code: same key, same name, and still no
+      // stated code. A lot that now states one is inserted without it — the
+      // fact replaces the guess in this very write, so the CHECK that refuses
+      // the two side by side never sees them. A renamed lot is inserted
+      // untried, and the job queued after this set codes it again from its new
+      // name (cpv-inference ticket 04). An unclassified attempt is carried the
+      // same way, so an unchanged lot is never tried twice.
       const lotsWritten = rows.size;
+      let lotsToCode = 0;
       if (lotsWritten) {
+        const previous = await trx('tender_lots')
+          .where({ tender_id: tender.id, source })
+          .whereNotNull('inferred_cpv_at')
+          .select(
+            'lot_number',
+            'item_sequence',
+            'name',
+            'inferred_cpv_code',
+            'inferred_cpv_unclassified',
+            'inferred_cpv_method',
+            'inferred_cpv_model',
+            trx.raw(`to_char(inferred_cpv_classifier_version, 'YYYY-MM-DD') as inferred_cpv_classifier_version`),
+            'inferred_cpv_at'
+          );
+        const inferred = new Map(previous.map((p) => [`${p.lot_number}:${p.item_sequence}`, p]));
+        for (const [key, row] of rows) {
+          if (row.cpv_code) continue;
+          const before = inferred.get(key);
+          if (before && sameLotName(before.name, row.name)) {
+            const { lot_number, item_sequence, name, ...carried } = before;
+            Object.assign(row, carried);
+          } else if (String(row.name ?? '').trim()) {
+            lotsToCode += 1;
+          }
+        }
         await trx('tender_lots').where({ tender_id: tender.id, source }).del();
         await trx('tender_lots').insert([...rows.values()]);
       }
@@ -972,6 +1019,7 @@ export default class TenderRepository {
         buyersRefused: buyerMerge?.refused ?? null,
         lotsSeen: lots.length,
         lotsWritten,
+        lotsToCode,
         documentRecorded: (inserted?.rowCount ?? 0) > 0,
       };
     };

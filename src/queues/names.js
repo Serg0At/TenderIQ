@@ -28,6 +28,14 @@ export const QUEUE = {
    * the write path that produced it.
    */
   ALERTS: 'alerts',
+  /**
+   * Enrichment that may wait on a model call: inferred CPV codes today
+   * (cpv-inference ticket 04). Its own lane, not ALERTS: a slow or throttled
+   * model call must never hold a worker slot that alert delivery is waiting
+   * for (NFR-PERF-4), and not ingest.normalize, whose write path must not wait
+   * on a third party either.
+   */
+  INFERENCE: 'inference',
 };
 
 export const JOB = {
@@ -224,6 +232,13 @@ export const JOB = {
    * what it re-reads.
    */
   DIGEST_SEND: 'digest.send',
+  /**
+   * Infer a CPV code for each lot of one tender whose source states none
+   * (cpv-inference ticket 04, ADR 0006), by the configured method. Queued by
+   * the document stage when it writes such lots for a biddable tender at live
+   * priority — never for a backfill or a closed tender. Rides INFERENCE.
+   */
+  INFER_CPV: 'cpv.infer',
 };
 
 /**
@@ -281,6 +296,14 @@ export const documentsMatchJobId = (tenderId, storageKey) =>
   `match-${tenderId}-docs-${sha256(storageKey).slice(0, 12)}`;
 
 /**
+ * The CPV inference of one tender's document set: one per stored set, keyed on
+ * its storage key like `documentsMatchJobId`, so a retried document job reuses
+ * the id while a new set — a renamed lot — gets its own. Hyphens only.
+ */
+export const inferCpvJobId = (tenderId, storageKey) =>
+  `cpv-${tenderId}-${sha256(storageKey).slice(0, 12)}`;
+
+/**
  * The morning digest of one destination, keyed on its Yerevan date, so a
  * re-run of the morning job (a re-registered schedule, a retried job) queues
  * nothing new while that day's job is still kept. The held rows are the second
@@ -298,4 +321,4 @@ export const digestJobId = (destinationId, yerevanDate) => `digest-${destination
 export const digestFlushJobId = (destinationId, at = new Date()) =>
   `digest-${destinationId}-flush-${at.getTime()}`;
 
-export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId, digestJobId, digestFlushJobId };
+export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId, inferCpvJobId, digestJobId, digestFlushJobId };

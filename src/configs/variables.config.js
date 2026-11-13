@@ -314,6 +314,22 @@ const config = {
   },
 
   /**
+   * Inferred CPV codes (cpv-inference ticket 04, ADR 0006): how a lot whose
+   * source states no code is coded at ingest.
+   *
+   *   nearest — the code of the most similar stated-code lot, no model call
+   *             (`cpvInference.service.js#nearest`); the backtest's baseline.
+   *   model   — a cheap model picks among the candidates (ticket 03).
+   *
+   * `nearest` by default: it costs nothing and needs no API key, and which
+   * method earns its place is the backtest's call (ticket 06). A changed method
+   * re-codes nothing already coded — only a deliberate script would.
+   */
+  CPV_INFERENCE: {
+    METHOD: oneOf('CPV_INFERENCE_METHOD', ['nearest', 'model'], 'nearest'),
+  },
+
+  /**
    * The AI layer. `API_KEY` is optional so the API and workers still boot
    * without it — the price-recommendation endpoint answers 503
    * DEPENDENCY_UNAVAILABLE instead, which is the honest failure for a feature

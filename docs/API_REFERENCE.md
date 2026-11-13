@@ -1253,6 +1253,8 @@ No request body
       "45000000": "շինարարական աշխատանքներ",
       "45230000": "շինարարական աշխատանքներ խողովակաշարերի հաղորդակցության և հոսանքագծերի, մայրուղիների, ճանապարհների, թռիչքադաշտերի և երկաթուղիների համար; հարթեցման աշխատանքներ"
     },
+    "inferredCpvCodes": ["45231177"],
+    "inferredCpvNames": { "45231177": "ճանապարհների վերանորոգման աշխատանքներ" },
     "procedureType": "e_auction",
     "submissionChannel": "eauction",
     "purchaseKind": "works",
@@ -1275,8 +1277,9 @@ No request body
       "region": "Երևան"
     },
     "lots": [
-      { "lotNumber": 1, "cpvCode": "45230000", "cpvName": "շինարարական աշխատանքներ խողովակաշարերի հաղորդակցության և հոսանքագծերի, մայրուղիների, ճանապարհների, թռիչքադաշտերի և երկաթուղիների համար; հարթեցման աշխատանքներ", "name": "Ճանապարհային ծածկ" },
-      { "lotNumber": 2, "cpvCode": "45233120", "cpvName": null, "name": "Մայթերի նորոգում" }
+      { "lotNumber": 1, "cpvCode": "45230000", "inferredCpvCode": null, "cpvName": "շինարարական աշխատանքներ խողովակաշարերի հաղորդակցության և հոսանքագծերի, մայրուղիների, ճանապարհների, թռիչքադաշտերի և երկաթուղիների համար; հարթեցման աշխատանքներ", "name": "Ճանապարհային ծածկ" },
+      { "lotNumber": 2, "cpvCode": "45233120", "inferredCpvCode": null, "cpvName": null, "name": "Մայթերի նորոգում" },
+      { "lotNumber": 3, "cpvCode": null, "inferredCpvCode": "45231177", "cpvName": "ճանապարհների վերանորոգման աշխատանքներ", "name": "Ճանապարհի փոսային նորոգում" }
     ],
     "documents": [
       {
@@ -1335,6 +1338,20 @@ to its name. A name is `null` for a code the classifier does not list, and `cpvN
 where there is no code; `cpvNames` is `{}` when `cpvCodes` is empty. Below class level Armenia
 numbers CPV its own way, so an EU CPV name for the same eight digits is often a different item
 — read the name from here, not from an EU list. The list views do not carry names.
+
+**Inferred CPV codes.** A lot whose source states no CPV code — in practice most paper lots —
+may carry `inferredCpvCode`: Tendra's guess, chosen from the same classifier by reading the
+lot's name, and **never the buyer's statement**. It is `null` on a lot that states a code (a
+lot never carries both: the stated one replaces a guess the moment the source gives it), on a
+lot Tendra could not classify, and on a lot that was not coded at all — codes are inferred only
+for lots of a tender that was biddable when Tendra read them, never for history. A lot's
+`cpvName` is the name of whichever code it shows, stated or inferred. At tender level,
+`inferredCpvCodes` lists the distinct inferred lot codes, sorted (`[]` when there are none), and
+`inferredCpvNames` maps each to its name. They sit **beside** `cpvCode`/`cpvCodes`, never merged
+into them: `cpvCodes` is only what the source states. An inferred code never changes the
+tender's `version` and never raises an amendment. Saved-search alerts, the CPV and field filters
+and relevance do not read inferred codes yet, and no price benchmark, profile or competitor
+figure ever does.
 
 **Documents and their files.** Each document is an archive the tender published, newest first: a
 buyer that re-issues its documents adds a set, and the first one is what the tender holds now.

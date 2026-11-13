@@ -253,10 +253,21 @@ export default class TenderService {
     // code the classifier lacks (cpv-inference ticket 01).
     const names = row.cpv_names ?? new Map();
     const nameOf = (code) => (code ? names.get(code) ?? null : null);
+    // Inferred lot codes (ADR 0006), beside the stated ones and never merged
+    // into `cpvCodes`: a guess must stay distinguishable from what the source
+    // states. Named from the lots, which carry the classifier name of the code
+    // they show.
+    const inferred = new Map();
+    for (const l of row.lots ?? []) {
+      if (l.inferred_cpv_code && !inferred.has(l.inferred_cpv_code)) inferred.set(l.inferred_cpv_code, l.cpv_name ?? null);
+    }
+    const inferredCodes = [...inferred.keys()].sort();
     return {
       ...TenderService.present(row),
       cpvName: nameOf(row.cpv_code),
       cpvNames: Object.fromEntries((row.cpv_codes ?? []).map((code) => [code, nameOf(code)])),
+      inferredCpvCodes: inferredCodes,
+      inferredCpvNames: Object.fromEntries(inferredCodes.map((code) => [code, inferred.get(code)])),
       buyer: { id: row.buyer_id, name: row.buyer_name, taxId: row.buyer_tax_id ?? null, region: row.buyer_region ?? null },
       // What is being bought, as the source states it beside the title. Only
       // a paper invitation states one today; null elsewhere.
@@ -267,6 +278,10 @@ export default class TenderService {
       lots: (row.lots ?? []).map((l) => ({
         lotNumber: l.lot_number,
         cpvCode: l.cpv_code,
+        // Tendra's guess for a lot whose source states no code; null when the
+        // lot states one or could not be classified.
+        inferredCpvCode: l.inferred_cpv_code ?? null,
+        // The name of whichever code the lot shows, stated or inferred.
         cpvName: l.cpv_name ?? null,
         name: l.name,
       })),
