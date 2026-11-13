@@ -35,6 +35,7 @@ async function down(pg) {
     'tender_documents',
     'contracts',
     'tender_lots',
+    'cpv_classifier',
     'public_tender_bids',
     'awards',
     'unmatched_results',
@@ -52,6 +53,8 @@ async function down(pg) {
 
   // Only subscriptions_no_overlap_excl needed it, and that went with its table.
   await pg.raw('DROP EXTENSION IF EXISTS btree_gist');
+  // Only cpv_classifier_name_trgm_idx needed it, and that went with its table.
+  await pg.raw('DROP EXTENSION IF EXISTS pg_trgm');
 }
 
 async function init() {

@@ -1247,7 +1247,12 @@ No request body
     "title": "Շինարարական աշխատանքների գնում",
     "referenceCode": "ՀՀ-ԳՀԱՊՁԲ-24/118",
     "cpvCode": "45000000",
-    "cpvCodes": ["45000000", "45233120"],
+    "cpvName": "շինարարական աշխատանքներ",
+    "cpvCodes": ["45000000", "45230000"],
+    "cpvNames": {
+      "45000000": "շինարարական աշխատանքներ",
+      "45230000": "շինարարական աշխատանքներ խողովակաշարերի հաղորդակցության և հոսանքագծերի, մայրուղիների, ճանապարհների, թռիչքադաշտերի և երկաթուղիների համար; հարթեցման աշխատանքներ"
+    },
     "procedureType": "e_auction",
     "submissionChannel": "eauction",
     "purchaseKind": "works",
@@ -1270,7 +1275,8 @@ No request body
       "region": "Երևան"
     },
     "lots": [
-      { "lotNumber": 1, "cpvCode": "45233120", "name": "Ճանապարհային ծածկ" }
+      { "lotNumber": 1, "cpvCode": "45230000", "cpvName": "շինարարական աշխատանքներ խողովակաշարերի հաղորդակցության և հոսանքագծերի, մայրուղիների, ճանապարհների, թռիչքադաշտերի և երկաթուղիների համար; հարթեցման աշխատանքներ", "name": "Ճանապարհային ծածկ" },
+      { "lotNumber": 2, "cpvCode": "45233120", "cpvName": null, "name": "Մայթերի նորոգում" }
     ],
     "documents": [
       {
@@ -1321,6 +1327,14 @@ the tender, `cpvCode` included, sorted — `[]` when none is known yet. A code c
 belongs to, and a lot gets one only when its name starts with that code's label. Saved-search
 alerts, the CPV and field filters and relevance all read every code — headline, `cpvCodes` and
 lots — so a search naming any of them finds the tender.
+
+**CPV names.** Every code on this page carries its Armenian name from Armenia's official CPV
+classifier (the Ministry of Finance's «Գնումների միասնական անվանացանկ»): `cpvName` beside the
+tender's `cpvCode` and beside each lot's, and `cpvNames`, an object from each code in `cpvCodes`
+to its name. A name is `null` for a code the classifier does not list, and `cpvName` is `null`
+where there is no code; `cpvNames` is `{}` when `cpvCodes` is empty. Below class level Armenia
+numbers CPV its own way, so an EU CPV name for the same eight digits is often a different item
+— read the name from here, not from an EU list. The list views do not carry names.
 
 **Documents and their files.** Each document is an archive the tender published, newest first: a
 buyer that re-issues its documents adds a set, and the first one is what the tender holds now.

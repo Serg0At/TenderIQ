@@ -4,6 +4,7 @@ import { significantPrefix } from '../libs/cpv.js';
 import { stableHash } from '../utils/hash.js';
 import parties from './party.repo.js';
 import tenderSources, { SUPERSEDED } from './tenderSource.repo.js';
+import cpvClassifier from './cpvClassifier.repo.js';
 
 const TABLE = 'tenders';
 
@@ -589,17 +590,40 @@ export default class TenderRepository {
       .first();
     if (!tender) return null;
 
-    const [lots, documents, sources] = await Promise.all([
-      trx('tender_lots').where({ tender_id: id }).orderBy('lot_number').select('lot_number', 'cpv_code', 'name'),
+    const [lots, documents, sources, cpvNames] = await Promise.all([
+      // A lot's code is named from the CPV classifier; a code it lacks has no name.
+      trx('tender_lots as l')
+        .leftJoin('cpv_classifier as c', 'c.code', 'l.cpv_code')
+        .where('l.tender_id', id)
+        .orderBy('l.lot_number')
+        .select('l.lot_number', 'l.cpv_code', 'l.name', 'c.name as cpv_name'),
       // Newest set first, the same order the checklist reads its invitation in.
       trx('tender_documents')
         .where({ tender_id: id })
         .orderBy(NEWEST_DOCUMENT_FIRST)
         .select('id', 'kind', 'url', 'parsed', 'manifest'),
       tenderSources.listForTender(id, trx),
+      cpvClassifier.namesFor([tender.cpv_code, ...(tender.cpv_codes ?? [])], trx),
     ]);
 
-    return { ...tender, lots, documents, sources };
+    return { ...tender, lots, documents, sources, cpv_names: cpvNames };
+  }
+
+  /**
+   * Every distinct stated CPV code in the database — headline, `cpv_codes`
+   * and lot codes — with how many places state it: what `cpv:refresh` checks
+   * the classifier names.
+   */
+  static async distinctStatedCpvCodes(trx = db) {
+    const { rows } = await trx.raw(`
+      select code, count(*)::int as uses from (
+        select cpv_code as code from tender_lots where cpv_code is not null
+        union all select cpv_code from ${TABLE} where cpv_code is not null
+        union all select unnest(cpv_codes) from ${TABLE}
+      ) stated
+      group by code
+      order by uses desc, code`);
+    return rows;
   }
 
 

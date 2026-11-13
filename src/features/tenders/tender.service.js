@@ -249,8 +249,14 @@ export default class TenderService {
   }
 
   static presentDetail(row) {
+    // Each stated code's Armenian name from the CPV classifier; null for a
+    // code the classifier lacks (cpv-inference ticket 01).
+    const names = row.cpv_names ?? new Map();
+    const nameOf = (code) => (code ? names.get(code) ?? null : null);
     return {
       ...TenderService.present(row),
+      cpvName: nameOf(row.cpv_code),
+      cpvNames: Object.fromEntries((row.cpv_codes ?? []).map((code) => [code, nameOf(code)])),
       buyer: { id: row.buyer_id, name: row.buyer_name, taxId: row.buyer_tax_id ?? null, region: row.buyer_region ?? null },
       // What is being bought, as the source states it beside the title. Only
       // a paper invitation states one today; null elsewhere.
@@ -258,7 +264,12 @@ export default class TenderService {
       qnaDeadlineAt: row.qna_deadline_at,
       invitationUrl: row.invitation_url,
       version: row.version,
-      lots: (row.lots ?? []).map((l) => ({ lotNumber: l.lot_number, cpvCode: l.cpv_code, name: l.name })),
+      lots: (row.lots ?? []).map((l) => ({
+        lotNumber: l.lot_number,
+        cpvCode: l.cpv_code,
+        cpvName: l.cpv_name ?? null,
+        name: l.name,
+      })),
       documents: TenderDocumentService.present(row),
       // Where this tender was read from. The external id stays internal: the
       // URL is what a supplier can use, and the id is our join key. A

@@ -92,6 +92,10 @@ const sources = {
     // The invitation is stored and listed as the tender's document. It costs
     // no request: it is the file the invitation fetch already downloaded.
     downloadDocuments: true,
+    // Where `cpv:refresh` finds the CPV classifier's two links (cpv-inference
+    // ticket 01). Every page's footer carries them; the home page is the one
+    // least likely to move.
+    classifierPage: '/hy/',
     /**
      * Uploaded files from buyers outside the procurement law, matched on the
      * notice title. Read off the open-tender listing on 2026-10-19, where

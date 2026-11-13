@@ -193,6 +193,25 @@ function up(pg) {
       table.index(['tender_id', 'lot_number', 'rank'], 'public_tender_bids_tender_lot_rank_idx');
     })
 
+    // cpv_classifier — Armenia's official CPV classifier, the Ministry of Finance's «Գնումների
+    // միասնական անվանացանկ» (ADR 0006): every code's Armenian name, and the closed set every
+    // inferred code is chosen from. Written only by `npm run cpv:refresh`. Below class level
+    // Armenia renumbered CPV, so an EU CPV name must never label a code here.
+    .createTable('cpv_classifier', table => {
+      table.string('code', 8).primary();
+      table.text('name').notNullable();
+      // The file's unit column (հատ, կգ, լիտր…); empty for a division, group or class.
+      table.text('unit');
+      // The classifier version: the date of the ministry's file that last listed this code.
+      table.date('version').notNullable();
+      // Listed only in the e-auction subset, not the full list (2026-11: 44421700 alone).
+      table.boolean('eauction_only').notNullable().defaultTo(false);
+      // The version whose file no longer lists the code. Withdrawn is never deleted —
+      // inferred codes reference this table and must keep their name — and a withdrawn code
+      // is never offered as a candidate for inference.
+      table.date('withdrawn_in');
+    })
+
     // tender_lots — The separately-biddable slices of a tender, each with its own CPV code and
     // item text, because one tender routinely spans many categories.
     .createTable('tender_lots', table => {
@@ -1101,6 +1120,16 @@ async function indexes(pg) {
    * organization_id inside a GiST index.
    */
   await pg.raw('CREATE EXTENSION IF NOT EXISTS btree_gist');
+
+  /**
+   * The CPV classifier: eight digits, nothing else, and a trigram index on the name for
+   * inference's candidate search (ADR 0006). pg_trgm supplies `gin_trgm_ops`.
+   */
+  await pg.raw('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+  await pg.raw(`ALTER TABLE cpv_classifier ADD CONSTRAINT cpv_classifier_code_chk
+     CHECK (code ~ '^[0-9]{8}$')`);
+  await pg.raw(`CREATE INDEX IF NOT EXISTS cpv_classifier_name_trgm_idx
+     ON cpv_classifier USING gin (name gin_trgm_ops)`);
   await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_no_overlap_excl
      EXCLUDE USING gist (organization_id WITH =, tstzrange(period_start, period_end) WITH &&)
      WHERE (voided_at IS NULL)`);
