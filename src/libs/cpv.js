@@ -55,6 +55,21 @@ export const covers = (wanted, have) => {
   return prefix !== '' && String(have).startsWith(prefix);
 };
 
+/**
+ * A code's level in the classifier, read from its significant digits:
+ * 45000000 is a division, 45200000 a group, 45230000 a class, 45231000 a
+ * category, anything finer a code. An inferred code may be any level — a
+ * vague lot deserves a broad code — and the level tells a reader how broad.
+ */
+export const cpvLevel = (code) => {
+  const digits = significantPrefix(code).length;
+  if (digits <= 2) return 'division';
+  if (digits === 3) return 'group';
+  if (digits === 4) return 'class';
+  if (digits === 5) return 'category';
+  return 'code';
+};
+
 /** How close two codes are: 'exact' | 'group' | 'division' | 'none'. Symmetric. */
 export const closeness = (a, b) => {
   if (!a || !b) return 'none';
@@ -104,4 +119,4 @@ export const bestCpvMatch = (codes = [], wantedCodes = []) => {
   return best;
 };
 
-export default { CPV_LEVELS, compareLevels, significantPrefix, covers, closeness, tenderCodes, compareCpv, bestCpvMatch };
+export default { CPV_LEVELS, compareLevels, significantPrefix, cpvLevel, covers, closeness, tenderCodes, compareCpv, bestCpvMatch };

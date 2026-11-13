@@ -235,6 +235,19 @@ function up(pg) {
         indexName: 'tender_lots_tender_lot_item_source_uq',
       });
       table.index(['cpv_code'], 'tender_lots_cpv_idx');
+      // The inferred CPV code (ADR 0006): Tendra's guess, chosen from the classifier, for a lot
+      // whose source states none. Its own column, never `cpv_code`, so that no intelligence
+      // query — all of which read the stated columns — can mix a guess into a figure. Held only
+      // while the stated code is null (tender_lots_inferred_cpv_stated_chk); the foreign key
+      // makes a code outside the classifier impossible rather than unlikely.
+      table.string('inferred_cpv_code', 8).references('code').inTable('cpv_classifier');
+      // How it was chosen: `model` (a model picked among candidates) or `nearest` (the code of
+      // the most similar stated-code lot). Model id only for `model`; the classifier version
+      // the code was chosen from; when.
+      table.text('inferred_cpv_method');
+      table.text('inferred_cpv_model');
+      table.date('inferred_cpv_classifier_version');
+      table.timestamp('inferred_cpv_at', { useTz: true });
     })
 
     // contracts — Signed contract values following a procurement; deliberately empty until
@@ -1130,6 +1143,32 @@ async function indexes(pg) {
      CHECK (code ~ '^[0-9]{8}$')`);
   await pg.raw(`CREATE INDEX IF NOT EXISTS cpv_classifier_name_trgm_idx
      ON cpv_classifier USING gin (name gin_trgm_ops)`);
+
+  /**
+   * An inferred CPV code is a guess for a lot whose source states none, so it never sits
+   * beside a stated one: a fact beats a guess, and a writer that sets the stated code must
+   * clear the inferred one in the same write. Its provenance comes with it, and a model id
+   * belongs to the `model` method alone.
+   *
+   * The trigram index serves candidate search — the stated-code lots most like the one being
+   * coded (ADR 0006). It covers a lot name's first 100 characters, not the whole: a lot names
+   * its item first and an e-auction lot then runs on into specification (median 95
+   * characters, 1 in 10 over 900), which made every recheck cost a second and let a short
+   * paper name ("Բանան") match an event whose spec mentions a fruit basket.
+   * `cpvCandidate.repo.js` must use the same expression, or the planner cannot use it.
+   */
+  await pg.raw(`ALTER TABLE tender_lots ADD CONSTRAINT tender_lots_inferred_cpv_stated_chk
+     CHECK (inferred_cpv_code IS NULL OR cpv_code IS NULL)`);
+  await pg.raw(`ALTER TABLE tender_lots ADD CONSTRAINT tender_lots_inferred_cpv_method_chk
+     CHECK (inferred_cpv_method IN ('model', 'nearest'))`);
+  await pg.raw(`ALTER TABLE tender_lots ADD CONSTRAINT tender_lots_inferred_cpv_provenance_chk
+     CHECK (inferred_cpv_code IS NULL OR (inferred_cpv_method IS NOT NULL
+       AND inferred_cpv_classifier_version IS NOT NULL AND inferred_cpv_at IS NOT NULL))`);
+  await pg.raw(`ALTER TABLE tender_lots ADD CONSTRAINT tender_lots_inferred_cpv_model_chk
+     CHECK ((inferred_cpv_model IS NULL OR inferred_cpv_method = 'model')
+       AND (inferred_cpv_method IS DISTINCT FROM 'model' OR inferred_cpv_model IS NOT NULL))`);
+  await pg.raw(`CREATE INDEX IF NOT EXISTS tender_lots_name_trgm_idx
+     ON tender_lots USING gin (left(name, 100) gin_trgm_ops)`);
   await pg.raw(`ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_no_overlap_excl
      EXCLUDE USING gist (organization_id WITH =, tstzrange(period_start, period_end) WITH &&)
      WHERE (voided_at IS NULL)`);

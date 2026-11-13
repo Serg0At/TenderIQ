@@ -53,7 +53,8 @@ async function down(pg) {
 
   // Only subscriptions_no_overlap_excl needed it, and that went with its table.
   await pg.raw('DROP EXTENSION IF EXISTS btree_gist');
-  // Only cpv_classifier_name_trgm_idx needed it, and that went with its table.
+  // Only the two trigram indexes (cpv_classifier_name_trgm_idx, tender_lots_name_trgm_idx)
+  // needed it, and they went with their tables.
   await pg.raw('DROP EXTENSION IF EXISTS pg_trgm');
 }
 
