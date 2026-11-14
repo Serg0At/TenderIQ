@@ -65,15 +65,27 @@ export const isConfigured = () => Boolean(AI.API_KEY);
  * @param {string} opts.system       stable, cacheable system prefix
  * @param {string} opts.userContent  the volatile turn
  * @param {object} opts.schema       JSON Schema the reply must satisfy
+ * @param {string} [opts.model]      a model id; a gateway renames them (see AI.BASE_URL)
+ * @param {number} [opts.maxTokens]  the output ceiling
+ * @param {string} [opts.effort]    `output_config.effort` (`low` … `max`); unset
+ *   leaves the model's own default. Thinking stays adaptive either way: effort
+ *   is how much of it a cheap classification pays for.
  */
-export const completeStructured = async ({ system, userContent, schema, model = AI.MODEL }) => {
+export const completeStructured = async ({
+  system,
+  userContent,
+  schema,
+  model = AI.MODEL,
+  maxTokens = AI.MAX_TOKENS,
+  effort = null,
+}) => {
   const anthropic = getClient();
 
   let response;
   try {
     response = await anthropic.messages.create({
       model,
-      max_tokens: AI.MAX_TOKENS,
+      max_tokens: maxTokens,
       // Adaptive thinking: the model decides how much reasoning a given tender
       // needs. Pricing against a thin comparable set is genuinely harder than
       // against a dense one, and a fixed budget would over-spend on the easy
@@ -89,7 +101,7 @@ export const completeStructured = async ({ system, userContent, schema, model = 
         },
       ],
       messages: [{ role: 'user', content: userContent }],
-      output_config: { format: { type: 'json_schema', schema } },
+      output_config: { format: { type: 'json_schema', schema }, ...(effort ? { effort } : {}) },
     });
   } catch (error) {
     return translateError(error);

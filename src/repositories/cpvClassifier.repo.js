@@ -40,6 +40,31 @@ export default class CpvClassifierRepository {
   }
 
   /**
+   * The codes among `codes` that the classifier holds and has not withdrawn —
+   * the last check an inferred code passes before it is accepted.
+   */
+  static async liveCodes(codes, trx = db) {
+    const list = [...new Set(codes.filter(Boolean))];
+    if (!list.length) return new Set();
+    const rows = await trx(TABLE).whereIn('code', list).whereNull('withdrawn_in').select('code');
+    return new Set(rows.map((r) => r.code));
+  }
+
+  /**
+   * The classifier's top two levels — its divisions (`XX000000`) and groups
+   * (`XXX00000`) — by code, withdrawn ones left out: `[{ code, name }]`. The
+   * model reads it as the map the candidates sit on, and a candidate's
+   * division and group are offered from it as broader codes.
+   */
+  static async outline(trx = db) {
+    return trx(TABLE)
+      .whereNull('withdrawn_in')
+      .whereRaw(`code ~ '^[0-9]{3}00000$'`)
+      .select('code', 'name')
+      .orderBy('code');
+  }
+
+  /**
    * Write one version of the classifier, in one transaction: every listed
    * code upserted at that version (and un-withdrawn if it had been), every
    * stored code the file no longer lists marked `withdrawn_in` that version.

@@ -135,7 +135,9 @@ export default class CpvCandidateRepository {
    * a run is repeatable.
    *
    * Each row carries `exclude_tender_ids`: its own tender and every tender of
-   * the same reference code (a re-announcement copies its lots word for word).
+   * the same reference code (a re-announcement copies its lots word for word),
+   * and its tender's `title` and `description` — the subject the `model` method
+   * reads beside the lot name.
    */
   static async labelledLots({ channels, kindLabel, limit, seed = 'cpv' }, trx = db) {
     return trx
@@ -151,7 +153,8 @@ export default class CpvCandidateRepository {
           .where('t.goods_works_services', kindLabel)
           .select(
             trx.raw(`distinct on (l.tender_id, lower(btrim(l.name)), l.cpv_code)
-              l.id, l.tender_id, l.name, l.cpv_code, t.reference_code, t.submission_channel`)
+              l.id, l.tender_id, l.name, l.cpv_code, t.reference_code, t.submission_channel,
+              t.title, t.description`)
           )
           .orderBy([
             { column: 'l.tender_id' },
@@ -167,6 +170,8 @@ export default class CpvCandidateRepository {
         'i.name',
         'i.cpv_code',
         'i.submission_channel',
+        'i.title',
+        'i.description',
         trx.raw(
           `array(select t2.id from tenders t2
                   where t2.id = i.tender_id or t2.reference_code = i.reference_code) as exclude_tender_ids`
@@ -187,6 +192,8 @@ export default class CpvCandidateRepository {
         'l.tender_id',
         'l.name',
         't.submission_channel',
+        't.title',
+        't.description',
         trx.raw(
           `array(select t2.id from tenders t2
                   where t2.id = l.tender_id or t2.reference_code = t.reference_code) as exclude_tender_ids`

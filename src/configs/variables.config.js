@@ -493,6 +493,20 @@ const config = {
     CHECKLIST_MAX_INPUT_CHARS: int('AI_CHECKLIST_MAX_INPUT_CHARS', 600000),
     /** Output ceiling for an extraction — a long checklist with evidence quotes. */
     CHECKLIST_MAX_TOKENS: int('AI_CHECKLIST_MAX_TOKENS', 16000),
+    /**
+     * The model that picks a lot's inferred CPV code among its candidates
+     * (cpv-inference ticket 03, ADR 0006). A cheap one: a pick from a short
+     * closed list, about a hundred lots a day, every answer re-checked in code.
+     * A gateway renames it — through OpenRouter it is
+     * `anthropic/claude-haiku-5.5`.
+     */
+    CPV_MODEL: optional('AI_CPV_MODEL', 'claude-haiku-5-5'),
+    /**
+     * Below this confidence the model's pick is not written and the lot stays
+     * uncoded: no code sends no wrong alert. Provisional — cpv-inference
+     * ticket 06 sets it from `npm run cpv:backtest`'s confidence sweep.
+     */
+    CPV_MIN_CONFIDENCE: float('AI_CPV_MIN_CONFIDENCE', 0.7),
   },
 
   /**
