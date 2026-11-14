@@ -5,7 +5,7 @@ import { closeDb } from '../libs/knex.js';
 import candidates from '../repositories/cpvCandidate.repo.js';
 import classifier from '../repositories/cpvClassifier.repo.js';
 import { nearest, NEAREST_FLOOR } from '../services/cpvInference.service.js';
-import CpvModelService, { subjectOf } from '../services/cpvModel.service.js';
+import CpvModelService, { subjectOf, candidateView, OUTPUT_SCHEMA } from '../services/cpvModel.service.js';
 import config from '../configs/variables.config.js';
 import { PURCHASE_KINDS, PURCHASE_KIND_CODES } from '../libs/purchaseKinds.js';
 
@@ -46,6 +46,7 @@ import { PURCHASE_KINDS, PURCHASE_KIND_CODES } from '../libs/purchaseKinds.js';
  *   node src/scripts/backtestCpvInference.js [--per-kind=300] [--floors=0.3,0.4,0.5,0.6,0.7,0.8]
  *     [--seed=cpv] [--min-kind=50] [--labelled=.scratch/cpv-inference/paper-lots.csv]
  *     [--methods=nearest,model] [--confidences=0,0.5,0.6,0.7,0.8,0.9] [--outline=on|off] [--dump=answers.jsonl]
+ *     [--export=<dir> | --answers=<dir>]
  *
  *   --per-kind   distinct lots held out per kind and channel, at most
  *   --floors     `nearest` similarity floors to sweep (production: NEAREST_FLOOR)
@@ -56,6 +57,15 @@ import { PURCHASE_KINDS, PURCHASE_KIND_CODES } from '../libs/purchaseKinds.js';
  *   --confidences  `model` confidence thresholds to sweep (production: AI.CPV_MIN_CONFIDENCE)
  *   --outline    the model's system prompt with or without the classifier outline (default: production's)
  *   --dump       write one JSON line per held-out lot (truth, both answers, the model's reason)
+ *   --export     call no model: write the sample as the `model` method's requests — prompt.md
+ *                (its system prompt and answer schema), lots-NNN.json (50 lots each: id, name,
+ *                subject, the offered codes) and key.json (stated codes, for --answers only)
+ *   --answers    score <dir>/answers/lots-NNN.json (one per lot file) through the live judge
+ *                (offered set, classifier, threshold) and report as a live run; no cost figures
+ *
+ * The offline pair exists for measuring without API credit (cpv-inference ticket 03): the
+ * answers come from wherever the owner had a model, so they approximate the live method, never
+ * equal it — no schema-constrained output, another system prompt around this one.
  */
 
 const args = Object.fromEntries(
@@ -278,8 +288,8 @@ const askModel = async (item, found) => {
   }
 };
 
-const run = async () => {
-  if (methods.includes('model') && !AI.API_KEY) throw new Error('--methods includes model, but no ANTHROPIC_API_KEY is set');
+/** The held-out sample: lots per kind and source, plus any hand-labelled paper lots. */
+const gatherSample = async () => {
   const groups = []; // { kind, label, inTotal, items }
   for (const kind of PURCHASE_KIND_CODES) {
     const kindLabel = PURCHASE_KINDS[kind];
@@ -307,13 +317,11 @@ const run = async () => {
     const paper = labelled.items.filter((i) => i.kind === kind).length;
     return armeps + paper < minKind;
   });
+  return { groups, labelled, shortKinds, all: groups.flatMap((g) => g.items) };
+};
 
-  const all = groups.flatMap((g) => g.items);
-  console.log(
-    `${all.length} held-out lots, seed "${seed}", ≤ ${perKind} per kind and channel; ` +
-      `methods: ${methods.join(', ')}${outlineArg === undefined ? '' : `, outline ${outlineArg ? 'on' : 'off'}`}\n`
-  );
-
+/** Each held-out lot's candidates, its own tender and re-announcements excluded; `onEach` may ask the model. */
+const findCandidates = async (all, onEach = async () => null) => {
   let done = 0;
   const results = new Map();
   const started = Date.now();
@@ -323,7 +331,7 @@ const run = async () => {
       name: item.name,
       excludeTenderIds: item.exclude_tender_ids,
     });
-    const model = methods.includes('model') ? await askModel(item, found) : null;
+    const model = await onEach(item, found);
     if (model?.code) model.broader = !found.some((c) => c.code === model.code);
     results.set(item, {
       truth: item.cpv_code,
@@ -335,7 +343,11 @@ const run = async () => {
     done++;
     if (done % 100 === 0) process.stderr.write(`  … ${done}/${all.length} (${Math.round((Date.now() - started) / 1000)} s)\n`);
   });
+  return results;
+};
 
+/** Per purchase kind: the kind's total, then each source. */
+const printKinds = (groups, results) => {
   for (const kind of PURCHASE_KIND_CODES) {
     const kindGroups = groups.filter((g) => g.kind === kind);
     console.log(`— ${kind} (${PURCHASE_KINDS[kind]}) —`);
@@ -347,53 +359,238 @@ const run = async () => {
     }
     console.log('');
   }
+};
 
-  if (methods.includes('model')) {
-    const answers = [...results.values()].map((r) => r.model).filter(Boolean);
-    const sum = (key) => answers.reduce((total, a) => total + (a.usage?.[key] ?? 0), 0);
-    const tokens = {
-      input: sum('input_tokens'),
-      cacheWrite: sum('cache_creation_input_tokens'),
-      cacheRead: sum('cache_read_input_tokens'),
-      output: sum('output_tokens'),
-    };
-    const listCost = Object.entries(tokens).reduce((total, [key, n]) => total + (n * PRICE[key]) / 1e6, 0);
-    const gatewayCost = answers.some((a) => typeof a.usage?.cost === 'number') ? sum('cost') : null;
-    const calls = answers.filter((a) => a.usage).length;
-    const models = [...new Set(answers.map((a) => a.model).filter(Boolean))].join(', ');
-    console.log(
-      `model run: ${calls} calls to ${models || AI.CPV_MODEL} | tokens: input ${tokens.input}, cache write ${tokens.cacheWrite}, ` +
-        `cache read ${tokens.cacheRead}, output ${tokens.output} | ` +
-        `cost at list price $${listCost.toFixed(2)} ($${calls ? ((listCost / calls) * 1000).toFixed(2) : '—'} per 1,000 lots)` +
-        (gatewayCost !== null ? `, as the gateway billed $${gatewayCost.toFixed(2)}` : '')
-    );
-    const errors = answers.filter((a) => a.reason?.startsWith('error:')).length;
-    if (errors) console.log(`  ${errors} calls failed (counted as no code)`);
-  }
-  console.log(`production thresholds marked *: nearest ≥ ${NEAREST_FLOOR}, model ≥ ${AI.CPV_MIN_CONFIDENCE}\n`);
+const printCost = (results) => {
+  const answers = [...results.values()].map((r) => r.model).filter(Boolean);
+  const sum = (key) => answers.reduce((total, a) => total + (a.usage?.[key] ?? 0), 0);
+  const tokens = {
+    input: sum('input_tokens'),
+    cacheWrite: sum('cache_creation_input_tokens'),
+    cacheRead: sum('cache_read_input_tokens'),
+    output: sum('output_tokens'),
+  };
+  const listCost = Object.entries(tokens).reduce((total, [key, n]) => total + (n * PRICE[key]) / 1e6, 0);
+  const gatewayCost = answers.some((a) => typeof a.usage?.cost === 'number') ? sum('cost') : null;
+  const calls = answers.filter((a) => a.usage).length;
+  const models = [...new Set(answers.map((a) => a.model).filter(Boolean))].join(', ');
+  console.log(
+    `model run: ${calls} calls to ${models || AI.CPV_MODEL} | tokens: input ${tokens.input}, cache write ${tokens.cacheWrite}, ` +
+      `cache read ${tokens.cacheRead}, output ${tokens.output} | ` +
+      `cost at list price $${listCost.toFixed(2)} ($${calls ? ((listCost / calls) * 1000).toFixed(2) : '—'} per 1,000 lots)` +
+      (gatewayCost !== null ? `, as the gateway billed $${gatewayCost.toFixed(2)}` : '')
+  );
+  const errors = answers.filter((a) => a.reason?.startsWith('error:')).length;
+  if (errors) console.log(`  ${errors} calls failed (counted as no code)`);
+};
 
-  if (dumpPath) {
-    const lines = groups.flatMap((g) =>
-      g.items.map((item) => {
-        const r = results.get(item);
-        return JSON.stringify({
-          lot: item.id,
-          kind: g.kind,
-          group: g.label,
+const writeDump = (groups, results) => {
+  const lines = groups.flatMap((g) =>
+    g.items.map((item) => {
+      const r = results.get(item);
+      return JSON.stringify({
+        lot: item.id,
+        kind: g.kind,
+        group: g.label,
+        name: item.name,
+        truth: r.truth,
+        nearest: nearest(r.candidates),
+        model: r.model?.code ?? null,
+        confidence: r.model?.confidence ?? null,
+        reason: r.model?.reason ?? null,
+        answered: r.model?.answered ?? null,
+        explanation: r.model?.explanation ?? null,
+      });
+    })
+  );
+  fs.writeFileSync(dumpPath, `${lines.join('\n')}\n`);
+  console.log(`answers written to ${dumpPath}`);
+};
+
+// ---- offline: --export writes the requests, --answers scores outside answers ----
+
+/** Lots per export file. */
+const EXPORT_BATCH = 50;
+const fileName = (i) => `lots-${String(i + 1).padStart(3, '0')}`;
+
+/** A lot file as JSON with one candidate per line, so a reader can page through it. */
+const lotsFileText = (lots) => {
+  const lot = ({ candidates: offered, ...head }) =>
+    `${JSON.stringify(head).slice(0, -1)},"candidates":[\n${offered.map((c) => `  ${JSON.stringify(c)}`).join(',\n')}\n]}`;
+  return `{"lots":[\n${lots.map(lot).join(',\n')}\n]}\n`;
+};
+
+const ANSWER_FORMAT = `## The answer file
+
+Write ONE JSON file holding an answer for every lot in your lot file, in this shape and nothing else:
+
+\`\`\`json
+{ "answers": [ { "lot": "<the lot's id>", "reason": "…", "code": "<8 digits, or none>", "confidence": 0.0 } ] }
+\`\`\`
+
+Each answer follows the schema above. "code" is one of that lot's own candidate codes, or none.`;
+
+/**
+ * Write the held-out sample as the requests the `model` method would send:
+ * `prompt.md` (the system prompt, the answer schema, the answer-file shape),
+ * `lots-NNN.json` (≤ EXPORT_BATCH lots each: id, name, tender subject and the
+ * exact offered codes), and `key.json` — the stated codes and the `nearest`
+ * candidates, for `--answers`, never for an answerer.
+ */
+const exportSample = async (dir) => {
+  const { groups, all } = await gatherSample();
+  console.log(`${all.length} held-out lots, seed "${seed}", ≤ ${perKind} per kind and channel; exporting to ${dir}`);
+  const prepared = new Map();
+  const results = await findCandidates(all, async (item, found) => {
+    if (found.length) {
+      prepared.set(
+        item,
+        await CpvModelService.prepare({
           name: item.name,
-          truth: r.truth,
-          nearest: nearest(r.candidates),
-          model: r.model?.code ?? null,
-          confidence: r.model?.confidence ?? null,
-          reason: r.model?.reason ?? null,
-          answered: r.model?.answered ?? null,
-          explanation: r.model?.explanation ?? null,
-        });
-      })
-    );
-    fs.writeFileSync(dumpPath, `${lines.join('\n')}\n`);
-    console.log(`answers written to ${dumpPath}`);
+          subject: subjectOf(item),
+          candidates: found,
+          ...(outlineArg === undefined ? {} : { withOutline: outlineArg }),
+        })
+      );
+    }
+    return null;
+  });
+
+  fs.mkdirSync(dir, { recursive: true });
+  const system = [...prepared.values()][0]?.system ?? '';
+  fs.writeFileSync(
+    path.join(dir, 'prompt.md'),
+    `# System prompt\n\n${system}\n\n## The answer schema (one per lot)\n\n\`\`\`json\n${JSON.stringify(OUTPUT_SCHEMA, null, 2)}\n\`\`\`\n\n${ANSWER_FORMAT}\n`
+  );
+
+  const asked = all.filter((item) => prepared.has(item));
+  const fileOf = new Map();
+  for (let i = 0; i * EXPORT_BATCH < asked.length; i++) {
+    const batch = asked.slice(i * EXPORT_BATCH, (i + 1) * EXPORT_BATCH);
+    const lots = batch.map((item) => {
+      fileOf.set(item, fileName(i));
+      return {
+        lot: item.id,
+        lotName: String(item.name ?? ''),
+        tenderSubject: subjectOf(item),
+        candidates: prepared.get(item).offered.map(candidateView),
+      };
+    });
+    fs.writeFileSync(path.join(dir, `${fileName(i)}.json`), lotsFileText(lots));
   }
+
+  const key = {
+    seed,
+    perKind,
+    withOutline: outlineArg ?? null,
+    groups: groups.map((g) => ({ kind: g.kind, label: g.label, inTotal: g.inTotal, lots: g.items.map((i) => i.id) })),
+    lots: Object.fromEntries(
+      all.map((item) => {
+        const r = results.get(item);
+        return [
+          item.id,
+          {
+            file: fileOf.get(item) ?? null,
+            name: item.name,
+            truth: r.truth,
+            tenderId: r.tenderId,
+            candidates: r.candidates,
+            offered: prepared.get(item)?.offered ?? [],
+          },
+        ];
+      })
+    ),
+  };
+  fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'key.json'), JSON.stringify(key));
+  console.log(
+    `wrote prompt.md, ${fileOf.size ? new Set(fileOf.values()).size : 0} lot files (${asked.length} lots with candidates; ` +
+      `${all.length - asked.length} with none, scored as no code) and key.json; answers go in ${path.join(dir, 'answers')}/<lot file>.json`
+  );
+};
+
+/**
+ * Score outside answers to an export through the live method's own judge
+ * (`CpvModelService.judge`: offered set, live classifier, threshold), then
+ * report exactly as a live run. A lot with no answer is counted as no code.
+ */
+const scoreAnswers = async (dir) => {
+  const key = JSON.parse(fs.readFileSync(path.join(dir, 'key.json'), 'utf8'));
+  const given = new Map();
+  const notes = [];
+  const files = [...new Set(Object.values(key.lots).map((l) => l.file).filter(Boolean))].sort();
+  for (const file of files) {
+    const answerPath = path.join(dir, 'answers', `${file}.json`);
+    if (!fs.existsSync(answerPath)) {
+      notes.push(`${file}: no answer file`);
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(answerPath, 'utf8'));
+    } catch {
+      notes.push(`${file}: answer file is not JSON`);
+      continue;
+    }
+    for (const a of parsed?.answers ?? []) {
+      if (key.lots[a?.lot]?.file !== file) notes.push(`${file}: answer for a lot not in this file (${a?.lot})`);
+      else if (given.has(a.lot)) notes.push(`${file}: a second answer for ${a.lot}`);
+      else given.set(a.lot, a);
+    }
+  }
+
+  const groups = key.groups.map((g) => ({
+    ...g,
+    items: g.lots.map((id) => ({ id, ...key.lots[id] })),
+  }));
+  const results = new Map();
+  let missing = 0;
+  for (const item of groups.flatMap((g) => g.items)) {
+    let model;
+    if (!item.offered.length) model = { code: null, reason: 'no_candidates', confidence: null };
+    else {
+      const a = given.get(item.id);
+      if (!a) missing++;
+      const result = a ? { status: 'ok', data: { reason: a.reason, code: a.code, confidence: a.confidence } } : { status: 'no_answer' };
+      model = await CpvModelService.judge(result, item.offered, { minConfidence: 0 });
+      if (model.code) model.broader = !item.candidates.some((c) => c.code === model.code);
+    }
+    results.set(item, {
+      truth: item.truth,
+      candidates: item.candidates,
+      codes: item.candidates.map((c) => c.code),
+      tenderId: item.tenderId,
+      model,
+    });
+  }
+
+  console.log(
+    `${results.size} held-out lots from ${dir} (seed "${key.seed}", ≤ ${key.perKind} per kind and channel); ` +
+      `OFFLINE answers, ${given.size} given, ${missing} missing (no code)\n`
+  );
+  printKinds(groups, results);
+  console.log(`production thresholds marked *: nearest ≥ ${NEAREST_FLOOR}, model ≥ ${AI.CPV_MIN_CONFIDENCE}`);
+  console.log('no token or cache figures: the answers were not produced by the API');
+  for (const note of notes) console.log(`  ${note}`);
+  if (dumpPath) writeDump(groups, results);
+};
+
+const run = async () => {
+  if (args.export) return exportSample(String(args.export));
+  if (args.answers) return scoreAnswers(String(args.answers));
+
+  if (methods.includes('model') && !AI.API_KEY) throw new Error('--methods includes model, but no ANTHROPIC_API_KEY is set');
+  const { groups, labelled, shortKinds, all } = await gatherSample();
+  console.log(
+    `${all.length} held-out lots, seed "${seed}", ≤ ${perKind} per kind and channel; ` +
+      `methods: ${methods.join(', ')}${outlineArg === undefined ? '' : `, outline ${outlineArg ? 'on' : 'off'}`}\n`
+  );
+
+  const results = await findCandidates(all, (item, found) => (methods.includes('model') ? askModel(item, found) : null));
+  printKinds(groups, results);
+  if (methods.includes('model')) printCost(results);
+  console.log(`production thresholds marked *: nearest ≥ ${NEAREST_FLOOR}, model ≥ ${AI.CPV_MIN_CONFIDENCE}\n`);
+  if (dumpPath) writeDump(groups, results);
 
   if (labelled.exists) {
     console.log(`labelled paper lots: ${labelledPath} — ${labelled.items.length} included`);
@@ -410,6 +607,7 @@ const run = async () => {
       );
     }
   }
+  return undefined;
 };
 
 run()

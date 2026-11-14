@@ -90,7 +90,7 @@ const OUTLINE_HEAD = `THE CLASSIFIER'S OUTLINE
 For orientation only, the classifier's divisions and groups. A division is a line on its own; its groups follow it, indented. Never answer with a code from the outline unless it is also in the candidate list.`;
 
 /** The answer's shape, enforced by the API; `judgeModelAnswer` re-checks it. */
-const OUTPUT_SCHEMA = {
+export const OUTPUT_SCHEMA = {
   type: 'object',
   properties: {
     reason: { type: 'string' },
@@ -115,23 +115,23 @@ export const systemPromptFor = (outline, { withOutline = true } = {}) => {
   return `${INSTRUCTIONS}\n\n${OUTLINE_HEAD}\n\n${lines.join('\n')}`;
 };
 
+const round = (n) => (n === null || n === undefined ? null : Math.round(n * 100) / 100);
+
+/** One offered code as the model reads it. */
+export const candidateView = (c) => ({
+  code: c.code,
+  level: c.level,
+  name: c.name,
+  uses: c.uses,
+  lotSimilarity: round(c.lotSimilarity),
+  nameSimilarity: round(c.nameSimilarity),
+  ...(c.broader ? { broader: true } : {}),
+});
+
 /** The volatile turn: the lot as untrusted JSON, then the offered codes. */
 export const userTurnFor = ({ name, subject, offered }) => {
   const lot = JSON.stringify({ lotName: String(name ?? ''), tenderSubject: subject ? String(subject) : null });
-  const round = (n) => (n === null || n === undefined ? null : Math.round(n * 100) / 100);
-  const candidates = offered
-    .map((c) =>
-      JSON.stringify({
-        code: c.code,
-        level: c.level,
-        name: c.name,
-        uses: c.uses,
-        lotSimilarity: round(c.lotSimilarity),
-        nameSimilarity: round(c.nameSimilarity),
-        ...(c.broader ? { broader: true } : {}),
-      })
-    )
-    .join('\n');
+  const candidates = offered.map((c) => JSON.stringify(candidateView(c))).join('\n');
   return (
     'Choose a code for this lot.\n\n' +
     `UNTRUSTED LOT TEXT\n\`\`\`json\n${lot}\n\`\`\`\n\n` +
@@ -171,21 +171,43 @@ export default class CpvModelService {
     if (!candidates?.length) return { code: null, reason: 'no_candidates', confidence: null, explanation: null, model: null, usage: null, offered: 0 };
     if (!ai.isConfigured()) return { code: null, reason: 'ai_not_configured', confidence: null, explanation: null, model: null, usage: null, offered: 0 };
 
-    const outline = await outlineOnce();
-    const offered = offeredCodes(candidates, outline);
-    const codes = offered.map((c) => c.code);
-
+    const { system, userContent, offered } = await CpvModelService.prepare({ name, subject, candidates, withOutline });
     const result = await ai.completeStructured({
-      system: systemPromptFor(outline, { withOutline }),
-      userContent: userTurnFor({ name, subject, offered }),
+      system,
+      userContent,
       schema: OUTPUT_SCHEMA,
       model: AI.CPV_MODEL,
       maxTokens: MAX_TOKENS,
       effort: EFFORT,
     });
 
-    const classifier = await CpvClassifierRepository.liveCodes(codes);
-    const verdict = judgeModelAnswer(result, { offered: codes, classifier, minConfidence });
+    const verdict = await CpvModelService.judge(result, offered, { minConfidence });
     return { ...verdict, model: result.model ?? AI.CPV_MODEL, usage: result.usage ?? null, offered: offered.length };
+  }
+
+  /**
+   * What `choose` sends for a lot: the system prompt, the user turn and the
+   * offered codes. Exposed so the backtest's offline export (`--export`) hands
+   * an outside answerer exactly the request the live method makes.
+   */
+  static async prepare({ name, subject = null, candidates, withOutline = WITH_OUTLINE }) {
+    const outline = await outlineOnce();
+    const offered = offeredCodes(candidates, outline);
+    return {
+      system: systemPromptFor(outline, { withOutline }),
+      userContent: userTurnFor({ name, subject, offered }),
+      offered,
+    };
+  }
+
+  /**
+   * Judge an answer to `prepare`'s request: the adapter's discriminated result
+   * against the offered codes and the live classifier. The one path every
+   * answer takes — the live call's, and the offline answers' (`--answers`).
+   */
+  static async judge(result, offered, { minConfidence = AI.CPV_MIN_CONFIDENCE } = {}) {
+    const codes = offered.map((c) => c.code);
+    const classifier = await CpvClassifierRepository.liveCodes(codes);
+    return judgeModelAnswer(result, { offered: codes, classifier, minConfidence });
   }
 }
