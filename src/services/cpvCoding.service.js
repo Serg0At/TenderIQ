@@ -2,6 +2,11 @@ import config from '../configs/variables.config.js';
 import candidates from '../repositories/cpvCandidate.repo.js';
 import inferredCpv from '../repositories/inferredCpv.repo.js';
 import { nearest } from './cpvInference.service.js';
+import { isOpen } from './matcher.service.js';
+import { readsInferred } from '../libs/cpv.js';
+import { gateKindOf } from '../libs/purchaseKinds.js';
+import { alertsQueue } from '../queues/index.js';
+import { JOB, PRIORITY, inferredMatchJobId } from '../queues/names.js';
 import { logger } from '../utils/logger.js';
 
 const { AI, CPV_INFERENCE } = config;
@@ -15,8 +20,9 @@ const { AI, CPV_INFERENCE } = config;
  * the producer's, `AddendumService.recordDocuments`, where lots are written.
  * This reads whatever candidates the tender holds when the job runs.
  *
- * Writes only `inferred_cpv_*` (inferredCpv.repo.js): no version, no event, no
- * alert. Matching does not read inferred codes yet (ticket 05).
+ * Writes only `inferred_cpv_*` (inferredCpv.repo.js): no version, no event.
+ * Once codes are written, `queueRematch` runs the tender's match again, which
+ * reads them behind the gate (ticket 05).
  */
 
 /**
@@ -115,6 +121,36 @@ export default class CpvCodingService {
       else result.unclassified[unclassified ?? 'none'] = (result.unclassified[unclassified ?? 'none'] ?? 0) + written;
     }
     return result;
+  }
+
+  /**
+   * Run the tender's match again now that its lots hold inferred codes
+   * (ticket 05) — ticket 25's re-match, the same `TenderIngested` event, so a
+   * search the guess satisfies hears about the tender and one already told is
+   * silenced by `notifications_dedupe_uq` (organization, `tender-match`,
+   * tender, no subject): one alert per organization, whichever match said it
+   * first. Keyword matches never wait on this — the ingest match ran long ago.
+   *
+   * Queued only when it could say something new: a lot holds an inferred code
+   * (written by this attempt or an earlier one), the gate reads its tender's
+   * kind, and the tender is still open — the rule ticket 25's producer
+   * applies. With the gate shut nothing is queued, so nothing changes.
+   *
+   * Returns whether a match was queued.
+   */
+  static async queueRematch(tenderId, { inferJobId, priority = PRIORITY.LIVE, now = new Date() } = {}) {
+    const facts = await inferredCpv.rematchFacts(tenderId);
+    if (!facts?.inferred_lots) return false;
+    const kind = gateKindOf({ label: facts.goods_works_services, referenceCode: facts.reference_code });
+    if (!readsInferred(kind, CPV_INFERENCE.READ_KINDS)) return false;
+    if (!isOpen({ status: facts.status, deadlineAt: facts.deadline_at }, now)) return false;
+
+    await alertsQueue.add(
+      JOB.MATCH_TENDER,
+      { tenderId, event: 'TenderIngested', version: facts.version },
+      { jobId: inferredMatchJobId(tenderId, inferJobId ?? tenderId), priority }
+    );
+    return true;
   }
 
   /**

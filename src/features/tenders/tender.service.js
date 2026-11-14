@@ -32,6 +32,9 @@ const filtersOf = (f = {}) => ({
   deadlineBefore: f.deadlineBefore ?? null,
   purchaseKindLabels: purchaseKindLabels(toList(f.purchaseKind)),
   cpvPrefixes: cpvPrefixesFor(toList(f.field)),
+  // The inferred-CPV gate (ADR 0006): which kinds' inferred lot codes the CPV
+  // and field filters, and relevance's lot codes, read. Never a request value.
+  inferredKinds: config.CPV_INFERENCE.READ_KINDS,
 });
 
 /**
@@ -148,7 +151,7 @@ export default class TenderService {
     const page = query.page ?? {};
     const limit = page.size ?? 20;
 
-    const signals = await relevance.signalsFor(organizationId);
+    const signals = await relevance.signalsFor(organizationId, { inferredKinds: config.CPV_INFERENCE.READ_KINDS });
     const basis = basisOf(signals);
     if (!basis.sufficient) {
       return {

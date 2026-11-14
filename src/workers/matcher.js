@@ -1,4 +1,5 @@
 import { UnrecoverableError } from 'bullmq';
+import config from '../configs/variables.config.js';
 import { JOB } from '../queues/names.js';
 import savedSearches from '../repositories/savedSearch.repo.js';
 import notifications from '../repositories/notification.repo.js';
@@ -64,7 +65,9 @@ export const handleTenderMatched = async (job) => {
    * falls back to the tender's current one.
    */
   const subjectId = type === 'amendment' ? `v${job.data.version ?? tender.version}` : null;
-  const groups = matchesByOrganization(candidate, profiles);
+  // The inferred-CPV gate (ADR 0006): which purchase kinds' inferred lot codes
+  // may make a search match. Empty, the match reads stated codes alone.
+  const groups = matchesByOrganization(candidate, profiles, { inferredKinds: config.CPV_INFERENCE.READ_KINDS });
   // Same type and subject for both, so an organization that matches AND tracks
   // is one recipient, and a retry is deduped for either reason.
   const recipients = alertRecipients(
@@ -116,7 +119,15 @@ export const handleTenderMatched = async (job) => {
         // Every search that matched, as named when the alert was raised: the
         // payload is the notification's record, so a later rename does not
         // rewrite what a past alert said.
-        matchedSearches: matches.map(({ id, name, score, reasons }) => ({ id, name, score, reasons })),
+        // `inferredCpv` only when true — its CPV reason rests on an inferred
+        // code alone — so a notification raised before it reads the same.
+        matchedSearches: matches.map(({ id, name, score, reasons, inferredCpv }) => ({
+          id,
+          name,
+          score,
+          reasons,
+          ...(inferredCpv ? { inferredCpv: true } : {}),
+        })),
         // Why a tracker hears about it, rendered as the pipeline line both
         // channels already show on a countdown.
         ...(pipelineStatus ? { pipelineStatus } : {}),

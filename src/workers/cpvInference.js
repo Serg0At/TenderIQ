@@ -1,6 +1,6 @@
 import { UnrecoverableError } from 'bullmq';
 import config from '../configs/variables.config.js';
-import { JOB } from '../queues/names.js';
+import { JOB, PRIORITY } from '../queues/names.js';
 import CpvCodingService, { thrownReason } from '../services/cpvCoding.service.js';
 import { isFinalAttempt } from '../utils/attempts.js';
 import { logger } from '../utils/logger.js';
@@ -9,7 +9,9 @@ import { logger } from '../utils/logger.js';
  * The INFERENCE queue (cpv-inference ticket 04): inferred CPV codes for one
  * tender's lots. A lane of its own so a slow or throttled model call cannot
  * hold back alert delivery, and so ingestion never waits on it — a tender is
- * saved, matched and alerted on whatever becomes of this job.
+ * saved, matched and alerted on whatever becomes of this job. When it leaves
+ * inferred codes the gate reads, it queues the tender's match again (ticket
+ * 05), on ALERTS, where matches run.
  *
  * A throttled model call spends an attempt, the AI layer's rule (CLAUDE.md,
  * *AI layer*): a `DelayedError` never counts against the attempt budget, so a
@@ -30,6 +32,11 @@ const handleInferCpv = async (job) => {
     throw new UnrecoverableError(`CPV inference method "${method}" is not built yet (cpv-inference ticket 03)`);
   }
 
+  // The match again, behind the gate (ticket 05): after a run that leaves
+  // inferred codes, and after a last attempt that gave up on the rest — codes
+  // an earlier attempt wrote must still reach the searches they satisfy.
+  const rematch = { inferJobId: job.id, priority: job.opts?.priority ?? PRIORITY.LIVE };
+
   try {
     const result = await CpvCodingService.codeTender(tenderId, { method });
     if (result.lots) {
@@ -37,9 +44,16 @@ const handleInferCpv = async (job) => {
         unclassified: result.unclassified,
       });
     }
-    return result;
+    const rematched = await CpvCodingService.queueRematch(tenderId, rematch);
+    return { ...result, rematched };
   } catch (error) {
-    if (isFinalAttempt(job)) await CpvCodingService.giveUp(tenderId, thrownReason(error), { method });
+    if (isFinalAttempt(job)) {
+      await CpvCodingService.giveUp(tenderId, thrownReason(error), { method });
+      // Never the error that fails the job: that one is rethrown below.
+      await CpvCodingService.queueRematch(tenderId, rematch).catch((e) =>
+        logger.error(`[cpv] tender ${tenderId}: could not queue its re-match: ${e.message}`)
+      );
+    }
     throw error;
   }
 };

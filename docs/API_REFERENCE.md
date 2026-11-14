@@ -1349,9 +1349,13 @@ for lots of a tender that was biddable when Tendra read them, never for history.
 `inferredCpvCodes` lists the distinct inferred lot codes, sorted (`[]` when there are none), and
 `inferredCpvNames` maps each to its name. They sit **beside** `cpvCode`/`cpvCodes`, never merged
 into them: `cpvCodes` is only what the source states. An inferred code never changes the
-tender's `version` and never raises an amendment. Saved-search alerts, the CPV and field filters
-and relevance do not read inferred codes yet, and no price benchmark, profile or competitor
-figure ever does.
+tender's `version` and never raises an amendment. Saved-search alerts, `filter[cpv]`,
+`filter[field]` and relevance read a lot's inferred code like a stated one, but only for the
+purchase kinds the server has switched on, one kind at a time once its accuracy is measured
+(none by default). A paper tender's kind is read from its procedure code when the source labels
+none. An alert that matched only through an inferred code says `(inferred CPV)` in its
+`reasons`, and the search's entry in `matchedSearches` carries `inferredCpv: true`. No price
+benchmark, profile or competitor figure ever reads an inferred code.
 
 **Documents and their files.** Each document is an archive the tender published, newest first: a
 buyer that re-issues its documents adds a set, and the first one is what the tender holds now.

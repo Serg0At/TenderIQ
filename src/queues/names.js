@@ -304,6 +304,15 @@ export const inferCpvJobId = (tenderId, storageKey) =>
   `cpv-${tenderId}-${sha256(storageKey).slice(0, 12)}`;
 
 /**
+ * The match that runs again once a `cpv.infer` job has written inferred codes
+ * (cpv-inference ticket 05), ticket 25's re-match for a guess instead of an
+ * archive: one per inference job, so a retried job reuses the id and the
+ * inference of a new document set gets its own. Hashed, hyphens only.
+ */
+export const inferredMatchJobId = (tenderId, inferJobId) =>
+  `match-${tenderId}-cpv-${sha256(String(inferJobId)).slice(0, 12)}`;
+
+/**
  * The morning digest of one destination, keyed on its Yerevan date, so a
  * re-run of the morning job (a re-registered schedule, a retried job) queues
  * nothing new while that day's job is still kept. The held rows are the second
@@ -321,4 +330,14 @@ export const digestJobId = (destinationId, yerevanDate) => `digest-${destination
 export const digestFlushJobId = (destinationId, at = new Date()) =>
   `digest-${destinationId}-flush-${at.getTime()}`;
 
-export default { QUEUE, JOB, PRIORITY, matchJobId, documentsMatchJobId, inferCpvJobId, digestJobId, digestFlushJobId };
+export default {
+  QUEUE,
+  JOB,
+  PRIORITY,
+  matchJobId,
+  documentsMatchJobId,
+  inferCpvJobId,
+  inferredMatchJobId,
+  digestJobId,
+  digestFlushJobId,
+};

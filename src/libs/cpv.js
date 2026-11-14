@@ -82,17 +82,48 @@ export const closeness = (a, b) => {
 };
 
 /**
- * Every code a tender states, primary first, each once: its primary code, every
- * code its source lists for the tender as a whole, and its lots' codes.
- *
- * The one list each reader asks the questions above of. A code the source
- * states for the tender without saying which lot it belongs to (armeps.am
- * lists the tender's codes but not which lot is which) is still a fact about
- * the tender, and a reader that looked only at lots, or only at the primary
- * code, would miss a tender a supplier asked for.
+ * The words that mark a CPV reason resting only on an inferred code, in an
+ * alert's reasons and in a digest line (cpv-inference ticket 05). One string,
+ * so the matcher that writes it and the renderers that show it cannot drift.
  */
-export const tenderCodes = ({ cpvCode = null, cpvCodes = [], lotCodes = [] } = {}) =>
-  [...new Set([cpvCode, ...(cpvCodes ?? []), ...(lotCodes ?? [])].filter(Boolean).map(String))];
+export const INFERRED_CPV_MARK = '(inferred CPV)';
+
+/**
+ * Whether a tender's inferred lot codes count: its purchase kind (the gate's
+ * reading, libs/purchaseKinds.js#gateKindOf) is one `CPV_INFERENCE.READ_KINDS`
+ * lists. A tender with no kind never passes, and an empty list passes none.
+ */
+export const readsInferred = (purchaseKind, inferredKinds = []) =>
+  Boolean(purchaseKind) && (inferredKinds ?? []).includes(purchaseKind);
+
+/**
+ * Every code a tender carries for discovery, primary first, each once: its
+ * primary code, every code its source lists for the tender as a whole, its
+ * lots' codes — and, behind the gate, its lots' inferred codes (ADR 0006).
+ *
+ * The one list each discovery reader asks the questions above of: the
+ * matcher, and through its SQL twin (tender.repo.js#tenderCodesSql — change
+ * both) the CPV and field filters and relevance. A code the source states
+ * for the tender without saying which lot it belongs to (armeps.am lists the
+ * tender's codes but not which lot is which) is still a fact about the
+ * tender, and a reader that looked only at lots, or only at the primary code,
+ * would miss a tender a supplier asked for.
+ *
+ * Inferred codes come in only when `readsInferred(purchaseKind,
+ * inferredKinds)`. Pure, so the gate arrives as an argument and its default
+ * is shut: a caller that passes none reads stated codes alone, exactly as
+ * before ticket 05. No intelligence figure calls this.
+ */
+export const tenderCodes = (
+  { cpvCode = null, cpvCodes = [], lotCodes = [], inferredLotCodes = [], purchaseKind = null } = {},
+  { inferredKinds = [] } = {}
+) =>
+  [...new Set([
+    cpvCode,
+    ...(cpvCodes ?? []),
+    ...(lotCodes ?? []),
+    ...(readsInferred(purchaseKind, inferredKinds) ? inferredLotCodes ?? [] : []),
+  ].filter(Boolean).map(String))];
 
 /** Both answers for one pair: how close, and whether `wanted` covers `have`. */
 export const compareCpv = (have, wanted) => ({ level: closeness(have, wanted), covered: covers(wanted, have) });
@@ -119,4 +150,16 @@ export const bestCpvMatch = (codes = [], wantedCodes = []) => {
   return best;
 };
 
-export default { CPV_LEVELS, compareLevels, significantPrefix, cpvLevel, covers, closeness, tenderCodes, compareCpv, bestCpvMatch };
+export default {
+  CPV_LEVELS,
+  INFERRED_CPV_MARK,
+  compareLevels,
+  significantPrefix,
+  cpvLevel,
+  covers,
+  closeness,
+  readsInferred,
+  tenderCodes,
+  compareCpv,
+  bestCpvMatch,
+};

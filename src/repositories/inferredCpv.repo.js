@@ -37,6 +37,29 @@ export default class InferredCpvRepository {
   }
 
   /**
+   * What the re-match after coding decides on (ticket 05): the tender's state,
+   * the fields its purchase kind is read from, and how many of its lots hold
+   * an inferred code now — whichever attempt wrote them. Null for a tender
+   * that no longer exists.
+   */
+  static async rematchFacts(tenderId, trx = db) {
+    const row = await trx('tenders as t')
+      .where('t.id', tenderId)
+      .first(
+        't.id',
+        't.status',
+        't.deadline_at',
+        't.version',
+        't.goods_works_services',
+        't.reference_code',
+        trx.raw(
+          '(select count(*)::int from tender_lots l where l.tender_id = t.id and l.inferred_cpv_code is not null) as inferred_lots'
+        )
+      );
+    return row ?? null;
+  }
+
+  /**
    * The classifier version an inference is chosen from: the newest file's
    * date among codes still listed, as `YYYY-MM-DD` (null when the classifier
    * was never loaded).

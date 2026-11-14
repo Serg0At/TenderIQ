@@ -1,4 +1,5 @@
-import { compareCpv, tenderCodes } from '../libs/cpv.js';
+import { compareCpv, tenderCodes, INFERRED_CPV_MARK } from '../libs/cpv.js';
+import { gateKindOf } from '../libs/purchaseKinds.js';
 
 /**
  * Does a tender match a saved search, and how well?
@@ -35,18 +36,40 @@ const keywordMatches = (haystack, keywords) => {
 };
 
 /**
+ * The CPV half of a match: stated codes first, and only when they miss, the
+ * codes behind the gate too (cpv-inference ticket 05, ADR 0006). `inferred`
+ * is true when the hit rests on an inferred code alone — a stated hit, even a
+ * family one, is never reported as inferred, because the buyer said it.
+ */
+const cpvMatch = (tender, profileCodes, gate) => {
+  const stated = { cpvCode: tender.cpvCode, cpvCodes: tender.cpvCodes, lotCodes: tender.lotCpvCodes };
+  const byStated = cpvMatches(tenderCodes(stated), profileCodes);
+  if (byStated.hit) return { ...byStated, inferred: false };
+  const all = tenderCodes(
+    { ...stated, inferredLotCodes: tender.inferredLotCpvCodes, purchaseKind: tender.purchaseKind },
+    gate
+  );
+  const byAll = cpvMatches(all, profileCodes);
+  return { ...byAll, inferred: byAll.hit };
+};
+
+/**
  * Score in 0..1. Weights follow the spec's match rule: CPV overlap OR keyword
  * hit qualifies, then region and value act as filters rather than boosts.
+ *
+ * `inferredKinds` is the inferred-CPV gate (config.CPV_INFERENCE.READ_KINDS),
+ * passed in so this stays pure; shut by default. An inferred code scores as a
+ * stated one would, and its reason says it was inferred (`INFERRED_CPV_MARK`),
+ * so an alert can tell a supplier how far to trust it.
  */
-export const scoreMatch = (tender, profile) => {
-  const codes = tenderCodes({ cpvCode: tender.cpvCode, cpvCodes: tender.cpvCodes, lotCodes: tender.lotCpvCodes });
-  const cpv = cpvMatches(codes, profile.cpvCodes ?? []);
+export const scoreMatch = (tender, profile, { inferredKinds = [] } = {}) => {
+  const cpv = cpvMatch(tender, profile.cpvCodes ?? [], { inferredKinds });
   const haystack = [tender.title, tender.referenceCode, tender.description, ...(tender.lotNames ?? [])]
     .filter(Boolean)
     .join(' \n ');
   const keyword = keywordMatches(haystack, profile.keywords ?? []);
 
-  if (!cpv.hit && !keyword.hit) return { matched: false, score: 0, reasons: [] };
+  if (!cpv.hit && !keyword.hit) return { matched: false, score: 0, reasons: [], inferredCpv: false };
 
   // Value range is a hard filter: a supplier who set a floor is telling you
   // anything below it is not worth their attention, not that it scores lower.
@@ -72,7 +95,8 @@ export const scoreMatch = (tender, profile) => {
   let score = 0;
   if (cpv.hit) {
     score += cpv.exact ? 0.7 : 0.5;
-    reasons.push(cpv.exact ? 'exact CPV match' : 'CPV family match');
+    const reason = cpv.exact ? 'exact CPV match' : 'CPV family match';
+    reasons.push(cpv.inferred ? `${reason} ${INFERRED_CPV_MARK}` : reason);
   }
   if (keyword.hit) {
     // Weighted to clear MATCH_THRESHOLD on its own: the spec's rule is "CPV
@@ -83,7 +107,7 @@ export const scoreMatch = (tender, profile) => {
     reasons.push(`keyword: ${keyword.hits.slice(0, 3).join(', ')}`);
   }
 
-  return { matched: true, score: Math.min(Number(score.toFixed(2)), 1), reasons };
+  return { matched: true, score: Math.min(Number(score.toFixed(2)), 1), reasons, inferredCpv: cpv.inferred };
 };
 
 /**
@@ -97,6 +121,11 @@ export const matchCandidate = (tender) => ({
   // put on a lot — a search naming one of those must still hear about it.
   cpvCodes: tender.cpv_codes ?? [],
   lotCpvCodes: (tender.lots ?? []).map((l) => l.cpv_code).filter(Boolean),
+  // Inferred lot codes (ADR 0006), which `scoreMatch` reads only behind the
+  // gate, and the kind the gate decides on: the source's label, else what the
+  // procedure code names — paper states no label.
+  inferredLotCpvCodes: (tender.lots ?? []).map((l) => l.inferred_cpv_code).filter(Boolean),
+  purchaseKind: gateKindOf({ label: tender.goods_works_services, referenceCode: tender.reference_code }),
   lotNames: (tender.lots ?? []).map((l) => l.name).filter(Boolean),
   title: tender.title,
   // A paper invitation's contract subject (null elsewhere). Read by keywords,
@@ -139,8 +168,10 @@ export const MATCH_THRESHOLD = 0.5;
  *
  * Matches are best score first with `id` as the tiebreaker, so the order an
  * alert lists them in does not depend on the order rows came back in.
+ *
+ * `inferredKinds` is the inferred-CPV gate, handed to `scoreMatch`.
  */
-export const matchesByOrganization = (tender, profiles) => {
+export const matchesByOrganization = (tender, profiles, { inferredKinds = [] } = {}) => {
   const groups = new Map();
 
   for (const profile of profiles) {
@@ -150,7 +181,7 @@ export const matchesByOrganization = (tender, profiles) => {
       regions: profile.regions ?? [],
       minValue: profile.min_value,
       maxValue: profile.max_value,
-    });
+    }, { inferredKinds });
     if (!result.matched || result.score < MATCH_THRESHOLD) continue;
 
     const match = {
@@ -158,6 +189,9 @@ export const matchesByOrganization = (tender, profiles) => {
       name: profile.name,
       score: result.score,
       reasons: result.reasons,
+      // True when this search's CPV hit rests on an inferred code alone; a
+      // digest line, which shows no reasons, marks the search by it.
+      inferredCpv: result.inferredCpv,
       channels: profile.channels ?? [],
     };
     const group = groups.get(profile.organization_id);

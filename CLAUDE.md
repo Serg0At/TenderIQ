@@ -915,7 +915,8 @@ decision that has already been made.
   `text[]` beside `cpv_code`, which stays the primary one. armeps.am lists a tender's codes without
   saying which lot is which, so a code can be on the tender and on no lot — and it is still a fact
   about the tender. The matcher, the discovery CPV and field filters and relevance all read
-  primary ∪ `cpv_codes` ∪ lot codes: `libs/cpv.js#tenderCodes` in JS, its SQL twin
+  primary ∪ `cpv_codes` ∪ lot codes ∪ (behind the gate, next bullet) inferred lot codes:
+  `libs/cpv.js#tenderCodes` in JS, its SQL twin
   `tender.repo.js#tenderCodesSql`, which must move together. A page-stated list (armeps.am) that
   moves is an amendment; a **blank** stored list filled by a re-read is not, or the first refresh
   after the deploy would re-notify every old tender. An e-auction's list is replaced by its
@@ -925,6 +926,34 @@ decision that has already been made.
   said (ticket 25). Open is the whole guard: backfills store closed tenders.
   `npm run cpv:backfill` fills old rows from storage, writes the column only and raises no alert
   (dry run by default; it reports the alerts the codes would have raised).
+- **A lot whose source states no CPV code gets an inferred one** (cpv-inference, ADR 0006).
+  It lives in its own column, `tender_lots.inferred_cpv_code`, never in `cpv_code` /
+  `cpv_codes`. A CHECK forbids it beside a stated code, and a foreign key holds it to the CPV
+  classifier: `cpv_classifier`, Armenia's national list, loaded and refreshed by hand with
+  `npm run cpv:refresh` (dry by default; a dropped code is marked withdrawn, never deleted).
+  `cpv.infer` codes a biddable tender's lots on the `inference` queue
+  (`CPV_INFERENCE.METHOD`). It is queued from `AddendumService.recordDocuments`, never for a
+  backfill or a closed tender, and records every outcome with its provenance. **Readers that
+  use it:** the matcher, `filter[cpv]`, `filter[field]` and relevance (per-lot codes and
+  pursuits), all through `tenderCodes` / `tenderCodesSql` and its lot-level half `lotCodeSql`.
+  **Readers that never do:** every intelligence query (benchmarks, profiles, competitor
+  prices, expected competition, the recommendation; they read `coalesce(l.cpv_code,
+  t.cpv_code)` and were not edited) and the amendment fingerprint. A re-inferred code never
+  moves `version`. **The gate is per purchase kind:** `CPV_INFERENCE.READ_KINDS`
+  (`CPV_INFERENCE_READ_KINDS`, a list of goods / works / services). It is empty by default, and
+  empty means every reader ignores inferred codes. A lot's inferred code counts only when its
+  tender's kind is listed, and that kind is `libs/purchaseKinds.js#gateKindOf`: the source's
+  label, else the procedure code's marker (`ԱՊՁԲ` / `ԱՇՁԲ` / `ԾՁԲ`). Paper writes no
+  `goods_works_services`, so without the marker no paper lot could ever pass. It has an SQL
+  twin, `gateKindSql`, and the purchase-kind filter still reads the label alone. The gate
+  arrives as an argument, shut by default, in both twins (`libs/cpv.js` is pure, and no
+  repository reads config). Ticket 06 fills it from backtest numbers. Once a job leaves inferred
+  codes on an open tender whose kind passes, it queues `TenderIngested` again
+  (`CpvCodingService.queueRematch`, `match-{id}-cpv-…`), as ticket 25 does, and
+  `notifications_dedupe_uq` keeps it to one alert. A search whose CPV hit rests on an inferred
+  code alone says `(inferred CPV)` (`libs/cpv.js#INFERRED_CPV_MARK`): in its reason (instant
+  alerts render it) and through `matchedSearches[].inferredCpv` (the digest line marks the
+  search). A stated hit always wins and is never marked.
 - **Still no writer:** `contracts`, `invoices`, `audit_logs` — phase 5/6, and `invoices` perhaps
   never (ADR 0005). `subscriptions` is read by `planFor`; the trial and promo redemption (F-02) write
   it.

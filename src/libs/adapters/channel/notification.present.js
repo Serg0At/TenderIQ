@@ -1,4 +1,5 @@
 import config from '../../../configs/variables.config.js';
+import { INFERRED_CPV_MARK } from '../../cpv.js';
 
 const { APP } = config;
 
@@ -164,9 +165,17 @@ export const headingFor = (type) => {
  * Null for a notification raised before `matchedSearches` existed, and for any
  * type that is not a match, so the line is simply absent rather than empty.
  * Names are listed best match first, which is the order the matcher stored.
+ *
+ * `markInferred` adds `INFERRED_CPV_MARK` after a search whose CPV reason
+ * rests on an inferred code alone (cpv-inference ticket 05). The digest asks
+ * for it, because a digest line shows no reasons; an instant alert does not,
+ * because its reasons line already says so. A search stored before the flag
+ * existed carries none and reads as it always did.
  */
-export const matchedSearchesLine = (payload = {}) => {
-  const names = (payload.matchedSearches ?? []).map((m) => m?.name).filter(Boolean);
+export const matchedSearchesLine = (payload = {}, { markInferred = false } = {}) => {
+  const names = (payload.matchedSearches ?? [])
+    .filter((m) => m?.name)
+    .map((m) => (markInferred && m.inferredCpv ? `${m.name} ${INFERRED_CPV_MARK}` : m.name));
   return names.length ? names.join(', ') : null;
 };
 
@@ -295,7 +304,7 @@ export const digestContent = (items, { now = new Date() } = {}) => {
     buyer: clip(item.buyerName, CLIP.buyer),
     budget: money(item.estimatedValue, item.currency ?? 'AMD'),
     deadline: deadline(item.deadlineAt, now),
-    matched: clip(matchedSearchesLine({ matchedSearches: item.matchedSearches }), CLIP.matched),
+    matched: clip(matchedSearchesLine({ matchedSearches: item.matchedSearches }, { markInferred: true }), CLIP.matched),
     // The link an instant alert of this tender carries.
     link: tenderLink({ sourceUrl: item.sourceUrl }, item.tenderId),
   }));

@@ -25,4 +25,48 @@ export const purchaseKindOf = (label) => CODE_BY_LABEL.get(label) ?? null;
 /** Stored labels for a list of wire codes — what the repository filters on. */
 export const purchaseKindLabels = (codes) => codes.map((code) => PURCHASE_KINDS[code]).filter(Boolean);
 
-export default { PURCHASE_KINDS, PURCHASE_KIND_CODES, purchaseKindOf, purchaseKindLabels };
+/**
+ * The kind a procedure code names: the half of its method marker before
+ * `ՁԲ` — ԳՀԱՊՁԲ is a quotation for goods, ԲՄԱՇՁԲ an open tender for works,
+ * ԳՀԾՁԲ a quotation for services. Buyers assign the code, so this is their
+ * statement, and on ARMEPS and e-auction it agrees with the source's own label
+ * on 1004 of 1013 tenders (2026-11-14).
+ *
+ * Read only where a tender's kind decides something and the source states no
+ * label: paper, whose invitation is the only thing it uploads and which never
+ * writes `goods_works_services` (the inferred-CPV gate below). The marker is
+ * matched as written, uppercase: every paper code stored is.
+ */
+export const KIND_MARKERS = { goods: 'ԱՊ', works: 'ԱՇ', services: 'Ծ' };
+
+/** The marker pattern, one capture: shared verbatim by `purchaseKindOfCode` and its SQL twin. */
+export const KIND_MARKER_PATTERN = `(${Object.values(KIND_MARKERS).join('|')})ՁԲ`;
+
+const KIND_BY_MARKER = new Map(Object.entries(KIND_MARKERS).map(([code, marker]) => [marker, code]));
+const MARKER_RE = new RegExp(KIND_MARKER_PATTERN);
+
+/** The wire code a procedure code's marker names; null with no code or no marker. */
+export const purchaseKindOfCode = (referenceCode) => {
+  const found = MARKER_RE.exec(String(referenceCode ?? ''));
+  return found ? KIND_BY_MARKER.get(found[1]) ?? null : null;
+};
+
+/**
+ * The kind the inferred-CPV gate reads (cpv-inference ticket 05): the
+ * source's label, else what the procedure code names. Not the purchase-kind
+ * filter's reading — that one still reads the label alone. SQL twin:
+ * tender.repo.js#gateKindSql; change both.
+ */
+export const gateKindOf = ({ label = null, referenceCode = null } = {}) =>
+  purchaseKindOf(label) ?? purchaseKindOfCode(referenceCode);
+
+export default {
+  PURCHASE_KINDS,
+  PURCHASE_KIND_CODES,
+  KIND_MARKERS,
+  KIND_MARKER_PATTERN,
+  purchaseKindOf,
+  purchaseKindLabels,
+  purchaseKindOfCode,
+  gateKindOf,
+};

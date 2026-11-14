@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { PURCHASE_KIND_CODES } from '../libs/purchaseKinds.js';
 
 const required = (key) => {
   const value = process.env[key];
@@ -111,6 +112,23 @@ const oneOf = (key, allowed, fallback) => {
     throw new Error(`[config] ${key} must be one of ${allowed.join(' | ')}, received "${value}"`);
   }
   return value;
+};
+
+/**
+ * A comma-separated list of enum values, each validated at boot, deduped, in
+ * the order of `allowed`. Blank or unset is the fallback, so an empty list
+ * can be the default. One typo'd value refuses to boot rather than being
+ * dropped: a gate that silently lost "services" would read as switched on.
+ */
+const oneOfList = (key, allowed, fallback) => {
+  const raw = optional(key, undefined);
+  if (raw === undefined) return fallback;
+  const parts = String(raw).split(',').map((part) => part.trim()).filter(Boolean);
+  const unknown = parts.filter((part) => !allowed.includes(part));
+  if (unknown.length) {
+    throw new Error(`[config] ${key} takes a comma-separated list of ${allowed.join(' | ')}, received "${raw}"`);
+  }
+  return allowed.filter((value) => parts.includes(value));
 };
 
 const sslFlag = (key, fallback) => {
@@ -327,6 +345,18 @@ const config = {
    */
   CPV_INFERENCE: {
     METHOD: oneOf('CPV_INFERENCE_METHOD', ['nearest', 'model'], 'nearest'),
+    /**
+     * The gate (ticket 05): the purchase kinds whose inferred codes readers
+     * use — the matcher, the CPV and field filters, relevance. A lot's
+     * inferred code counts only when its tender's kind is listed
+     * (libs/purchaseKinds.js#gateKindOf: the source's label, else what the
+     * procedure code names, which is how a paper tender has one). Empty by
+     * default, and empty means readers ignore inferred codes entirely —
+     * inference still runs and stores them. Ticket 06 fills it, one kind at a
+     * time, once the backtest shows ≥90% division agreement for that kind.
+     * Intelligence never reads them, whatever this holds (ADR 0006).
+     */
+    READ_KINDS: oneOfList('CPV_INFERENCE_READ_KINDS', PURCHASE_KIND_CODES, []),
   },
 
   /**

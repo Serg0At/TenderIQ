@@ -1,6 +1,7 @@
 import { createId } from '@paralleldrive/cuid2';
 import db from '../libs/knex.js';
 import { significantPrefix } from '../libs/cpv.js';
+import { PURCHASE_KINDS, KIND_MARKERS, KIND_MARKER_PATTERN, PURCHASE_KIND_CODES } from '../libs/purchaseKinds.js';
 import { stableHash } from '../utils/hash.js';
 import parties from './party.repo.js';
 import tenderSources, { SUPERSEDED } from './tenderSource.repo.js';
@@ -298,16 +299,53 @@ export const codeKeySql = (column) =>
   `regexp_replace(upper(btrim(regexp_replace(regexp_replace(translate(replace(${column}, 'և', 'ԵՒ'), ` +
   `'‐‑‒–—―', '------'), '[«»"''“”„‘’]', '', 'g'), '\\s+', ' ', 'g'))), 'ՁԲ([0-9])', 'ՁԲ-\\1', 'g')`;
 
+/** A SQL string literal of a constant this module owns — never of a request value. */
+const literal = (value) => `'${String(value).replace(/'/g, "''")}'`;
+
 /**
- * Every code a tender states, as SQL over a `tenders` alias: the twin of
- * libs/cpv.js#tenderCodes — primary code, the tender's own list, every lot's —
- * so a filter in SQL reads the same list the matcher does. It may hold NULLs
- * and repeats, which `coversAnySql` is not disturbed by: a NULL starts with
- * nothing, and a repeat inside `exists` counts once.
+ * SQL twin of libs/purchaseKinds.js#gateKindOf over a `tenders` alias: the
+ * kind the inferred-CPV gate reads — the source's label, else what the
+ * procedure code's marker names (paper states no label). Built from the same
+ * tables and the same pattern as the JS, so the two cannot spell a kind
+ * differently. A wire code (`goods`), or NULL.
  */
-export const tenderCodesSql = (alias = 't') =>
+export const gateKindSql = (alias = 't') =>
+  `coalesce(case ${alias}.goods_works_services ` +
+  PURCHASE_KIND_CODES.map((code) => `when ${literal(PURCHASE_KINDS[code])} then ${literal(code)}`).join(' ') +
+  ` end, case substring(${alias}.reference_code from ${literal(KIND_MARKER_PATTERN)}) ` +
+  PURCHASE_KIND_CODES.map((code) => `when ${literal(KIND_MARKERS[code])} then ${literal(code)}`).join(' ') +
+  ' end)';
+
+/**
+ * One lot's discovery code, as SQL over a `tender_lots` alias and its
+ * tender's alias: the stated code, else — behind the gate — the inferred one
+ * (never both: tender_lots_inferred_cpv_stated_chk). With no kind listed it is
+ * the stated column and nothing else, the same SQL as before ticket 05. The
+ * lot-level half of `tenderCodesSql`, which relevance's per-lot codes
+ * (`lotsColumn`) read too, so a lot is coded one way wherever it is read.
+ * `inferredKinds` are validated wire codes (config.CPV_INFERENCE.READ_KINDS),
+ * and only those reach the SQL text.
+ */
+export const lotCodeSql = (lotAlias = 'l', alias = 't', { inferredKinds = [] } = {}) => {
+  const kinds = PURCHASE_KIND_CODES.filter((code) => (inferredKinds ?? []).includes(code));
+  if (!kinds.length) return `${lotAlias}.cpv_code`;
+  return `coalesce(${lotAlias}.cpv_code, case when ${gateKindSql(alias)} in (${kinds.map(literal).join(', ')}) ` +
+    `then ${lotAlias}.inferred_cpv_code end)`;
+};
+
+/**
+ * Every code a tender carries for discovery, as SQL over a `tenders` alias:
+ * the twin of libs/cpv.js#tenderCodes — primary code, the tender's own list,
+ * every lot's, and behind the gate every lot's inferred code — so a filter in
+ * SQL reads the same list the matcher does. Change both. The gate arrives as
+ * an argument, shut by default, exactly as the JS's does. No intelligence
+ * query reads this (ADR 0006). It may hold NULLs and repeats, which
+ * `coversAnySql` is not disturbed by: a NULL starts with nothing, and a
+ * repeat inside `exists` counts once.
+ */
+export const tenderCodesSql = (alias = 't', { inferredKinds = [] } = {}) =>
   `(array[${alias}.cpv_code]::text[] || ${alias}.cpv_codes || ` +
-  `array(select l.cpv_code::text from tender_lots l where l.tender_id = ${alias}.id))`;
+  `array(select (${lotCodeSql('l', alias, { inferredKinds })})::text from tender_lots l where l.tender_id = ${alias}.id))`;
 
 /**
  * SQL twin of libs/cpv.js#covers: does any code the tender states start with
@@ -317,8 +355,8 @@ export const tenderCodesSql = (alias = 't') =>
  * question. `starts_with` rather than `like`: a `%` or `_` in a filter value is
  * a character, not a wildcard. It moves with `covers`: change one, change both.
  */
-const coversAnySql = (alias = 't') =>
-  `exists (select 1 from unnest(${tenderCodesSql(alias)}) as c(code) ` +
+const coversAnySql = (alias = 't', gate = {}) =>
+  `exists (select 1 from unnest(${tenderCodesSql(alias, gate)}) as c(code) ` +
   `join unnest(?::text[]) as p(prefix) on starts_with(c.code, p.prefix))`;
 
 /**
@@ -380,7 +418,8 @@ export const BIDDABLE_STATUSES = ['active', 'amended'];
  * 18 is a supplier's category must surface for them, and so must one whose
  * page names a code no lot carries; reading fewer codes would silently hide
  * it. A missed tender is the product's #1 churn cause. Both CPV filters match
- * by the alert's rule (`coversAnySql`).
+ * by the alert's rule (`coversAnySql`), and so read a lot's inferred code when
+ * `inferredKinds` lets it count, exactly as the matcher does.
  */
 const applyDiscoveryFilters = (query, {
   cpvCodes = [],
@@ -396,9 +435,10 @@ const applyDiscoveryFilters = (query, {
   deadlineBefore = null,
   purchaseKindLabels = [],
   cpvPrefixes = [],
+  inferredKinds = [],
 } = {}) => {
   if (cpvCodes.length) {
-    query.whereRaw(coversAnySql('t'), [cpvCodes.map(significantPrefix).filter(Boolean)]);
+    query.whereRaw(coversAnySql('t', { inferredKinds }), [cpvCodes.map(significantPrefix).filter(Boolean)]);
   }
 
   if (keyword) {
@@ -428,7 +468,7 @@ const applyDiscoveryFilters = (query, {
   // A Field resolves to CPV prefixes — significant prefixes, or libs/fields.js
   // refuses to load — so it binds them as they are. A tender with no CPV
   // anywhere cannot match, and that is accepted rather than guessed from text.
-  if (cpvPrefixes.length) query.whereRaw(coversAnySql('t'), [cpvPrefixes]);
+  if (cpvPrefixes.length) query.whereRaw(coversAnySql('t', { inferredKinds }), [cpvPrefixes]);
   return query;
 };
 
@@ -443,11 +483,11 @@ const applyDiscoveryFilters = (query, {
  * the same reading the alert matcher gives a keyword — and, unlike ILIKE,
  * treats `%` and `_` in a keyword as the characters they are.
  */
-const lotsColumn = (trx, keywords) =>
+const lotsColumn = (trx, keywords, { inferredKinds = [] } = {}) =>
   trx.raw(
     `(select coalesce(json_agg(x order by x.lot_number), '[]'::json) from (
         select l.lot_number,
-               array_remove(array_agg(distinct l.cpv_code), null) as codes,
+               array_remove(array_agg(distinct ${lotCodeSql('l', 't', { inferredKinds })}), null) as codes,
                array_remove(array_agg(distinct k.word), null) as keyword_hits
           from tender_lots l
           left join lateral unnest(?::text[]) as k(word)
@@ -536,7 +576,7 @@ export default class TenderRepository {
     const query = trx(`${TABLE} as t`)
       .join('parties as b', 'b.id', 't.buyer_id')
       .where('t.is_latest', true)
-      .select(...LIST_COLUMNS, lotsColumn(trx, keywords));
+      .select(...LIST_COLUMNS, lotsColumn(trx, keywords, { inferredKinds: filters.inferredKinds }));
 
     applyDiscoveryFilters(query, filters);
 
