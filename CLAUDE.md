@@ -523,8 +523,11 @@ The adapter and the first consumer exist: `src/libs/adapters/ai/anthropic.js` (t
 that imports the SDK) and `services/priceRecommendation.service.js`. `aiExtractor.js` is still
 empty. The rules below are enforced in that service and must hold for anything added:
 
-- **Anthropic Claude API.** Use the current model IDs — `claude-opus-5`, `claude-sonnet-5`,
-  `claude-haiku-4-5`. `ANTHROPIC_BASE_URL` optionally routes the SDK through a
+- **Anthropic Claude API.** Use the current model IDs — `claude-opus-5-5`, `claude-sonnet-5-5`,
+  `claude-haiku-5-5` (2026-11-14; `AI.MODEL` still defaults to `claude-opus-5`, and the CPV
+  classifier uses `AI.CPV_MODEL` = `claude-haiku-5-5`). Haiku 5.5 runs adaptive thinking and
+  caches a prefix from 512 tokens; Haiku 4.5 took only a `budget_tokens` budget and cached from
+  4,096, so do not reach for it. `ANTHROPIC_BASE_URL` optionally routes the SDK through a
   Messages-API-compatible gateway (OpenRouter is verified working: base URL
   `https://openrouter.ai/api` — **not** `.../api/v1`, the SDK appends `/v1/messages` itself —
   with `AI_MODEL=anthropic/claude-opus-5`). A gateway is only acceptable if it honours
@@ -1287,8 +1290,11 @@ bank vPOS). Everything else transfers.
 ### Issue tracker
 
 Issues and specs live as markdown files under `.scratch/<feature-slug>/` in this repo — there is no
-`gh`/`glab` workflow, and the GitHub and GitLab remotes are push targets, not boards. See
+`gh` workflow, and the GitHub remote is a push target, not a board. See
 [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+
+**GitLab is not needed.** Push to `origin` (GitHub) only — never to the `gitlab` remote, even
+where an older ticket or prompt says "both remotes".
 
 ### Triage labels
 

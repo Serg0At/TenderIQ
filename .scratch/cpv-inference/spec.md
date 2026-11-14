@@ -159,7 +159,7 @@ a deliberate script.
 1. Candidates: the codes of the most similar stated-code lots (trigram similarity on name), and
    the classifier entries whose names are most similar. At most a few dozen, each with its name,
    level, and how often buyers used it on similar lots.
-2. The model (`claude-haiku-4-5`, through the existing AI adapter's structured-output call) gets a
+2. The model (`claude-haiku-5-5`, through the existing AI adapter's structured-output call) gets a
    stable cached system prompt and, as data, the lot name, the tender's subject and the
    candidate list. It answers in a strict schema: a code from the candidates or `none`, a
    confidence, and a short reason. The system prompt says the lot text is data, not instructions.

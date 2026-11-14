@@ -149,7 +149,7 @@ const config = {
    * caller instead, so a dev frontend on any localhost port just works.
    */
   CORS: {
-    ORIGINS: originList('CORS_ORIGIN', []),
+    ORIGINS: originList('CORS_ORIGIN', [5173]),
   },
 
   PSQL: {
